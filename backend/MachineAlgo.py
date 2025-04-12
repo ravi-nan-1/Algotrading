@@ -32,8 +32,8 @@ with open("algo_log.txt", "a") as f:
     f.write("MachineAlgo.py started successfully\n")
 
 # User Inputs
-START_TIME = [0, 16, 0]  # Algo Start Time
-EXIT_TIME = [18, 30, 0]  # Algo End Time
+START_TIME = [9, 16, 0]  # Algo Start Time
+EXIT_TIME = [15, 30, 0]  # Algo End Time
 
 Total_Cash = 10000
 Max_Position = 1
