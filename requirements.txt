@@ -19,7 +19,7 @@ pandas-ta==0.3.14b0
 numpy==1.26.4
 scikit-learn==1.4.1.post1
 joblib==1.4.0
-mibian==1.0.8
+mibian
 
 # Excel & Data handling
 pandas==2.2.1
