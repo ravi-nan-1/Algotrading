@@ -10,9 +10,18 @@ from auth import get_live_ltp
 import json
 from typing import List
 import httpx
+from fastapi import FastAPI
 
 # Initialize the FastAPI app
 app = FastAPI()
+
+
+
+
+@app.get("/")
+def read_root():
+    return {"message": "Hello from FastAPI"}
+
 
 # Add CORS middleware
 app.add_middleware(
