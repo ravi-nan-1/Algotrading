@@ -3,7 +3,7 @@ from py5paisa.order import Order, OrderType, Exchange
 import pyotp
 import os
 import mibian as mb
-working_dir = os.chdir(r"C:\Users\nanda\PycharmProjects\AlgoTrading")
+working_dir = os.path.dirname(os.path.abspath(__file__))
 import pandas as pd
 import datetime as dt
 import auth
