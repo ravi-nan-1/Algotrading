@@ -69,28 +69,6 @@ except:
     target_price_model = RandomForestRegressor()
 
 
-def train_models():
-    """Train the signal strength and target price models."""
-    try:
-        df = pd.read_excel("MarketData17m.xlsx")
-        features = df[['Open','Close','low','high', 'volume', 'macd', 'macd_signal', 'delta', 'gamma', 'theta','expected_move']]
-        signal_labels = df['signal_type'].apply(lambda x: 1 if x == 'BUY' else 0)  # Binary classification
-        target_values = df['expected_move']
-
-        #signal_strength_model.fit(features, signal_labels)
-        #target_price_model.fit(features, target_values)
-
-        signal_strength_model.partial_fit(features, signal_labels,classes=np.unique(signal_labels))  # Include all possible classes
-        target_price_model.partial_fit(features, target_values)
-
-        joblib.dump(signal_strength_model, 'signal_strength_model.pkl')
-        joblib.dump(target_price_model, 'target_price_model.pkl')
-        print("Models trained and saved successfully.")
-    except Exception as e:
-        print("Error in training models:", e)
-
-
-train_models()
 
 def predict_signal_strength(Open,Close,Low,High, volume, macd, macd_signal, delta, gamma, theta):
     """Predict whether a signal is weak, medium, or strong."""
