@@ -39,7 +39,7 @@ Total_Cash = 10000
 Max_Position = 1
 Total_Cash_per_position = int(Total_Cash / Max_Position)
 
-Take_Profit = 20
+Take_Profit = 30
 
 #Tickers = ['NIFTY 17 APR 2025 CE 23000.00','NIFTY 17 APR 2025 PE 22650.00']
 
