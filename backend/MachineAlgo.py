@@ -357,64 +357,82 @@ def score_signal(row, lookback_data):
 
     return score, total_points
 
+# Global flags to sync decisions between CE and PE
+global_flags = {
+    'PE_sell': False,
+    'CE_sell': False
+}
+
 def super_trend(data, period=5, mul=1):
+    import pandas_ta as ta
+    import numpy as np
 
-        import pandas_ta as ta
-        import numpy as np
+    global global_flags
 
-        # Indicator parameters
-        fast, slow, signal = 5, 9, 9
-        ema_period = 5
-        box_window = 5
+    # Indicator setup
+    fast, slow, signal = 5, 9, 9
+    ema_period = 5
+    box_window = 5
 
-        # === Indicators ===
-        macd = ta.macd(data['Close'], fast=fast, slow=slow, signal=signal)
-        data['macd'] = macd['MACD_5_9_9']
-        data['macd_signal'] = macd['MACDs_5_9_9']
-        data['macd_rising'] = (data['macd']-data['macd_signal']) > 0.4
+    # === Indicators ===
+    macd = ta.macd(data['Close'], fast=fast, slow=slow, signal=signal)
+    data['macd'] = macd['MACD_5_9_9']
+    data['macd_signal'] = macd['MACDs_5_9_9']
+    data['macd_rising'] = (data['macd'] - data['macd_signal']) > 0.4
 
-        data['EMA'] = ta.ema(data['Close'], length=ema_period)
-        data['EMA20'] = ta.ema(data['Close'], length=20)
-        data['EMA50'] = ta.ema(data['Close'], length=50)
-        data['box_high'] = data['High'].rolling(window=box_window).max()
-        data['box_low'] = data['Low'].rolling(window=box_window).min()
+    data['EMA'] = ta.ema(data['Close'], length=ema_period)
+    data['EMA20'] = ta.ema(data['Close'], length=20)
+    data['EMA50'] = ta.ema(data['Close'], length=50)
+    data['box_high'] = data['High'].rolling(window=box_window).max()
+    data['box_low'] = data['Low'].rolling(window=box_window).min()
 
-        # === Bullish Reversal Condition ===
+    # === Candle Patterns ===
+    prev_bearish = data['Close'].shift(1) < data['Open'].shift(1)
+    current_bullish = data['Close'] > data['Open']
+    prev_bullish = data['Close'].shift(1) > data['Open'].shift(1)
+    current_bearish = data['Close'] < data['Open']
 
+    # === EMA Conditions ===
+    ema_rejection = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
+    ema_breakout = (data['Close'].shift(1) > data['EMA'].shift(1)) & (data['Close'] > data['EMA'])
+    ema_distance_up = (data['EMA'] - data['Close']) > 1.5
+    ema_distance_down = (data['Close'] - data['EMA']) > 1.5
 
-        cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
-        cond_bullish_candle = data['Close'] > data['Open']
-        cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
-        cond_distance_from_ema = (data['EMA']-data['Close']) > 1.5
-        condC1=data['Close'] < data['EMA20']
-        condC2=data['Close'] < data['EMA50']
-        condC3=data['EMA50']-data['EMA20'] < 40
-        condP1=data['EMA50']-data['EMA20'] > 20
-        #cond_ema_diff = (data['EMA50']-data['EMA20'] >= -15) & (data['EMA50']-data['EMA20'] <= 5)
-        #cond_box_breakout = data['Close'] > data['box_high'].shift(1)
+    # === Initialize signal column ===
+    data['st_sig'] = 0
 
-        # Combine all into final signal
-        if data['Option_Type'].iloc[0] == 'PE':
-            print('PE')
-            data['st_sig'] = np.where(
-            cond_bearish_candle & cond_bullish_candle
-            & cond_below_ema & cond_distance_from_ema #& condP1
-             ,
-            1, 0
-        )
+    # === PE Logic ===
+    if data['Option_Type'].iloc[0] == 'PE':
+        print("PE Logic")
 
-        if data['Option_Type'].iloc[0] == 'CE':
-            print('CE')
-            data['st_sig'] = np.where(
-                cond_bearish_candle & cond_bullish_candle &
-                cond_below_ema #& cond_distance_from_ema & condC1 & condC2 & condC3
-                ,
-                1, 0
-            )
+        # Check for PE sell condition
+        pe_sell_condition = prev_bullish & current_bearish & ema_breakout & ema_distance_down
+        if pe_sell_condition.iloc[-1]:  # latest signal
+            global_flags['PE_sell'] = True
+        else:
+            global_flags['PE_sell'] = False
 
+        # If CE had a sell, this PE gets a buy
+        if global_flags['CE_sell']:
+            data['st_sig'].iloc[-1] = 1
 
+    # === CE Logic ===
+    elif data['Option_Type'].iloc[0] == 'CE':
+        print("CE Logic")
 
-        return data[['st_sig']]
+        # Check for CE sell condition
+        ce_sell_condition = prev_bullish & current_bearish & ema_breakout & ema_distance_down
+        if ce_sell_condition.iloc[-1]:  # latest signal
+            global_flags['CE_sell'] = True
+        else:
+            global_flags['CE_sell'] = False
+
+        # If PE had a sell, this CE gets a buy
+        if global_flags['PE_sell']:
+            data['st_sig'].iloc[-1] = 1
+
+    return data[['st_sig']]
+
 
 
 # for my market alerts
