@@ -392,10 +392,7 @@ def super_trend(data, period=5, mul=1):
         cond_bullish_candle = data['Close'] > data['Open']
         cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
         cond_distance_from_ema = (data['EMA']-data['Close']) > 1.5
-        condC1=data['Close'] < data['EMA20']
-        condC2=data['Close'] < data['EMA50']
-        condC3=data['EMA50']-data['EMA20'] < 40
-        condP1=data['EMA50']-data['EMA20'] > 20
+        
         #cond_ema_diff = (data['EMA50']-data['EMA20'] >= -15) & (data['EMA50']-data['EMA20'] <= 5)
         #cond_box_breakout = data['Close'] > data['box_high'].shift(1)
 
@@ -404,7 +401,7 @@ def super_trend(data, period=5, mul=1):
             print('PE')
             data['st_sig'] = np.where(
             cond_bearish_candle & cond_bullish_candle
-            #& cond_below_ema & cond_distance_from_ema #& condP1
+            & cond_below_ema & cond_distance_from_ema 
              ,
             1, 0
         )
@@ -413,7 +410,7 @@ def super_trend(data, period=5, mul=1):
             print('CE')
             data['st_sig'] = np.where(
                 cond_bearish_candle & cond_bullish_candle &
-                cond_below_ema #& cond_distance_from_ema #& condC1 & condC2 & condC3
+                cond_below_ema 
                 ,
                 1, 0
             )
