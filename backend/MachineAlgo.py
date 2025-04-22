@@ -357,12 +357,6 @@ def score_signal(row, lookback_data):
 
     return score, total_points
 
-# Global flags to sync decisions between CE and PE
-global_flags = {
-    'PE_sell': False,
-    'CE_sell': False
-}
-
 def super_trend(data, period=5, mul=1):
 
         import pandas_ta as ta
@@ -392,7 +386,10 @@ def super_trend(data, period=5, mul=1):
         cond_bullish_candle = data['Close'] > data['Open']
         cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
         cond_distance_from_ema = (data['EMA']-data['Close']) > 1.5
-        
+        condC1=data['Close'] < data['EMA20']
+        condC2=data['Close'] < data['EMA50']
+        condC3=data['EMA50']-data['EMA20'] < 40
+        condP1=data['EMA50']-data['EMA20'] > 20
         #cond_ema_diff = (data['EMA50']-data['EMA20'] >= -15) & (data['EMA50']-data['EMA20'] <= 5)
         #cond_box_breakout = data['Close'] > data['box_high'].shift(1)
 
@@ -401,7 +398,7 @@ def super_trend(data, period=5, mul=1):
             print('PE')
             data['st_sig'] = np.where(
             cond_bearish_candle & cond_bullish_candle
-            & cond_below_ema & cond_distance_from_ema 
+            & cond_below_ema & cond_distance_from_ema #& condP1
              ,
             1, 0
         )
@@ -410,7 +407,7 @@ def super_trend(data, period=5, mul=1):
             print('CE')
             data['st_sig'] = np.where(
                 cond_bearish_candle & cond_bullish_candle &
-                cond_below_ema 
+                cond_below_ema #& cond_distance_from_ema & condC1 & condC2 & condC3
                 ,
                 1, 0
             )
@@ -418,7 +415,6 @@ def super_trend(data, period=5, mul=1):
 
 
         return data[['st_sig']]
-
 
 
 # for my market alerts
