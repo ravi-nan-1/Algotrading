@@ -358,63 +358,82 @@ def score_signal(row, lookback_data):
     return score, total_points
 
 def super_trend(data, period=5, mul=1):
+    import pandas_ta as ta
+    import numpy as np
 
-        import pandas_ta as ta
-        import numpy as np
+    # === Indicator Parameters ===
+    fast, slow, signal = 5, 9, 9
+    ema_period = 5
+    box_window = 5
 
-        # Indicator parameters
-        fast, slow, signal = 5, 9, 9
-        ema_period = 5
-        box_window = 5
+    # === Technical Indicators ===
+    macd = ta.macd(data['Close'], fast=fast, slow=slow, signal=signal)
+    data['macd'] = macd['MACD_5_9_9']
+    data['macd_signal'] = macd['MACDs_5_9_9']
+    data['macd_rising'] = (data['macd'] - data['macd_signal']) > 0.4
 
-        # === Indicators ===
-        macd = ta.macd(data['Close'], fast=fast, slow=slow, signal=signal)
-        data['macd'] = macd['MACD_5_9_9']
-        data['macd_signal'] = macd['MACDs_5_9_9']
-        data['macd_rising'] = (data['macd']-data['macd_signal']) > 0.4
+    data['EMA'] = ta.ema(data['Close'], length=ema_period)
+    data['EMA20'] = ta.ema(data['Close'], length=20)
+    data['EMA50'] = ta.ema(data['Close'], length=50)
+    data['box_high'] = data['High'].rolling(window=box_window).max()
+    data['box_low'] = data['Low'].rolling(window=box_window).min()
 
-        data['EMA'] = ta.ema(data['Close'], length=ema_period)
-        data['EMA20'] = ta.ema(data['Close'], length=20)
-        data['EMA50'] = ta.ema(data['Close'], length=50)
-        data['box_high'] = data['High'].rolling(window=box_window).max()
-        data['box_low'] = data['Low'].rolling(window=box_window).min()
+    # === Bullish/Bearish Reversal Conditions ===
+    cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
+    cond_bullish_candle = data['Close'] > data['Open']
+    cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
+    cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
 
-        # === Bullish Reversal Condition ===
+    cond_bullish_candle_s = data['Close'].shift(1) > data['Open'].shift(1)
+    cond_bearish_candle_s = data['Close'] < data['Open']
+    cond_above_ema = (data['Close'].shift(1) > data['EMA'].shift(1)) & (data['Close'] > data['EMA'])
+    cond_distance_ema = (data['Close'] - data['EMA']) > 1.5
 
+    # === Signal Calculation ===
+    data['st_sig'] = 0
+    data['flag'] = None
 
-        cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
-        cond_bullish_candle = data['Close'] > data['Open']
-        cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
-        cond_distance_from_ema = (data['EMA']-data['Close']) > 1.5
-        condC1=data['Close'] < data['EMA20']
-        condC2=data['Close'] < data['EMA50']
-        condC3=data['EMA50']-data['EMA20'] < 40
-        condP1=data['EMA50']-data['EMA20'] > 20
-        #cond_ema_diff = (data['EMA50']-data['EMA20'] >= -15) & (data['EMA50']-data['EMA20'] <= 5)
-        #cond_box_breakout = data['Close'] > data['box_high'].shift(1)
+    pe_buy_signal = cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema
+    pe_sell_signal = cond_bullish_candle_s & cond_bearish_candle_s & cond_above_ema & cond_distance_ema
 
-        # Combine all into final signal
-        if data['Option_Type'].iloc[0] == 'PE':
-            print('PE')
-            data['st_sig'] = np.where(
-            cond_bearish_candle & cond_bullish_candle
-            & cond_below_ema & cond_distance_from_ema #& condP1
-             ,
-            1, 0
-        )
+    ce_buy_signal = cond_bearish_candle & cond_bullish_candle & cond_below_ema
+    ce_sell_signal = cond_bullish_candle_s & cond_bearish_candle_s & cond_above_ema & cond_distance_ema
 
-        if data['Option_Type'].iloc[0] == 'CE':
-            print('CE')
-            data['st_sig'] = np.where(
-                cond_bearish_candle & cond_bullish_candle &
-                cond_below_ema #& cond_distance_from_ema & condC1 & condC2 & condC3
-                ,
-                1, 0
-            )
+    # === Sequential Signal Logic ===
+    state = None  # can be 'PE', 'CE', or None
 
+    for i in range(1, len(data)):
+        if state is None:
+            if data['Option_Type'].iloc[0] == 'PE' and pe_buy_signal.iloc[i]:
+                data.at[i, 'st_sig'] = 1
+                data.at[i, 'flag'] = 'PE_buy'
+                state = 'PE'
 
+        elif state == 'PE':
+            if pe_sell_signal.iloc[i]:
+                data.at[i, 'st_sig'] = -1
+                data.at[i, 'flag'] = 'PE_sell'
+                state = 'WAIT_CE'
 
-        return data[['st_sig']]
+        elif state == 'WAIT_CE':
+            if data['Option_Type'].iloc[0] == 'CE' and ce_buy_signal.iloc[i]:
+                data.at[i, 'st_sig'] = 1
+                data.at[i, 'flag'] = 'CE_buy'
+                state = 'CE'
+
+        elif state == 'CE':
+            if ce_sell_signal.iloc[i]:
+                data.at[i, 'st_sig'] = -1
+                data.at[i, 'flag'] = 'CE_sell'
+                state = 'WAIT_PE'
+
+        elif state == 'WAIT_PE':
+            if data['Option_Type'].iloc[0] == 'PE' and pe_buy_signal.iloc[i]:
+                data.at[i, 'st_sig'] = 1
+                data.at[i, 'flag'] = 'PE_buy'
+                state = 'PE'
+
+    return data[['st_sig']]
 
 
 # for my market alerts
@@ -846,55 +865,45 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     tele_msg(f"Long Entry Stop Loss Hit for {i}. Exit Price: {Sell_Price}, P/L: {Profit_Loss}")
 
                 # Target Hit Check (Exit Long Trade)
-            if i in Long_Open_Position['Symbol'].values:
-
-                print("Find the Target Price")
-                trade_row = Long_Open_Position[Long_Open_Position['Symbol'] == i]
-                Target_Price = trade_row['Target Price'].values[0]
-                print(Target_Price)
-                # Check if current price exceeds target price
-                if spot_prices1[i] > Target_Price:
-                    print(f"Long Entry Target Hit for {i}. Closing position.")
-
-                    # Fetch trade details
+                             if i in Long_Open_Position['Symbol'].values:
+                    print("Find the Target Price")
+                    trade_row = Long_Open_Position[Long_Open_Position['Symbol'] == i]
                     BuyPrice = trade_row['Buy Price'].values[0]
+                    Target_Price = trade_row['Target Price'].values[0]
+                    Trail_Step = 10  # Move trailing target by 10 points
                     Trade_quantity = trade_row['Qty'].values[0]
 
-                    # For Real Money
+                    current_price = spot_prices[i]
+                    profit_from_entry = current_price-BuyPrice
 
-                    # Sending Sell Order to The API
+                    # Calculate how many steps of 10 points we've moved
+                    step_count = int(profit_from_entry // Trail_Step)
+                    new_trailing_target = BuyPrice+(step_count * Trail_Step)
 
-                    # For Sell Order
+                    # Update the target if price moved significantly
+                    if new_trailing_target > Target_Price:
+                        Long_Open_Position.loc[Long_Open_Position['Symbol'] == i, 'Target Price'] = new_trailing_target
+                        print(f"Updated Trailing Target for {i}: {new_trailing_target}")
+                        continue  # Do not close trade yet; wait for next iteration
 
-                    # order_response = client.place_order(OrderType='S',Exchange='N',ExchangeType='C', ScripCode = int(scripcode_lookup(instrument=instrument_df, symbol= i), Qty=Trade_quantity, Price=0)
+                    # Exit condition: current price exceeds latest target
+                    if current_price >= Target_Price:
+                        print(f"Long Entry Target Hit for {i}. Closing position.")
+                        # --- Exit logic as in your existing code ---
+                        Exit_Time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
+                        Sell_Price = float(current_price)
+                        Points = Sell_Price-BuyPrice
+                        Brokerage = ((BuyPrice * Trade_quantity)+(Sell_Price * Trade_quantity)) * 0.00015
+                        Profit_Loss = (Points * Trade_quantity)-Brokerage
+                        Trade_Status = "Target Hit"
 
-                    # # Check if the message is not 'Success'
-                    # if order_response['Message'] != 'Success':
-                    #     with open("error_log.txt", "a") as error_log_file:
-                    #         error_log_file.write(ct +' - ' + order_response['Message'] +' '+i+ "\n")
+                        close_long_trade(i, Exit_Time, Sell_Price, Points, Brokerage, Profit_Loss, Trade_Status,
+                                         Long_Trade_File)
+                        tele_msg(f"Long Entry Target Hit for {i}. Exit Price: {Sell_Price}, P/L: {Profit_Loss}")
 
-                    #     tele_msg(order_response['Message']+' '+i)
-
-                    # position_df = pd.DataFrame(client.positions())
-
-                    # Sell_Price = position_df[position_df.ScripName==i].SellAvgRate.values[0]
-
-                    # For Paper Trade
-                    Exit_Time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
-                    Sell_Price = float(spot_prices1[i])  # Selling at market price
-                    Points = Sell_Price-BuyPrice
-                    Brokerage = ((BuyPrice * Trade_quantity)+(Sell_Price * Trade_quantity)) * 0.00015
-                    Profit_Loss = (Points * Trade_quantity)-Brokerage
-                    Trade_Status = "Target Hit"
-
-                    close_long_trade(i, Exit_Time, Sell_Price, Points, Brokerage, Profit_Loss, Trade_Status,
-                                     Long_Trade_File)
-
-                    tele_msg(f"Long Entry Target Hit for {i}. Exit Price: {Sell_Price}, P/L: {Profit_Loss}")
-
-                    # Refresh open positions after closing trade
-                    super_Trend_Long = pd.read_excel(Long_Trade_File)
-                    Long_Open_Position = super_Trend_Long[(super_Trend_Long['Trade Status'] == 'OPEN')]
+                        # Refresh open positions after closing trade
+                        super_Trend_Long = pd.read_excel(Long_Trade_File)
+                        Long_Open_Position = super_Trend_Long[(super_Trend_Long['Trade Status'] == 'OPEN')]     
 
             if i in Long_Open_Position['Symbol'].values:
 
