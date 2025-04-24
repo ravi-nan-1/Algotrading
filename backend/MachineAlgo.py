@@ -361,16 +361,16 @@ def super_trend(data, period=5, mul=1):
     import pandas_ta as ta
     import numpy as np
 
-    # === Indicator Parameters ===
+    # Indicator parameters
     fast, slow, signal = 5, 9, 9
     ema_period = 5
     box_window = 5
 
-    # === Technical Indicators ===
+    # === Indicators ===
     macd = ta.macd(data['Close'], fast=fast, slow=slow, signal=signal)
     data['macd'] = macd['MACD_5_9_9']
     data['macd_signal'] = macd['MACDs_5_9_9']
-    data['macd_rising'] = (data['macd'] - data['macd_signal']) > 0.4
+    data['macd_rising'] = (data['macd']-data['macd_signal']) > 0.4
 
     data['EMA'] = ta.ema(data['Close'], length=ema_period)
     data['EMA20'] = ta.ema(data['Close'], length=20)
@@ -378,60 +378,37 @@ def super_trend(data, period=5, mul=1):
     data['box_high'] = data['High'].rolling(window=box_window).max()
     data['box_low'] = data['Low'].rolling(window=box_window).min()
 
-    # === Bullish/Bearish Reversal Conditions ===
+    # === Bullish Reversal Condition ===
+
     cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
     cond_bullish_candle = data['Close'] > data['Open']
     cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
-    cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
+    cond_distance_from_ema = (data['EMA']-data['Close']) > 1.5
+    condC1 = data['Close'] < data['EMA20']
+    condC2 = data['Close'] < data['EMA50']
+    condC3 = data['EMA50']-data['EMA20'] < 40
+    condP1 = data['EMA50']-data['EMA20'] > 20
+    # cond_ema_diff = (data['EMA50']-data['EMA20'] >= -15) & (data['EMA50']-data['EMA20'] <= 5)
+    # cond_box_breakout = data['Close'] > data['box_high'].shift(1)
 
-    cond_bullish_candle_s = data['Close'].shift(1) > data['Open'].shift(1)
-    cond_bearish_candle_s = data['Close'] < data['Open']
-    cond_above_ema = (data['Close'].shift(1) > data['EMA'].shift(1)) & (data['Close'] > data['EMA'])
-    cond_distance_ema = (data['Close'] - data['EMA']) > 1.5
+    # Combine all into final signal
+    if data['Option_Type'].iloc[0] == 'PE':
+        print('PE')
+        data['st_sig'] = np.where(
+            cond_bearish_candle & cond_bullish_candle
+            # & cond_below_ema & cond_distance_from_ema & condP1
+            ,
+            1, 0
+        )
 
-    # === Signal Calculation ===
-    data['st_sig'] = 0
-    data['flag'] = None
-
-    pe_buy_signal = cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema
-    pe_sell_signal = cond_bullish_candle_s & cond_bearish_candle_s & cond_above_ema & cond_distance_ema
-
-    ce_buy_signal = cond_bearish_candle & cond_bullish_candle & cond_below_ema
-    ce_sell_signal = cond_bullish_candle_s & cond_bearish_candle_s & cond_above_ema & cond_distance_ema
-
-    # === Sequential Signal Logic ===
-    state = None  # can be 'PE', 'CE', or None
-
-    for i in range(1, len(data)):
-        if state is None:
-            if data['Option_Type'].iloc[0] == 'PE' and pe_buy_signal.iloc[i]:
-                data.at[i, 'st_sig'] = 1
-                data.at[i, 'flag'] = 'PE_buy'
-                state = 'PE'
-
-        elif state == 'PE':
-            if pe_sell_signal.iloc[i]:
-                data.at[i, 'st_sig'] = -1
-                data.at[i, 'flag'] = 'PE_sell'
-                state = 'WAIT_CE'
-
-        elif state == 'WAIT_CE':
-            if data['Option_Type'].iloc[0] == 'CE' and ce_buy_signal.iloc[i]:
-                data.at[i, 'st_sig'] = 1
-                data.at[i, 'flag'] = 'CE_buy'
-                state = 'CE'
-
-        elif state == 'CE':
-            if ce_sell_signal.iloc[i]:
-                data.at[i, 'st_sig'] = -1
-                data.at[i, 'flag'] = 'CE_sell'
-                state = 'WAIT_PE'
-
-        elif state == 'WAIT_PE':
-            if data['Option_Type'].iloc[0] == 'PE' and pe_buy_signal.iloc[i]:
-                data.at[i, 'st_sig'] = 1
-                data.at[i, 'flag'] = 'PE_buy'
-                state = 'PE'
+    if data['Option_Type'].iloc[0] == 'CE':
+        print('CE')
+        data['st_sig'] = np.where(
+            cond_bearish_candle & cond_bullish_candle &
+            cond_below_ema  # & cond_distance_from_ema & condC1 & condC2 & condC3
+            ,
+            1, 0
+        )
 
     return data[['st_sig']]
 
