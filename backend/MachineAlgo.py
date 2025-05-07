@@ -3,7 +3,7 @@ from py5paisa.order import Order, OrderType, Exchange
 import pyotp
 import os
 import mibian as mb
-working_dir = os.chdir(r"C:\Users\nanda\PycharmProjects\AlgoTrading")
+working_dir = os.path.dirname(os.path.abspath(__file__))
 import pandas as pd
 import datetime as dt
 import auth
@@ -38,7 +38,20 @@ Total_Cash_per_position = int(Total_Cash / Max_Position)
 
 Take_Profit = 20
 
-Tickers = ['NIFTY 08 MAY 2025 CE 24400.00','NIFTY 08 MAY 2025 PE 24400.00']
+#Tickers = ['NIFTY 08 MAY 2025 CE 24400.00','NIFTY 08 MAY 2025 PE 24400.00']
+
+
+import json
+import os
+
+ticker_path = os.path.join(os.path.dirname(__file__), "tickers.json")
+print("🔍 Looking for:", ticker_path)
+
+if os.path.exists(ticker_path):
+    print("📂 Loading tickers.json...")
+    with open(ticker_path, "r") as f:
+        Tickers = json.load(f)
+
 
 # Getting Instrument
 instrument_df = pd.read_csv('ScripMasterfno.csv')
