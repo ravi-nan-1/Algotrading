@@ -627,7 +627,42 @@ client.connect(req_data)
 def subscribe_data():
     client.receive_data(on_message)
 
+import requests
 
+def send_to_ui(symbol: str, price: float):
+    try:
+        # First, try to update the ticker
+        res = requests.post("https://algotrading-1-dluo.onrender.com/update-ticker", json={
+            "symbol": symbol,
+            "price": price
+        })
+
+        # If symbol is not found (not added yet), auto-add and retry
+        if res.status_code == 404:
+            print(f"⚠️ {symbol} not found in ticker list. Adding it now...")
+            add_res = requests.post("http://localhost:8000/add-tickers", json={
+                "tickers": [symbol]
+            })
+            if add_res.status_code == 200:
+                print(f"✅ {symbol} added. Retrying update...")
+                # Retry update
+                retry_res = requests.post("http://localhost:8000/update-ticker", json={
+                    "symbol": symbol,
+                    "price": price
+                })
+                if retry_res.status_code == 200:
+                    print(f"📈 Pushed to UI: {symbol} → ₹{price}")
+                else:
+                    print(f"❌ Failed to push after retry: {retry_res.status_code}")
+            else:
+                print(f"❌ Failed to auto-add {symbol}: {add_res.status_code}")
+
+        elif res.status_code == 200:
+            print(f"📈 Pushed to UI: {symbol} → ₹{price}")
+        else:
+            print(f"❌ Failed to push: {res.status_code}")
+    except Exception as e:
+        print(f"🔥 Error pushing to UI: {e}")
 # Algo Start Here
 start = dt.datetime.now(pytz.timezone('Asia/Kolkata'))
 closetime = start.replace(hour=START_TIME[0], minute=START_TIME[1], second=START_TIME[2])
@@ -673,7 +708,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
             print("###################################################################")
             print('Spot prices of', i, ' ', spot_prices[i])
             print("###################################################################")
-
+            send_to_ui(i, spot_prices1[i])
             time.sleep(0.5)
 
             if is_required_time():
