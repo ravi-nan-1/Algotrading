@@ -894,11 +894,11 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     # Find the SL Price
                     trade_row = Long_Open_Position[Long_Open_Position['Symbol'] == i]
                     S_Price = trade_row['Sprice'].values[0]
-                    # S_Price = max(S_Price + (float(spot_prices[i]) - trade_row['Buy Price']), S_Price)
+                    # S_Price = max(S_Price + (float(spot_prices1[i]) - trade_row['Buy Price']), S_Price)
                     print(S_Price)
 
                     # Check if current price exceeds target price
-                    if spot_prices[i] < S_Price:
+                    if spot_prices1[i] < S_Price:
                         print(f"Long Entry SL Hit for {i}. Closing position.")
 
                         # Fetch trade details
@@ -907,7 +907,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                         # For Paper Trade
                         Exit_Time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
-                        Sell_Price = float(spot_prices[i])  # Selling at market price
+                        Sell_Price = float(spot_prices1[i])  # Selling at market price
                         Points = Sell_Price-BuyPrice
                         Brokerage = ((BuyPrice * Trade_quantity)+(Sell_Price * Trade_quantity)) * 0.00015
                         Profit_Loss = (Points * Trade_quantity)-Brokerage
@@ -999,7 +999,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     # Take the Long Trade
                     else:
 
-                        current_price = float(spot_prices[i])
+                        current_price = float(spot_prices1[i])
 
                         Trade_quantity = int(math.floor(Total_Cash_per_position / current_price))
 
