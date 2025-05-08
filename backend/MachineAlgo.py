@@ -590,7 +590,7 @@ def is_required_time():
 
 
 # Initialize spot prices dictionary
-spot_prices = {ticker: None for ticker in Tickers}
+spot_prices1 = {ticker: None for ticker in Tickers}
 
 # Get instrument codes for tickers
 ticker_codes = {ticker: str(instrument_df[instrument_df['Name'] == ticker]['ScripCode'].values[0]) for ticker in
@@ -607,13 +607,13 @@ for s in Tickers:
 
 # Define the callback function for incoming data
 def on_message(ws, message):
-    global spot_prices
+    global spot_prices1
     data = json.loads(message)
     #print(data)
     if data:
         ticker_symbol = instrument_df[instrument_df['ScripCode'] == data[0]['Token']]['Name'].iloc[0]
         last_rate = data[0]['LastRate']
-        spot_prices[ticker_symbol] = last_rate
+        spot_prices1[ticker_symbol] = last_rate
 
     # Subscribe to real-time data feed in a separate thread
 
@@ -706,7 +706,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
         for i in Tickers:
 
             print("###################################################################")
-            print('Spot prices of', i, ' ', spot_prices[i])
+            print('Spot prices of', i, ' ', spot_prices1[i])
             print("###################################################################")
             send_to_ui(i, spot_prices1[i])
             time.sleep(0.5)
@@ -751,7 +751,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     # Take the Long Trade
                     else:
 
-                        current_price = float(spot_prices[i])
+                        current_price = float(spot_prices1[i])
 
                         Trade_quantity = int(math.floor(Total_Cash_per_position / current_price))
 
@@ -832,7 +832,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                         # For Paper Trade
 
-                        Sell_Price = float(spot_prices[i])  # Selling at current market price
+                        Sell_Price = float(spot_prices1[i])  # Selling at current market price
 
                         Points = Sell_Price-BuyPrice
 
@@ -857,7 +857,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     Trail_Step = 10  # Move trailing target by 10 points
                     Trade_quantity = trade_row['Qty'].values[0]
 
-                    current_price = spot_prices[i]
+                    current_price = spot_prices1[i]
                     profit_from_entry = current_price-BuyPrice
 
                     # Calculate how many steps of 10 points we've moved
@@ -957,7 +957,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                         # For Paper Trade
                         Exit_Time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
-                        Sell_Price = float(spot_prices[i])  # Selling at market price
+                        Sell_Price = float(spot_prices1[i])  # Selling at market price
                         Points = Sell_Price-BuyPrice
                         Brokerage = ((BuyPrice * Trade_quantity)+(Sell_Price * Trade_quantity)) * 0.00015
                         Profit_Loss = (Points * Trade_quantity)-Brokerage
@@ -1076,7 +1076,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                         # For Paper Trade
 
-                        Buy_Price = float(spot_prices[i])  # Selling at current market price
+                        Buy_Price = float(spot_prices1[i])  # Selling at current market price
 
                         Points = SellPrice-Buy_Price
 
@@ -1103,7 +1103,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     Target_Price = trade_row['Target Price'].values[0]
 
                     # Check if current price exceeds target price
-                    if spot_prices[i] > Target_Price:
+                    if spot_prices1[i] > Target_Price:
                         print(f"Short Entry Target Hit for {i}. Closing position.")
 
                         # Fetch the Buy Price and Quantity
@@ -1136,7 +1136,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                         # For Paper Trade
 
-                        Buy_Price = float(spot_prices[i])  # Selling at current market price
+                        Buy_Price = float(spot_prices1[i])  # Selling at current market price
 
                         Points = SellPrice-Buy_Price
 
@@ -1195,7 +1195,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                         # For Paper Trade
 
-                        Buy_Price = float(spot_prices[i])  # Selling at current market price
+                        Buy_Price = float(spot_prices1[i])  # Selling at current market price
 
                         Points = SellPrice-Buy_Price
 
