@@ -393,9 +393,10 @@ def super_trend(data, period=5, mul=1):
     if data['Option_Type'].iloc[0] == 'PE':
         print('PE')
         data['st_sig'] = np.where(
-            cond_bearish_candle & cond_bullish_candle
-            & cond_below_ema & cond_distance_from_ema
-            ,  # Added EMA slope condition
+            (cond_bearish_candle & cond_bullish_candle
+            & cond_below_ema & cond_distance_from_ema) or (cond_bearish_candle & cond_bullish_candle
+            & cond_bearish_ema_below & Cond_buy )
+            ,  
             1, 0
         )
         # Add sell signal for PE
@@ -409,8 +410,9 @@ def super_trend(data, period=5, mul=1):
     if data['Option_Type'].iloc[0] == 'CE':
         print('CE')
         data['st_sig'] = np.where(
-            cond_bearish_candle & cond_bullish_candle &
-            cond_below_ema ,  # Added EMA slope condition
+            (cond_bearish_candle & cond_bullish_candle &
+            cond_below_ema & cond_distance_from_ema)  or (cond_bearish_candle & cond_bullish_candle
+            & cond_bearish_ema_below & Cond_buy ) ,
             1, 0
         )
         # Add sell signal for CE
