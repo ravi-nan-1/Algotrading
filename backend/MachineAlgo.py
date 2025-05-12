@@ -1029,6 +1029,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         entry_time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
 
                         SellPrice = current_price
+                        Sprice = current_price
 
                         update_Short_trades(i, entry_time, SellPrice, Target_Price, Sprice, Trade_quantity, Short_Trade_File)
 
