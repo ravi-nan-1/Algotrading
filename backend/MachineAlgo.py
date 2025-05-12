@@ -881,7 +881,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         Profit_Loss = (Points * Trade_quantity)-Brokerage
                         Trade_Status = "Target Hit"
 
-                        close_long_trade(i, Exit_Time, Sell_Price, Points, Brokerage, Profit_Loss,
+                        close_long_trade(i, Exit_Time, Sell_Price, Points, Brokerage, Profit_Loss, Trade_Status,
                                          Long_Trade_File)
                         tele_msg(f"Long Entry Target Hit for {i}. Exit Price: {Sell_Price}, P/L: {Profit_Loss}")
 
