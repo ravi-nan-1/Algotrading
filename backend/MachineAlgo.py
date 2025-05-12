@@ -1028,7 +1028,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                         SellPrice = current_price
 
-                        update_Short_trades(i, entry_time, SellPrice, Target_Price, Trade_quantity, Short_Trade_File)
+                        update_Short_trades(i, entry_time, BuyPrice, Target_Price, Sprice, Trade_quantity, Short_Trade_File)
 
                         tele_msg("Short Entry Taken For "+i+" Total Quantity "+str(
                             Trade_quantity)+" And the Target Price is "+str(Target_Price))
