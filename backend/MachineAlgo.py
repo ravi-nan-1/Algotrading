@@ -377,7 +377,7 @@ def super_trend(data, period=5, mul=1):
 
     # Optional: Convert slope to angle (degrees) for better interpretation
 
-    data['EMA20_angle'] = np.rad2deg(np.arctan(data['EMA_slope']))
+    data['EMA20_angle'] = np.rad2deg(np.arctan(data['EMA20_slope']))
 
     # === Bearish Reversal Condition (for sell signals) ===
     cond_bullish_candle_prev = data['Close'].shift(1) > data['Open'].shift(1)
