@@ -63,18 +63,7 @@ instrument_df = instrument_df[(instrument_df.Exch == 'N')]
 
 
 
-def predict_signal_strength(Open,Close,Low,High, volume, macd, macd_signal, delta, gamma, theta):
-    """Predict whether a signal is weak, medium, or strong."""
-    if not hasattr(signal_strength_model, "estimators_"):
-        raise ValueError("Error: The signal strength model is not trained yet.")
 
-    features = np.array([[Open,Close,Low,High, volume, macd, macd_signal, delta, gamma, theta]])
-    return signal_strength_model.predict(features)[0]
-
-def estimate_target_price(Open,Close,Low,High, volume, macd, macd_signal, delta, gamma, theta):
-    """Estimate the expected price movement after a signal."""
-    features = np.array([[Open,Close,Low,High,volume, macd, macd_signal, delta, gamma, theta]])
-    return target_price_model.predict(features)[0]
 
 signal_data = []
 def store_signal_data(Open,Close,Low,High, volume, macd, macd_signal, delta, gamma, theta, signal_type,optype,strike):
@@ -373,7 +362,7 @@ def super_trend(data, period=5, mul=1):
     data['box_low'] = data['Low'].rolling(window=box_window).min()
 
     # Calculate EMA slope (current EMA > previous EMA means slope is rising)
-    data['EMA_slope'] = data['EMA'] > data['EMA'].shift(1)
+    #data['EMA_slope'] = data['EMA'] > data['EMA'].shift(1)
 
     # === Bullish Reversal Condition ===
     cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
@@ -384,44 +373,39 @@ def super_trend(data, period=5, mul=1):
     cond_distance_from_ema = (data['EMA']-data['Close']) > 1.5
     #cond_ema_slope_rising = data['EMA_slope']  # New condition: EMA slope is rising
 
+    data['EMA20_slope'] = data['EMA20']-data['EMA20'].shift(1)
+
+    # Optional: Convert slope to angle (degrees) for better interpretation
+
+    data['EMA20_angle'] = np.rad2deg(np.arctan(data['EMA_slope']))
+
     # === Bearish Reversal Condition (for sell signals) ===
     cond_bullish_candle_prev = data['Close'].shift(1) > data['Open'].shift(1)
     cond_bearish_candle_current = data['Close'] < data['Open']
     cond_above_ema = (data['Close'].shift(1) > data['EMA'].shift(1)) & (data['Close'] > data['EMA'])
     cond_distance_from_ema_sell = (data['Close']-data['EMA']) > 1.5
-    #cond_ema_slope_falling = ~data['EMA_slope']  # New condition: EMA slope is falling
+    angle_ema=data['EMA20_angle']>0
+    #EMA_diff =data['EMA20']-data['EMA20'].shift(1)   # New condition: EMA slope is falling
 
     # Combine all into final signal
     if data['Option_Type'].iloc[0] == 'PE':
         print('PE')
         data['st_sig'] = np.where(
-            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema) | 
-            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy )
-            ,  
+            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & angle_ema ) |
+            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy & angle_ema )
+            ,
             1, 0
         )
-        # Add sell signal for PE
-        data['st_sig'] = np.where(
-            cond_bullish_candle_prev & cond_bearish_candle_current
-            & cond_above_ema & cond_distance_from_ema_sell
-            ,  # Added EMA slope condition
-            -1, data['st_sig']
-        )
+
 
     if data['Option_Type'].iloc[0] == 'CE':
         print('CE')
         data['st_sig'] = np.where(
-            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema)  |
-            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy ) ,
+            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & angle_ema)  |
+            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy & angle_ema) ,
             1, 0
         )
-        # Add sell signal for CE
-        data['st_sig'] = np.where(
-            cond_bullish_candle_prev & cond_bearish_candle_current
-            & cond_above_ema & cond_distance_from_ema_sell
-            ,  # Added EMA slope condition
-            -1, data['st_sig']
-        )
+
 
     return data[['st_sig']]
 
@@ -755,7 +739,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                         current_price = float(spot_prices1[i])
 
-                        Trade_quantity = int(math.floor(Total_Cash_per_position / current_price))
+                        Trade_quantity =75# int(math.floor(Total_Cash_per_position / current_price))
 
                         Target_Price = current_price+Take_Profit
                         Sprice = current_price-10
@@ -787,7 +771,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                                            Long_Trade_File)
 
                         tele_msg("Long Entry Taken For "+i+" Total Quantity "+str(
-                            Trade_quantity)+" And the Target Price is "+str(Target_Price))
+                            Trade_quantity)+" and the BUY Price is "+str(BuyPrice)+"And the Target Price is "+str(Target_Price))
 
                         # After the new Entry We are Updating The Variables
 
@@ -1231,7 +1215,6 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
         with open("error_log.txt", "a") as error_log_file:
             error_log_file.write(error_message+"\n")
         raise ValueError("I have raised an Exception in main")
-
 
 
 
