@@ -464,7 +464,26 @@ def Short_create_excel_sheet(filename):
 
 Short_create_excel_sheet(Short_Trade_File)
 
+def update_buy_price(ticker, new_buy_price, tradefile):
+    try:
+        # Load the Excel file
+        df = pd.read_excel(tradefile)
+    except Exception as e:
+        print(f"Error reading Excel file: {e}")
+        return
 
+    # Find the row(s) where Symbol matches and Trade Status is OPEN
+    index = df[(df['Symbol'] == ticker) & (df['Trade Status'] == 'OPEN')].index
+
+    if not index.empty:
+        idx = index[0]  # Only update the first open trade
+        df.at[idx, 'Buy Price'] = new_buy_price
+
+        # Save the updated DataFrame
+        df.to_excel(tradefile, index=False)
+        print(f"Buy Price updated for {ticker}")
+    else:
+        print(f"No open trade found for {ticker}")
 # Update Long trade entry
 def update_long_trades(ticker, entry_time, BuyPrice, target_price,Sprice ,qty, tradefile):
     workbook = load_workbook(filename=tradefile)
@@ -665,7 +684,7 @@ if interval > 0:
 data_list = {}
 
 for h in Tickers:
-    print(h)
+
     data_fut = get_cash_market_data(h, '3m')
     data_fut.drop(data_fut.tail(1).index, inplace=True)
 
@@ -852,6 +871,14 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     # Calculate how many steps of 10 points we've moved
                     step_count = int(profit_from_entry // Trail_Step)
                     new_trailing_target = BuyPrice+(step_count * Trail_Step)
+
+                    if profit_from_entry>10 :
+                        BuyPrice=BuyPrice+10
+
+                        update_buy_price(i,BuyPrice,Long_Trade_File)
+                        print(f"Long Entry buy price trail for {BuyPrice}. Open position.")
+                        tele_msg(f"Long Entry buy price trail for {BuyPrice}. Open position.")
+
 
                     # Update the target if price moved significantly
                     if new_trailing_target > Target_Price:
@@ -1218,7 +1245,6 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
         with open("error_log.txt", "a") as error_log_file:
             error_log_file.write(error_message+"\n")
         raise ValueError("I have raised an Exception in main")
-
 
 
 
