@@ -390,7 +390,7 @@ def super_trend(data, period=5, mul=1):
     # Combine all into final signal
     if data['Option_Type'].iloc[0] == 'PE':
         print('PE')
-        print(angle_ema)
+        print(data[data['EMA20_angle'] > 0])
         data['st_sig'] = np.where(
             (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & angle_ema ) |
             (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy & angle_ema )
@@ -401,7 +401,7 @@ def super_trend(data, period=5, mul=1):
 
     if data['Option_Type'].iloc[0] == 'CE':
         print('CE')
-        print(angle_ema)
+        print(data[data['EMA20_angle'] > 0])
         data['st_sig'] = np.where(
             (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & angle_ema)  |
             (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy & angle_ema) ,
