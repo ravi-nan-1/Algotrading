@@ -393,8 +393,8 @@ def super_trend(data, period=5, mul=1):
         print('PE')
         print(data[data['EMA20_angle'] > 0])
         data['st_sig'] = np.where(
-            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & angle_ema ) |
-            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy & angle_ema )
+            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema  ) |
+            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy  )
             ,
             1, 0
         )
@@ -404,8 +404,8 @@ def super_trend(data, period=5, mul=1):
         print('CE')
         print(data[data['EMA20_angle'] > 0])
         data['st_sig'] = np.where(
-            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & angle_ema)  |
-            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy & angle_ema) ,
+            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema)  |
+            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy ) ,
             1, 0
         )
 
