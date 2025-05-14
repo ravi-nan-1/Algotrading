@@ -368,7 +368,8 @@ def super_trend(data, period=5, mul=1):
     cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
     cond_bullish_candle = data['Close'] > data['Open']
     cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
-    cond_bearish_ema_below=(data['Close'].shift(1) < data['EMA'].shift(1))
+    cond_bearish_ema_below=(data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Open'].shift(1) < data['EMA'].shift(1))
+    cond_bearish_ema_Above=(data['Close'].shift(1) > data['EMA'].shift(1))
     Cond_buy= (data['Close']>data['Close'].shift(1)) & (data['Close']>data['EMA'])
     cond_distance_from_ema = (data['EMA']-data['Close']) > 1.5
     #cond_ema_slope_rising = data['EMA_slope']  # New condition: EMA slope is rising
