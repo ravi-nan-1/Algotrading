@@ -875,7 +875,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     if profit_from_entry>10 :
                         BuyPrice=BuyPrice+10
 
-                        update_buy_price(i,Sprice,Long_Trade_File)
+                        update_buy_price(i,BuyPrice,Long_Trade_File)
                         print(f"Long Entry buy price trail for {BuyPrice}. Open position.")
                         tele_msg(f"Long Entry buy price trail for {BuyPrice}. Open position.")
 
