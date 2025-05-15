@@ -179,7 +179,7 @@ export default function App() {
       <table border="1" cellPadding="8" style={{ borderCollapse: 'collapse', width: '100%', marginBottom: 30 }}>
         <thead style={{ background: '#f0f0f0' }}>
           <tr>
-            <th>Symbol</th><th>Entry Time</th><th>Buy Price</th><th>Target</th><th>Status</th>
+            <th>Symbol</th><th>Entry Time</th><th>Buy Price</th><th>SL Price</th><th>Target</th><th>Status</th>
           </tr>
         </thead>
         <tbody>
@@ -188,6 +188,7 @@ export default function App() {
               <td>{trade.Symbol}</td>
               <td>{trade['Entry Time']}</td>
               <td>{trade['Buy Price']}</td>
+              <td>{trade['Sprice']}</td>
               <td>{trade['Target Price']}</td>
               <td>{trade['Trade Status']}</td>
             </tr>
