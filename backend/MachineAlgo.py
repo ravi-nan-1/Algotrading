@@ -66,35 +66,7 @@ instrument_df = instrument_df[(instrument_df.Exch == 'N')]
 
 
 signal_data = []
-def store_signal_data(Open,Close,Low,High, volume, macd, macd_signal, delta, gamma, theta, signal_type,optype,strike):
-    """Store signals with relevant data and save to Excel."""
-    signal_entry = {
-        'timestamp': [dt.datetime.now()],  # ✅ Wrap in a list
-        'OptionType':[optype],
-        'Strike':[strike],
-        'Open': [Open],
-        'Close': [Close],
-        'Low': [Low],
-        'High': [High],
-        'Volume': [volume],
-        'MACD': [macd],
-        'MACD_Signal': [macd_signal],
-        'Delta': [delta],
-        'Gamma': [gamma],
-        'Theta': [theta],
-        'Signal_Type': [signal_type]
-    }
-    df_new = pd.DataFrame(signal_entry)
-    #signal_data.append(signal_entry)
-    df_new = pd.DataFrame(signal_entry)
-    file_path = "signal_data.xlsx"
-    # Convert to DataFrame and save to Excel
-    # Append data to existing Excel file
-    if os.path.exists(file_path):
-        with pd.ExcelWriter(file_path, engine="openpyxl", mode="a", if_sheet_exists="overlay") as writer:
-            df_new.to_excel(writer, index=False, header=False, startrow=writer.sheets['Sheet1'].max_row)
-    else:
-        df_new.to_excel(file_path, index=False)  # Create new file if it doesn't exist
+
 # Getting Script Code
 def scripcode_lookup(instrument=instrument_df, symbol='TCS'):
     ## This function is used to find the instrument token number
@@ -105,198 +77,33 @@ def scripcode_lookup(instrument=instrument_df, symbol='TCS'):
 
 
 
-def opt_exp(ticker):
-    # Filter the relevant data for the given ticker and options
-    dates = instrument_df[
-        (instrument_df.SymbolRoot == ticker) & ((instrument_df.ScripType == 'CE') | (instrument_df.ScripType == 'PE'))]
-
-    # Get the unique expiry dates and convert them to datetime objects
-    dates = dates['Expiry'].unique().tolist()
-
-    dates = [dt.datetime.strptime(date, '%Y-%m-%d') for date in dates]
-
-    # Get today's date
-    today = dt.datetime.today()
-
-    # Sort the dates in ascending order
-    dates.sort()
-
-    # Find the next available date after today (skip today's date)
-    future_dates = [date for date in dates if date > today]
-
-    if future_dates:
-        # Get the next available future date
-        trade = future_dates[0]
-    else:
-        # If no future date is found, return None or handle the fallback
-        return "No future expiry dates available."
-
-    # Return the selected expiry date in the desired format
-    return trade.strftime('%d %b %Y')
 
 
 
-def process_expiry_date(date_str):
-    # Extract the timestamp from the '/Date(...)' format
-    timestamp = int(date_str.split('(')[1].split('+')[0])
-
-    # Convert the timestamp to a datetime object
-    date = dt.datetime.utcfromtimestamp(timestamp / 1000.0)
-
-    # Convert datetime to the required format
-    formatted_date = date.strftime('%d %b %Y')
-
-    return timestamp, formatted_date
 
 
-DELTA = 30
 
-def fetch_option_data(option_string):
-    expiry1 = opt_exp("NIFTY")
-    print(expiry1)
-    parts = option_string.split()
-    ticker = parts[0]  # Extract ticker
-    expiry = f"{parts[1]} {parts[2]} {parts[3]}"  # Extract expiry date
-    opttype = parts[4]  # Extract option type (CE/PE)
-    strike = float(parts[5])  # Extract strike price and convert to float
 
-    target_strike = int(strike)  # Convert strike price to integer
-
-    a = client.get_expiry("N", ticker)
-    expiry_list = pd.DataFrame(a['Expiry'])
-    spot_price = a['lastrate'][0]['LTP']
-
-    # Process expiry dates
-    expiry_list['Timestamp'], expiry_list['Format'] = zip(*expiry_list['ExpiryDate'].apply(process_expiry_date))
-
-    # Get timestamp for target expiry
-    timestamp_row = expiry_list[expiry_list.Format == expiry1]
-    if timestamp_row.empty:
-        print("Error: Expiry date not found")
-        return None
-    timestamp = timestamp_row.Timestamp.values[0]
-
-    # Fetch option chain for the expiry
-    option_chain = client.get_option_chain("N", ticker, timestamp)
-    option_chain = pd.DataFrame(option_chain['Options'])
-
-    # Filter for specified option type (CE or PE) & non-zero last traded price
-    option_chain = option_chain[(option_chain.CPType == opttype) & (option_chain.LastRate != 0)]
-
-    # Filter only for the target strike price
-    option_chain = option_chain[option_chain.StrikeRate == target_strike]
-
-    if option_chain.empty:
-        print("Error: No data for target strike price")
-        return None
-
-    option_chain['SPOT'] = spot_price
-    startTime = dt.datetime.today()
-    date_obj = dt.datetime.strptime(expiry, "%d %b %Y")
-    daysToExpiry = max((date_obj-startTime).days, 1)  # Ensure non-negative days
-
-    # Create DataFrame
-    opt_data = pd.DataFrame()
-    opt_data['SPOT'] = option_chain['SPOT']
-    opt_data['STRIKE'] = option_chain['StrikeRate']
-    opt_data[f'{opttype}_LTP'] = option_chain['LastRate']
-    opt_data['OI'] = option_chain['OpenInterest']
-    opt_data['SYMBOL'] = option_chain['Name']
-    opt_data = opt_data.reset_index(drop=True)
-
-    Delta, Gamma, Theta, IV = [], [], [], []
-
-    # Calculate Implied Volatility, Delta, Gamma, Theta
-    r = 10  # Risk-free rate
-    for i in range(len(opt_data)):
-        c = mb.BS([opt_data['SPOT'][i], opt_data['STRIKE'][i], r, daysToExpiry],
-                  callPrice=opt_data[f'{opttype}_LTP'][i])
-        civ = c.impliedVolatility  # Fetch implied volatility
-        cg = mb.BS([opt_data['SPOT'][i], opt_data['STRIKE'][i], r, daysToExpiry], volatility=civ)
-
-        if opttype == 'CE':
-            Delta.append(cg.callDelta * 100)
-            Theta.append(cg.callTheta)
-        else:
-            Delta.append(cg.putDelta * 100)
-            Theta.append(cg.putTheta)
-
-        Gamma.append(cg.gamma * 100)  # Convert to percentage
-        IV.append(civ)  # Store IV
-
-    # Storing calculated Greeks in DataFrame
-    opt_data[f'{opttype}_Delta'] = Delta
-    opt_data[f'{opttype}_Gamma'] = Gamma
-    opt_data[f'{opttype}_Theta'] = Theta
-    opt_data['Implied_Volatility'] = IV
-
-    # Save to Excel
-    file_name = "MarketData.xlsx"
-    if os.path.exists(file_name):
-        existing_data = pd.read_excel(file_name)  # Load existing data
-        opt_data = pd.concat([existing_data, opt_data], ignore_index=True)  # Append new data
-    else:
-        print("Creating new MarketData.xlsx file")
-
-    return opt_data
 
 
 def get_cash_market_data(symbol, timeframe):
     scriptcode = scripcode_lookup(instrument_df, symbol)
     sym=symbol
-    print(scriptcode)
+    
     parts = symbol.split()
     ticker = parts[0]  # Extract ticker
     expiry = f"{parts[1]} {parts[2]} {parts[3]}"  # Extract expiry date
     opttype = parts[4]  # Extract option type (CE/PE)
     strike = float(parts[5])  # Extract strike price and convert to float
-    print(strike)
+    
     df = pd.DataFrame(client.historical_data(Exch='N', ExchangeSegment='D', ScripCode=scriptcode, time=timeframe,
                                              From=dt.date.today()-dt.timedelta(2), To=dt.date.today()))
-    print(df)
+    
     df.set_index("Datetime", inplace=True)
     df["Option_Type"] = opttype
     df["Strike_Price"] = strike
 
-    option_data = fetch_option_data(symbol)
-    print(option_data.columns)
-    if opttype == 'CE':
-        df["delta"] = option_data['CE_Delta'].iloc[0]
-        df["gamma"] = option_data['CE_Gamma'].iloc[0]
-        df["theta"] = option_data['CE_Theta'].iloc[0]
-        df["Spot"] = option_data['SPOT'].iloc[0]
-        df["OI"] = option_data['OI'].iloc[0]
-
-    else:
-        df["delta"] = option_data['PE_Delta'].iloc[0]
-        df["gamma"] = option_data['PE_Gamma'].iloc[0]
-        df["theta"] = option_data['PE_Theta'].iloc[0]
-        df["Spot"] = option_data['SPOT'].iloc[0]
-        df["OI"] = option_data['OI'].iloc[0]
-
-
-    if opttype == 'CE':
-
-        file_name = 'SuperTrend_Long_Trades.xlsx'
-
-        if os.path.exists(file_name):
-            existing_data = pd.read_excel(file_name)  # Load existing data
-            df_c = pd.concat([existing_data, df], ignore_index=True)  # Append new data
-        else:
-            print("Creating new SuperTrend_Long_Trades.xlsx file")
-
-    else:
-
-        file_name = 'SuperTrend_Short_Trades.xlsx'
-
-        # saving the excel
-        #df.to_excel(file_name)
-        #print('DataFrame is written to Excel File successfully.')
-        if os.path.exists(file_name):
-            existing_data = pd.read_excel(file_name)  # Load existing data
-            df_p = pd.concat([existing_data, df], ignore_index=True)  # Append new data
-        else:
-            print("Creating new SuperTrend_Short_Trades.xlsx file")
+    
 
     print(df)
     return df
@@ -304,40 +111,7 @@ def get_cash_market_data(symbol, timeframe):
 
 
 
-def score_signal(row, lookback_data):
-    score = 0
-    total_points = 10  # Max score
 
-    # MACD strength
-    if row['macd'] > row['macd_signal'] and (row['macd'] - row['macd_signal']) > 0.3:
-        score += 2
-
-    # Delta average over last 5 candles
-    if lookback_data['delta'].mean() > 0.25:
-        score += 2
-
-    # Gamma positive trend
-    if (lookback_data['gamma'] > 0).sum() >= 3:
-        score += 1.5
-
-    # Theta decay not too fast
-    if lookback_data['theta'].mean() > -10:
-        score += 1
-
-    # Volume spike (current > avg)
-    if row['Volume'] > lookback_data['Volume'].mean():
-        score += 1.5
-
-    # OI increasing trend
-    oi_changes = lookback_data['OI'].diff()
-    if (oi_changes > 0).sum() >= 3:
-        score += 1.5
-
-    # Bonus for ATM or ITM (less than 100pt from spot)
-    if abs(row['Strike_Price'] - row['Close']) < 100:
-        score += 0.5
-
-    return score, total_points
 
 
 def super_trend(data, period=5, mul=1):
@@ -390,8 +164,7 @@ def super_trend(data, period=5, mul=1):
 
     # Combine all into final signal
     if data['Option_Type'].iloc[0] == 'PE':
-        print('PE')
-        print(data[data['EMA20_angle'] > 0])
+        
         data['st_sig'] = np.where(
             (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema  ) |
             (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy  )
@@ -401,8 +174,7 @@ def super_trend(data, period=5, mul=1):
 
 
     if data['Option_Type'].iloc[0] == 'CE':
-        print('CE')
-        print(data[data['EMA20_angle'] > 0])
+        
         data['st_sig'] = np.where(
             (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema)  |
             (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy ) ,
@@ -874,7 +646,6 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                     if profit_from_entry>10 :
                         BuyPrice=BuyPrice+10
-
                         update_buy_price(i,BuyPrice,Long_Trade_File)
                         print(f"Long Entry buy price trail for {BuyPrice}. Open position.")
                         tele_msg(f"Long Entry buy price trail for {BuyPrice}. Open position.")
@@ -884,6 +655,8 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     if new_trailing_target > Target_Price:
                         Long_Open_Position.loc[Long_Open_Position['Symbol'] == i, 'Target Price'] = new_trailing_target
                         print(f"Updated Trailing Target for {i}: {new_trailing_target}")
+                        tele_msg(f"Updated Trailing Target for {i}: {new_trailing_target}")
+                        update_buy_price(i, BuyPrice+10, Long_Trade_File)
                         continue  # Do not close trade yet; wait for next iteration
 
                     # Exit condition: current price exceeds latest target
