@@ -89,21 +89,21 @@ def scripcode_lookup(instrument=instrument_df, symbol='TCS'):
 def get_cash_market_data(symbol, timeframe):
     scriptcode = scripcode_lookup(instrument_df, symbol)
     sym=symbol
-    
+
     parts = symbol.split()
     ticker = parts[0]  # Extract ticker
     expiry = f"{parts[1]} {parts[2]} {parts[3]}"  # Extract expiry date
     opttype = parts[4]  # Extract option type (CE/PE)
     strike = float(parts[5])  # Extract strike price and convert to float
-    
+
     df = pd.DataFrame(client.historical_data(Exch='N', ExchangeSegment='D', ScripCode=scriptcode, time=timeframe,
                                              From=dt.date.today()-dt.timedelta(2), To=dt.date.today()))
-    
+
     df.set_index("Datetime", inplace=True)
     df["Option_Type"] = opttype
     df["Strike_Price"] = strike
 
-    
+
 
     print(df)
     return df
@@ -131,6 +131,7 @@ def super_trend(data, period=5, mul=1):
 
     data['EMA'] = ta.ema(data['Close'], length=ema_period)
     data['EMA20'] = ta.ema(data['Close'], length=20)
+    data['EMA3'] = ta.ema(data['Close'], length=3)
     data['EMA50'] = ta.ema(data['Close'], length=50)
     data['box_high'] = data['High'].rolling(window=box_window).max()
     data['box_low'] = data['Low'].rolling(window=box_window).min()
@@ -147,6 +148,7 @@ def super_trend(data, period=5, mul=1):
     Cond_buy= (data['Close']>data['Close'].shift(1)) & (data['Close']>data['EMA'])
     cond_distance_from_ema = (data['EMA']-data['Close']) > 1.5
     #cond_ema_slope_rising = data['EMA_slope']  # New condition: EMA slope is rising
+    ema_Above = (data['EMA3'] > data['EMA3'].shift(1))
 
     data['EMA20_slope'] = data['EMA20']-data['EMA20'].shift(1)
 
@@ -164,17 +166,17 @@ def super_trend(data, period=5, mul=1):
 
     # Combine all into final signal
     if data['Option_Type'].iloc[0] == 'PE':
-        
+
         data['st_sig'] = np.where(
-            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema  ) |
-            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy  )
+            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema   ) |
+            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy   )
             ,
             1, 0
         )
 
 
     if data['Option_Type'].iloc[0] == 'CE':
-        
+
         data['st_sig'] = np.where(
             (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema)  |
             (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy ) ,
@@ -491,6 +493,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
             send_to_ui(i, spot_prices1[i])
             time.sleep(0.5)
 
+
             if is_required_time():
                 data_fut = get_cash_market_data(i, '3m')
                 data_fut.drop(data_fut.tail(1).index, inplace=True)
@@ -506,6 +509,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                 # Checking For SuperTrend Long
                 # Checking For SuperTrend Long
+                trail_sl=0
                 if data_list[i]['st_sig'][-1] == 1:
 
 
@@ -530,6 +534,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                     # Take the Long Trade
                     else:
+                        trail_sl = 0
 
                         current_price = float(spot_prices1[i])
 
@@ -644,11 +649,12 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     step_count = int(profit_from_entry // Trail_Step)
                     new_trailing_target = BuyPrice+(step_count * Trail_Step)
 
-                    if profit_from_entry>10 :
+                    if profit_from_entry>10 & trail_sl==0 :
                         BuyPrice=BuyPrice+10
                         update_buy_price(i,BuyPrice,Long_Trade_File)
                         print(f"Long Entry buy price trail for {BuyPrice}. Open position.")
                         tele_msg(f"Long Entry buy price trail for {BuyPrice}. Open position.")
+                        trail_sl=1
 
 
                     # Update the target if price moved significantly
@@ -660,7 +666,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         continue  # Do not close trade yet; wait for next iteration
 
                     # Exit condition: current price exceeds latest target
-                    if current_price >= Target_Price:
+                    if float(spot_prices1[i]) >= float(Target_Price):
                         print(f"Long Entry Target Hit for {i}. Closing position.")
                         # --- Exit logic as in your existing code ---
                         Exit_Time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
@@ -687,7 +693,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     print(S_Price)
 
                     # Check if current price exceeds target price
-                    if spot_prices1[i] < S_Price:
+                    if float(spot_prices1[i]) <= float(S_Price):
                         print(f"Long Entry SL Hit for {i}. Closing position.")
 
                         # Fetch trade details
