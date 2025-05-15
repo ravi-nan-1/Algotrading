@@ -477,7 +477,7 @@ def update_buy_price(ticker, new_buy_price, tradefile):
 
     if not index.empty:
         idx = index[0]  # Only update the first open trade
-        df.at[idx, 'Buy Price'] = new_buy_price
+        df.at[idx, 'Sprice'] = new_buy_price
 
         # Save the updated DataFrame
         df.to_excel(tradefile, index=False)
@@ -875,7 +875,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     if profit_from_entry>10 :
                         BuyPrice=BuyPrice+10
 
-                        update_buy_price(i,BuyPrice,Long_Trade_File)
+                        update_buy_price(i,Sprice,Long_Trade_File)
                         print(f"Long Entry buy price trail for {BuyPrice}. Open position.")
                         tele_msg(f"Long Entry buy price trail for {BuyPrice}. Open position.")
 
