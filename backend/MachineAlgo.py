@@ -33,7 +33,7 @@ START_TIME = [9, 16, 0]  # Algo Start Time
 EXIT_TIME = [23, 30, 0]  # Algo End Time
 
 Total_Cash = 10000
-Max_Position = 1
+Max_Position = 2
 Total_Cash_per_position = int(Total_Cash / Max_Position)
 
 Take_Profit = 20
