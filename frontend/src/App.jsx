@@ -22,17 +22,80 @@ export default function App() {
     setStatus(res.data.algo_status);
   };
 
-  const fetchTrades = async () => {
+  function parseCustomDate(dateStr) {
+    // dateStr example: "16-May-2025 10:45AM"
+  
+    // Split date and time parts
+    const [datePart, timePart] = dateStr.split(' ');
+  
+    // Parse date part: "16-May-2025"
+    const [day, monthStr, year] = datePart.split('-');
+  
+    // Convert month short name to month number
+    const months = {
+      Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
+      Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11
+    };
+  
+    const month = months[monthStr];
+    if (month === undefined) return null;
+  
+    // Parse time part: "10:45AM"
+    const timeRegex = /(\d{1,2}):(\d{2})(AM|PM)/;
+    const match = timePart.match(timeRegex);
+    if (!match) return null;
+  
+    let hour = parseInt(match[1], 10);
+    const minute = parseInt(match[2], 10);
+    const meridian = match[3];
+  
+    if (meridian === 'PM' && hour !== 12) hour += 12;
+    if (meridian === 'AM' && hour === 12) hour = 0;
+  
+    // Create date object
+    return new Date(year, month, parseInt(day, 10), hour, minute);
+  }
+  
+
+  const fetchTrades1 = async () => {
     const res = await axios.get(`${API_URL}/trades`);
-    const today = new Date().toISOString().split('T')[0];
+    const now = new Date();
+    const day = String(now.getDate()).padStart(2, '0');
+    const month = now.toLocaleString('en-US', { month: 'short' });
+    const year = now.getFullYear();
+    const formatted = `${day}-${month}-${year}`;
+    const today = `${day}-${month}-${year}`;
     const filtered = res.data.filter(trade => {
-      const exitTime = trade["Exit Time"];
+      const exitTime = trade["Entry Time"];
       if (!exitTime) return false;
-      const tradeDate = new Date(exitTime).toISOString().split('T')[0];
+      const tradeDate = `${day}-${month}-${year}`;//new Date(exitTime).toISOString().split('T')[0];
       return tradeDate === today;
     });
     setTrades(filtered);
   };
+
+
+  const fetchTrades = async () => {
+    const res = await axios.get(`${API_URL}/trades`);
+  
+    const now = new Date();
+    const todayISO = now.toISOString().split('T')[0]; // "YYYY-MM-DD"
+  
+    const filtered = res.data.filter(trade => {
+      const entryTimeStr = trade["Entry Time"];
+      if (!entryTimeStr) return false;
+  
+      const tradeDateObj = parseCustomDate(entryTimeStr);
+      if (!tradeDateObj) return false;
+  
+      const tradeISODate = tradeDateObj.toISOString().split('T')[0];
+  
+      return tradeISODate === todayISO;
+    });
+  
+    setTrades(filtered);
+  };
+
 
   const fetchOpenTrades = async () => {
     const res = await axios.get(`${API_URL}/open-trades`);
