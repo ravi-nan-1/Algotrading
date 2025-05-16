@@ -236,8 +236,7 @@ scheduler.start()
 
 
 
-scheduler.add_job(run_algo_process, 'cron', hour=20, minute=16)
-scheduler.start()
+
 
 
 @app.post("/algo/stop")
