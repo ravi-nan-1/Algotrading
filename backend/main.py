@@ -12,6 +12,8 @@ from typing import List
 import httpx
 from fastapi import FastAPI
 
+from apscheduler.schedulers.background import BackgroundScheduler
+
 # Initialize the FastAPI app
 app = FastAPI()
 
@@ -39,6 +41,9 @@ algo_running = False
 TICKERS_FILE = "tickers.json"
 spot_prices = {}
 
+
+scheduler = BackgroundScheduler()
+
 # 🧾 Model for incoming request
 class TickerUpdate(BaseModel):
     tickers: List[str]
@@ -49,6 +54,17 @@ def load_tickers():
         return []
     with open(TICKERS_FILE, "r") as f:
         return json.load(f)
+
+
+
+def run_algo_process():
+    global algo_process, algo_running
+    if not algo_running:
+        algo_process = subprocess.Popen([sys.executable, "MachineAlgo.py"])
+        algo_running = True
+        print(f"✅ Algo started automatically at {dt.datetime.now()}")
+    else:
+        print("⚠️ Algo already running.")
 
 # 💾 Save tickers to file
 def save_tickers(tickers):
@@ -193,6 +209,13 @@ def start_algo(background_tasks: BackgroundTasks):
         algo_running = True
         return {"status": "started"}
     return {"status": "already running"}
+
+
+
+
+scheduler.add_job(run_algo_process, 'cron', hour=20, minute=16)
+scheduler.start()
+
 
 @app.post("/algo/stop")
 def stop_algo():
