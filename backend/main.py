@@ -14,6 +14,8 @@ from fastapi import FastAPI
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from apscheduler.schedulers.background import BackgroundScheduler
+
 # Initialize the FastAPI app
 app = FastAPI()
 
@@ -44,6 +46,9 @@ spot_prices = {}
 
 scheduler = BackgroundScheduler()
 
+
+scheduler = BackgroundScheduler()
+
 # 🧾 Model for incoming request
 class TickerUpdate(BaseModel):
     tickers: List[str]
@@ -54,6 +59,17 @@ def load_tickers():
         return []
     with open(TICKERS_FILE, "r") as f:
         return json.load(f)
+
+
+
+def run_algo_process():
+    global algo_process, algo_running
+    if not algo_running:
+        algo_process = subprocess.Popen([sys.executable, "MachineAlgo.py"])
+        algo_running = True
+        print(f"✅ Algo started automatically at {dt.datetime.now()}")
+    else:
+        print("⚠️ Algo already running.")
 
 
 
@@ -214,6 +230,13 @@ def start_algo(background_tasks: BackgroundTasks):
 
 
 scheduler.add_job(run_algo_process, 'cron', hour=9, minute=16)
+scheduler.start()
+
+
+
+
+
+scheduler.add_job(run_algo_process, 'cron', hour=20, minute=16)
 scheduler.start()
 
 
