@@ -534,7 +534,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                     # Take the Long Trade
                     else:
-                        trail_sl = 0
+                        
 
                         current_price = float(spot_prices1[i])
 
@@ -649,12 +649,13 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     step_count = int(profit_from_entry // Trail_Step)
                     new_trailing_target = BuyPrice+(step_count * Trail_Step)
 
-                    if profit_from_entry>10 & trail_sl==0 :
+                    if profit_from_entry>10 :
+                        
                         BuyPrice=BuyPrice+10
                         update_buy_price(i,BuyPrice,Long_Trade_File)
                         print(f"Long Entry buy price trail for {BuyPrice}. Open position.")
-                        tele_msg(f"Long Entry buy price trail for {BuyPrice}. Open position.")
-                        trail_sl=1
+                        tele_msg(f"Long Entry buy price trail for {BuyPrice}.{profit_from_entry},{current_price},{current_price-BuyPrice} Open position.")
+                        
 
 
                     # Update the target if price moved significantly
