@@ -213,11 +213,7 @@ def start_algo(background_tasks: BackgroundTasks):
 
 
 
-<<<<<<< HEAD
-scheduler.add_job(run_algo_process, 'cron', hour=20, minute=16)
-=======
 scheduler.add_job(run_algo_process, 'cron', hour=9, minute=16)
->>>>>>> 6af187c4c604af4e9f5d6a31b00beb431346ad75
 scheduler.start()
 
 
