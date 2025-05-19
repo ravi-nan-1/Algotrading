@@ -119,15 +119,12 @@ def super_trend(data, period=5, mul=1):
     import numpy as np
 
     # Indicator parameters
-    fast, slow, signal = 5, 9, 9
+    
     ema_period = 5
     box_window = 5
 
     # === Indicators ===
-    macd = ta.macd(data['Close'], fast=fast, slow=slow, signal=signal)
-    data['macd'] = macd['MACD_5_9_9']
-    data['macd_signal'] = macd['MACDs_5_9_9']
-    data['macd_rising'] = (data['macd']-data['macd_signal']) > 0.4
+   
 
     data['EMA'] = ta.ema(data['Close'], length=ema_period)
     data['EMA20'] = ta.ema(data['Close'], length=20)
