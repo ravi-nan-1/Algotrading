@@ -119,13 +119,10 @@ def super_trend(data, period=5, mul=1):
     import numpy as np
 
     # Indicator parameters
-    
     ema_period = 5
     box_window = 5
 
     # === Indicators ===
-   
-    cond_ema_start_rising = (data['ema_slope'] > 0) & (data['ema_slope'].shift(1) <= 0)
     data['EMA'] = ta.ema(data['Close'], length=ema_period)
     data['EMA20'] = ta.ema(data['Close'], length=20)
     data['EMA3'] = ta.ema(data['Close'], length=3)
@@ -133,53 +130,43 @@ def super_trend(data, period=5, mul=1):
     data['box_high'] = data['High'].rolling(window=box_window).max()
     data['box_low'] = data['Low'].rolling(window=box_window).min()
 
-    # Calculate EMA slope (current EMA > previous EMA means slope is rising)
-    #data['EMA_slope'] = data['EMA'] > data['EMA'].shift(1)
+    # EMA slope and rising detection
+    data['ema_slope'] = data['EMA3'].diff()
+    data['cond_ema_start_rising'] = (data['ema_slope'] > 0) & (data['ema_slope'].shift(1) <= 0)
 
-    # === Bullish Reversal Condition ===
+    # === Bullish Reversal Conditions ===
     cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
     cond_bullish_candle = data['Close'] > data['Open']
     cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
-    cond_bearish_ema_below=(data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Open'].shift(1) < data['EMA'].shift(1))
-    cond_bearish_ema_Above=(data['Close'].shift(1) > data['EMA'].shift(1))
-    Cond_buy= (data['Close']>data['Close'].shift(1)) & (data['Close']>data['EMA'])
-    cond_distance_from_ema = (data['EMA']-data['Close']) > 1.5
-    #cond_ema_slope_rising = data['EMA_slope']  # New condition: EMA slope is rising
-    ema_Above = (data['EMA3'] > data['EMA3'].shift(1))
+    cond_bearish_ema_below = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Open'].shift(1) < data['EMA'].shift(1))
+    cond_bearish_ema_above = (data['Close'].shift(1) > data['EMA'].shift(1))
+    cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
+    cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
+    emadiffs = ((data['EMA20'] - data['EMA']) > 5) | ((data['EMA20'] - data['EMA']) < -5)
 
-    Emadiffs = ((data['EMA20'] - data['EMA']) > 5) | ((data['EMA20'] - data['EMA']) < -5)
-
-    # Optional: Convert slope to angle (degrees) for better interpretation
-
-    
-
-    # === Bearish Reversal Condition (for sell signals) ===
-    cond_bullish_candle_prev = data['Close'].shift(1) > data['Open'].shift(1)
-    cond_bearish_candle_current = data['Close'] < data['Open']
-    cond_above_ema = (data['Close'].shift(1) > data['EMA'].shift(1)) & (data['Close'] > data['EMA'])
-    cond_distance_from_ema_sell = (data['Close']-data['EMA']) > 1.5
-   
-    #EMA_diff =data['EMA20']-data['EMA20'].shift(1)   # New condition: EMA slope is falling
-
-    # Combine all into final signal
+    # === Signal Logic for PE ===
     if data['Option_Type'].iloc[0] == 'PE':
-
-        data['st_sig'] = np.where(
-            ((cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & Emadiffs   ) |
-            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy & Emadiffs  ) & cond_ema_start_rising)
-            ,
-            1, 0
+        data['entry_setup'] = (
+            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & emadiffs) |
+            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy & emadiffs)
         )
 
+        data['st_sig'] = 0
+        for i in range(1, len(data)):
+            if data.at[i - 1, 'entry_setup'] and data.at[i, 'cond_ema_start_rising']:
+                data.at[i, 'st_sig'] = 1
 
-    if data['Option_Type'].iloc[0] == 'CE':
-
-        data['st_sig'] = np.where(
-            ((cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & Emadiffs) | 
-            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy & Emadiffs )) & cond_ema_start_rising ,
-            1, 0
+    # === Signal Logic for CE ===
+    elif data['Option_Type'].iloc[0] == 'CE':
+        data['entry_setup'] = (
+            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & emadiffs) |
+            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy & emadiffs)
         )
 
+        data['st_sig'] = 0
+        for i in range(1, len(data)):
+            if data.at[i - 1, 'entry_setup'] and data.at[i, 'cond_ema_start_rising']:
+                data.at[i, 'st_sig'] = 1
 
     return data[['st_sig']]
 
