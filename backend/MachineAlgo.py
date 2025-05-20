@@ -151,14 +151,14 @@ def super_trend(data, period=5, mul=1):
 
     # Optional: Convert slope to angle (degrees) for better interpretation
 
-    data['EMA20_angle'] = np.rad2deg(np.arctan(data['EMA20_slope']))
+    
 
     # === Bearish Reversal Condition (for sell signals) ===
     cond_bullish_candle_prev = data['Close'].shift(1) > data['Open'].shift(1)
     cond_bearish_candle_current = data['Close'] < data['Open']
     cond_above_ema = (data['Close'].shift(1) > data['EMA'].shift(1)) & (data['Close'] > data['EMA'])
     cond_distance_from_ema_sell = (data['Close']-data['EMA']) > 1.5
-    angle_ema=data['EMA20_angle']>0
+   
     #EMA_diff =data['EMA20']-data['EMA20'].shift(1)   # New condition: EMA slope is falling
 
     # Combine all into final signal
