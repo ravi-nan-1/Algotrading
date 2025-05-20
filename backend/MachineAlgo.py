@@ -147,7 +147,7 @@ def super_trend(data, period=5, mul=1):
     #cond_ema_slope_rising = data['EMA_slope']  # New condition: EMA slope is rising
     ema_Above = (data['EMA3'] > data['EMA3'].shift(1))
 
-    Emadiffs = (data['EMA20']-data['EMA50'])>5
+    Emadiffs = ((data['EMA20'] - data['EMA']) > 5) | ((data['EMA20'] - data['EMA']) < -5)
 
     # Optional: Convert slope to angle (degrees) for better interpretation
 
