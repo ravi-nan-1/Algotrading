@@ -147,7 +147,7 @@ def super_trend(data, period=5, mul=1):
     #cond_ema_slope_rising = data['EMA_slope']  # New condition: EMA slope is rising
     ema_Above = (data['EMA3'] > data['EMA3'].shift(1))
 
-    Emadiffs = data['EMA20']-data['EMA50']>5
+    Emadiffs = (data['EMA20']-data['EMA50'])>5
 
     # Optional: Convert slope to angle (degrees) for better interpretation
 
@@ -165,8 +165,8 @@ def super_trend(data, period=5, mul=1):
     if data['Option_Type'].iloc[0] == 'PE':
 
         data['st_sig'] = np.where(
-            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema   ) |
-            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy   )
+            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & Emadiffs   ) |
+            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy & Emadiffs  )
             ,
             1, 0
         )
@@ -175,8 +175,8 @@ def super_trend(data, period=5, mul=1):
     if data['Option_Type'].iloc[0] == 'CE':
 
         data['st_sig'] = np.where(
-            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema) | 
-            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy ) ,
+            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & Emadiffs) | 
+            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy & Emadiffs ) ,
             1, 0
         )
 
