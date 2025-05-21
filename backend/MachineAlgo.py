@@ -110,54 +110,70 @@ def get_cash_market_data(symbol, timeframe):
 
 
 
-
-
-
-
 def super_trend(data, period=5, mul=1):
     import pandas_ta as ta
     import numpy as np
 
-    # Indicator parameters
-    ema_period = 5
+    # === Parameters ===
+    ema_short = 3
+    ema_mid = 5
+    ema_long = 20
+    ema_trend = 50
     box_window = 5
 
     # === Indicators ===
-    data['EMA'] = ta.ema(data['Close'], length=ema_period)
-    data['EMA20'] = ta.ema(data['Close'], length=20)
-    data['EMA3'] = ta.ema(data['Close'], length=3)
-    data['EMA50'] = ta.ema(data['Close'], length=50)
+    data['EMA3'] = ta.ema(data['Close'], length=ema_short)
+    data['EMA'] = ta.ema(data['Close'], length=ema_mid)
+    data['EMA20'] = ta.ema(data['Close'], length=ema_long)
+    data['EMA50'] = ta.ema(data['Close'], length=ema_trend)
     data['box_high'] = data['High'].rolling(window=box_window).max()
     data['box_low'] = data['Low'].rolling(window=box_window).min()
-    data['ema_slope'] = data['EMA3'].diff()
-
-    cond_ema_start_rising = (data['ema_slope'] > 0) & (data['ema_slope'].shift(1) <= 0)
-    cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
-    cond_bullish_candle = data['Close'] > data['Open']
-    cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
-    cond_bearish_ema_below = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Open'].shift(1) < data['EMA'].shift(1))
-    cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
-    Cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
-    Emadiffs = ((data['EMA20'] - data['EMA']) > 5) | ((data['EMA20'] - data['EMA']) < -5)
-
-    # === Signal Generation ===
     data['ema_slope'] = data['EMA'].diff()
-    data['cond_ema_start_rising'] = (data['ema_slope'] > 0) & (data['ema_slope'].shift(1) <= 0)
+    data['atr'] = ta.atr(data['High'], data['Low'], data['Close'], length=period)
 
+    # === Core Conditions ===
+    cond_bearish_prev = data['Close'].shift(1) < data['Open'].shift(1)
+    cond_bullish_now = data['Close'] > data['Open']
+    cond_price_below_ema_prev = data['Close'].shift(1) < data['EMA'].shift(1)
+    cond_price_below_ema_now = data['Close'] < data['EMA']
+    cond_bearish_ema_below = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Open'].shift(1) < data['EMA'].shift(1))
+    cond_body_strength = (data['Close'] - data['Open']) > (0.5 * data['atr'])  # strong bullish candle
+    cond_ema_alignment = (data['EMA3'] > data['EMA']) & (data['EMA'] > data['EMA20'])  # upward trend confirmation
+    cond_distance_from_ema = (data['EMA'] - data['Close']) > (0.3 * data['atr'])  # pullback distance
+    cond_volatility = data['atr'] > data['atr'].rolling(window=10).mean()
+    cond_trend_strength = abs(data['EMA20'] - data['EMA']) > (0.3 * data['atr'])
+
+    # === New Filters to Avoid Weak Reversals ===
+    cond_green_above_ema_or_close_to = (
+        (data['Close'] >= data['EMA']) |
+        ((data['EMA'] - data['Close']) < 0.2 * data['atr'])
+    )
+    cond_short_term_trend_ok = (data['EMA3'] >= data['EMA']) | (data['ema_slope'] >= 0)
+
+    # === Entry Setup ===
     data['entry_setup'] = (
-        (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & Emadiffs) |
-        (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy & Emadiffs)
+        cond_bearish_prev &
+        cond_bullish_now &
+        cond_price_below_ema_prev &
+        cond_distance_from_ema &
+        cond_body_strength &
+        cond_trend_strength &
+        cond_volatility &
+        cond_ema_alignment &
+        cond_green_above_ema_or_close_to &
+        cond_short_term_trend_ok
     )
 
+    # === Signal Column ===
     data['st_sig'] = 0
-
-    # === Buy Signal Logic ===
     if data['Option_Type'].iloc[0] in ['PE', 'CE']:
-        for i in range(1, len(data)):
-            if data.iloc[i - 1]['entry_setup'] and data.iloc[i]['cond_ema_start_rising']:
-                data.at[data.index[i], 'st_sig'] = 1
+        data.loc[data['entry_setup'], 'st_sig'] = 1
 
     return data[['st_sig']]
+
+
+
+
 
 
 
