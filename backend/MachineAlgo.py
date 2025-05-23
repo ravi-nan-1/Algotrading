@@ -120,6 +120,14 @@ def super_trend(data, period=5, mul=1):
     box_window = 5
 
     # === Indicators ===
+
+    data['EMA'] = data['Close'].ewm(span=9, adjust=False).mean()
+    data['EMA3'] = data['Close'].ewm(span=3, adjust=False).mean()
+
+    # EMA slope over last 3 candles
+    data['EMA_slope'] = (data['EMA'] - data['EMA'].shift(3)) / 3  # slope per candle
+    ema_rising = data['EMA_slope'] > 0  #
+    
     macd = ta.macd(data['Close'], fast=fast, slow=slow, signal=signal)
     data['macd'] = macd['MACD_5_9_9']
     data['macd_signal'] = macd['MACDs_5_9_9']
@@ -149,9 +157,9 @@ def super_trend(data, period=5, mul=1):
     # Final SuperTrend-like Buy Signal
     data['st_sig'] = np.where(
         (
-            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema
+            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & ema_rising
         ) | (
-            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy
+            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy & ema_rising
         ),
         1,
         0
