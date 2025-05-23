@@ -642,7 +642,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         Long_Open_Position.loc[Long_Open_Position['Symbol'] == i, 'Target Price'] = new_trailing_target
                         print(f"Updated Trailing Target for {i}: {new_trailing_target}")
                         tele_msg(f"Updated Trailing Target for {i}: {new_trailing_target}")
-                        update_buy_price(i, BuyPrice+10, Long_Trade_File)
+                        update_buy_price(i, new_trailing_target, Long_Trade_File)
                         continue  # Do not close trade yet; wait for next iteration
 
                     # Exit condition: current price exceeds latest target
