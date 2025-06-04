@@ -122,9 +122,9 @@ def is_strong_bullish_candle(row):
 
     return (
         row['Close'] > row['Open'] and
-        body_ratio > 0.6 and
-        upper_wick / total_range < 0.2 and
-        lower_wick / total_range < 0.2
+        body_ratio > 0.45 and
+        upper_wick / total_range < 0.1 and
+        lower_wick / total_range < 0.1
     )
 
 
