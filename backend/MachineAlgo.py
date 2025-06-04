@@ -108,6 +108,26 @@ def get_cash_market_data(symbol, timeframe):
     print(df)
     return df
 
+def is_strong_bullish_candle(row):
+    body = row['Close'] - row['Open']
+    total_range = row['High'] - row['Low']
+    upper_wick = row['High'] - row['Close']
+    lower_wick = row['Open'] - row['Low']
+
+    # Prevent divide-by-zero
+    if total_range == 0:
+        return False
+
+    body_ratio = body / total_range
+
+    return (
+        row['Close'] > row['Open'] and
+        body_ratio > 0.6 and
+        upper_wick / total_range < 0.2 and
+        lower_wick / total_range < 0.2
+    )
+
+
 
 
 def super_trend(data, period=5, mul=1):
@@ -153,13 +173,14 @@ def super_trend(data, period=5, mul=1):
     cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
     cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
     ema3_rising = data['EMA3'] > data['EMA3'].shift(1)
+    data['strong_bullish'] = data.apply(is_strong_bullish_candle, axis=1)
 
     # Final SuperTrend-like Buy Signal
     data['st_sig'] = np.where(
         (
-            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & ema_rising
+            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & ema_rising & data['strong_bullish']
         ) | (
-            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy & ema_rising
+            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy & ema_rising & data['strong_bullish']
         ),
         1,
         0
