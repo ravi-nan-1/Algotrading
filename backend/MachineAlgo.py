@@ -18,7 +18,9 @@ import threading
 import pytz
 import joblib
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
+import joblib
 UTC = pytz.timezone('Asia/Kolkata')
 import time
 
@@ -33,7 +35,7 @@ START_TIME = [9, 16, 0]  # Algo Start Time
 EXIT_TIME = [23, 30, 0]  # Algo End Time
 
 Total_Cash = 10000
-Max_Position = 2
+Max_Position = 1
 Total_Cash_per_position = int(Total_Cash / Max_Position)
 
 Take_Profit = 20
@@ -102,11 +104,13 @@ def get_cash_market_data(symbol, timeframe):
     df.set_index("Datetime", inplace=True)
     df["Option_Type"] = opttype
     df["Strike_Price"] = strike
-    
+
 
 
     print(df)
     return df
+
+
 
 
 
@@ -122,14 +126,6 @@ def super_trend(data, period=5, mul=1):
     box_window = 5
 
     # === Indicators ===
-
-    data['EMA'] = data['Close'].ewm(span=9, adjust=False).mean()
-    data['EMA3'] = data['Close'].ewm(span=3, adjust=False).mean()
-
-    # EMA slope over last 3 candles
-    data['EMA_slope'] = (data['EMA'] - data['EMA'].shift(3)) / 3  # slope per candle
-    ema_rising = data['EMA_slope'] > 0  #
-    
     macd = ta.macd(data['Close'], fast=fast, slow=slow, signal=signal)
     data['macd'] = macd['MACD_5_9_9']
     data['macd_signal'] = macd['MACDs_5_9_9']
@@ -155,24 +151,19 @@ def super_trend(data, period=5, mul=1):
     cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
     cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
     ema3_rising = data['EMA3'] > data['EMA3'].shift(1)
-    
 
     # Final SuperTrend-like Buy Signal
     data['st_sig'] = np.where(
         (
-            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & ema_rising 
+            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema
         ) | (
-            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy & ema_rising 
+            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy
         ),
         1,
         0
     )
 
     return data[['st_sig']]
-
-
-
-
 
 
 
@@ -523,7 +514,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                     # Take the Long Trade
                     else:
-                        
+                        trail_sl = 0
 
                         current_price = float(spot_prices1[i])
 
@@ -550,8 +541,8 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         # position_df = pd.DataFrame(client.positions())
 
                         # BuyPrice = position_df[position_df.ScripName==i].BuyAvgRate.values[0]
-                        utc_now = dt.datetime.utcnow()
-                        entry_time = utc_now.strftime("%d-%b-%Y %I:%M%p")
+
+                        entry_time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
 
                         BuyPrice = current_price
 
@@ -583,8 +574,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                         Trade_quantity = 75  # int(trade_row['Qty'].values[0])
 
-                        utc_now = dt.datetime.utcnow()
-                        Exit_Time = utc_now.strftime("%d-%b-%Y %I:%M%p")
+                        Exit_Time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
 
                         # For Real Money
 
@@ -639,13 +629,12 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     step_count = int(profit_from_entry // Trail_Step)
                     new_trailing_target = BuyPrice+(step_count * Trail_Step)
 
-                    if profit_from_entry>10 :
-                        
-                        #BuyPrice=BuyPrice+10
+                    if profit_from_entry>10:
+                        BuyPrice=BuyPrice+10
                         update_buy_price(i,BuyPrice,Long_Trade_File)
                         print(f"Long Entry buy price trail for {BuyPrice}. Open position.")
-                        #tele_msg(f"Long Entry buy price trail for {BuyPrice}.{profit_from_entry},{current_price},{current_price-BuyPrice} Open position.")
-                        
+                        tele_msg(f"Long Entry buy price trail for {BuyPrice}.{profit_from_entry},{current_price},{current_price-BuyPrice} Open position.")
+                        trail_sl=1
 
 
                     # Update the target if price moved significantly
@@ -653,7 +642,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         Long_Open_Position.loc[Long_Open_Position['Symbol'] == i, 'Target Price'] = new_trailing_target
                         print(f"Updated Trailing Target for {i}: {new_trailing_target}")
                         tele_msg(f"Updated Trailing Target for {i}: {new_trailing_target}")
-                        update_buy_price(i, new_trailing_target, Long_Trade_File)
+                        update_buy_price(i, BuyPrice+10, Long_Trade_File)
                         continue  # Do not close trade yet; wait for next iteration
 
                     # Exit condition: current price exceeds latest target
@@ -742,8 +731,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         # Sell_Price = position_df[position_df.ScripName==i].SellAvgRate.values[0]
 
                         # For Paper Trade
-                        utc_now = dt.datetime.utcnow()                                               
-                        Exit_Time = utc_now.strftime("%d-%b-%Y %I:%M%p")
+                        Exit_Time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
                         Sell_Price = float(spot_prices1[i])  # Selling at market price
                         Points = Sell_Price-BuyPrice
                         Brokerage = ((BuyPrice * Trade_quantity)+(Sell_Price * Trade_quantity)) * 0.00015
@@ -810,8 +798,8 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         # position_df = pd.DataFrame(client.positions())
 
                         # SellPrice = position_df[position_df.ScripName==i].SellAvgRate.values[0]
-                        utc_now = dt.datetime.utcnow()
-                        entry_time = utc_now.strftime("%d-%b-%Y %I:%M%p")
+
+                        entry_time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
 
                         SellPrice = current_price
                         Sprice = current_price
@@ -840,8 +828,8 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         SellPrice = trade_row['Sell Price'].values[0]
 
                         Trade_quantity = int(trade_row['Qty'].values[0])
-                        utc_now = dt.datetime.utcnow()
-                        Exit_Time = utc_now.strftime("%d-%b-%Y %I:%M%p")
+
+                        Exit_Time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
 
                         # For Real Money
 
@@ -900,8 +888,8 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         SellPrice = trade_row['Sell Price'].values[0]
 
                         Trade_quantity = int(trade_row['Qty'].values[0])
-                        utc_now = dt.datetime.utcnow()
-                        Exit_Time = utc_now.strftime("%d-%b-%Y %I:%M%p")
+
+                        Exit_Time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
 
                         # For Real Money
 
@@ -959,8 +947,8 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         SellPrice = trade_row['Sell Price'].values[0]
 
                         Trade_quantity = int(trade_row['Qty'].values[0])
-                        utc_now = dt.datetime.utcnow()
-                        Exit_Time = utc_now.strftime("%d-%b-%Y %I:%M%p")
+
+                        Exit_Time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
 
                         # For Real Money
 
