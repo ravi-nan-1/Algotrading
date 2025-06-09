@@ -137,7 +137,7 @@ def super_trend(data, period=5, mul=1):
     data['EMA50'] = ta.ema(data['Close'], length=50)
     data['box_high'] = data['High'].rolling(window=box_window).max()
     data['box_low'] = data['Low'].rolling(window=box_window).min()
-
+    data['RSI'] = ta.rsi(df["Close"], length=14)
     # Calculate EMA20 slope and angle
     data['EMA20_slope'] = data['EMA20'] - data['EMA20'].shift(1)
     data['EMA20_angle'] = np.rad2deg(np.arctan(data['EMA20_slope']))
@@ -151,13 +151,14 @@ def super_trend(data, period=5, mul=1):
     cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
     cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
     ema3_rising = data['EMA3'] > data['EMA3'].shift(1)
+    RSI=data['RSI']>40
 
     # Final SuperTrend-like Buy Signal
     data['st_sig'] = np.where(
         (
-            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema
+            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & RSI
         ) | (
-            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy
+            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy & RSI
         ),
         1,
         0
