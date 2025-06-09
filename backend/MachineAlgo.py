@@ -137,11 +137,39 @@ def super_trend(data, period=5, mul=1):
     data['EMA50'] = ta.ema(data['Close'], length=50)
     data['box_high'] = data['High'].rolling(window=box_window).max()
     data['box_low'] = data['Low'].rolling(window=box_window).min()
-    data['RSI'] = ta.rsi(df["Close"], length=14)
+
     # Calculate EMA20 slope and angle
     data['EMA20_slope'] = data['EMA20'] - data['EMA20'].shift(1)
     data['EMA20_angle'] = np.rad2deg(np.arctan(data['EMA20_slope']))
 
+    data['RSI'] = ta.rsi(data["Close"], length=14)
+    # Calculate EMA20 slope and angle
+    data['EMA20_slope'] = data['EMA20']-data['EMA20'].shift(1)
+    data['EMA20_angle'] = np.rad2deg(np.arctan(data['EMA20_slope']))
+
+    data['price_diff_3'] = data['Close'].diff(3)
+    data['time_diff_sec'] = data.index.to_series().diff(3).dt.total_seconds().replace(0, np.nan)
+    data['rate_per_minute_3'] = data['price_diff_3'] / (data['time_diff_sec'] / 60.0)
+
+    # Calculate volume difference
+    data['volume_diff'] = data['Volume'].diff(3)
+
+    # Calculate rate per minute for volume
+    data['rate_per_minute_volume'] = data['volume_diff'] / (data['time_diff_sec'] / 60.0)
+    threshold = 1e-4
+
+    def classify(rate):
+
+        if pd.isna(rate) or abs(rate) < threshold:
+
+            return 'no_move'
+        elif rate > 0:
+            return 'up'
+        else:
+            return 'down'
+
+    data['price_movement'] = data['rate_per_minute_3'].apply(lambda r: classify(r))
+    data['volume_movement'] = data['rate_per_minute_volume'].apply(lambda r: classify(r))
     # === Bullish Reversal Condition ===
     cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
     cond_bullish_candle = data['Close'] > data['Open']
@@ -151,14 +179,14 @@ def super_trend(data, period=5, mul=1):
     cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
     cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
     ema3_rising = data['EMA3'] > data['EMA3'].shift(1)
-    RSI=data['RSI']>40
-
+    RSI = data['RSI'] > 40
+    volume_move=data['volume_movement'] == "up"
     # Final SuperTrend-like Buy Signal
     data['st_sig'] = np.where(
         (
-            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & RSI
+            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & RSI & volume_move
         ) | (
-            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy & RSI
+            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy & RSI & volume_move
         ),
         1,
         0
@@ -631,10 +659,10 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     new_trailing_target = BuyPrice+(step_count * Trail_Step)
 
                     if profit_from_entry>10:
-                        BuyPrice=BuyPrice+10
+                        #BuyPrice=BuyPrice+10
                         update_buy_price(i,BuyPrice,Long_Trade_File)
                         print(f"Long Entry buy price trail for {BuyPrice}. Open position.")
-                        tele_msg(f"Long Entry buy price trail for {BuyPrice}.{profit_from_entry},{current_price},{current_price-BuyPrice} Open position.")
+                        #tele_msg(f"Long Entry buy price trail for {BuyPrice}.{profit_from_entry},{current_price},{current_price-BuyPrice} Open position.")
                         trail_sl=1
 
 
@@ -643,7 +671,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         Long_Open_Position.loc[Long_Open_Position['Symbol'] == i, 'Target Price'] = new_trailing_target
                         print(f"Updated Trailing Target for {i}: {new_trailing_target}")
                         tele_msg(f"Updated Trailing Target for {i}: {new_trailing_target}")
-                        update_buy_price(i, BuyPrice+10, Long_Trade_File)
+                        update_buy_price(i, new_trailing_target, Long_Trade_File)
                         continue  # Do not close trade yet; wait for next iteration
 
                     # Exit condition: current price exceeds latest target
