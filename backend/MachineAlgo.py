@@ -146,6 +146,8 @@ def super_trend(data, period=5, mul=1):
     # Calculate EMA20 slope and angle
     data['EMA20_slope'] = data['EMA20']-data['EMA20'].shift(1)
     data['EMA20_angle'] = np.rad2deg(np.arctan(data['EMA20_slope']))
+    
+    data.index = pd.to_datetime(data.index)
 
     data['price_diff_3'] = data['Close'].diff(3)
     data['time_diff_sec'] = data.index.to_series().diff(3).dt.total_seconds().replace(0, np.nan)
