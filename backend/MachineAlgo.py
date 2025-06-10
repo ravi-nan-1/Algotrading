@@ -151,13 +151,13 @@ def super_trend(data, period=5, mul=1):
 
     data['price_diff_3'] = data['Close'].diff(3)
     data['time_diff_sec'] = data.index.to_series().diff(3).dt.total_seconds().replace(0, np.nan)
-    data['rate_per_minute_3'] = data['price_diff_3'] / (data['time_diff_sec'] / 60.0)
+    data['rate_per_minute_3'] = data['price_diff_3'] / 3.0
 
     # Calculate volume difference
     data['volume_diff'] = data['Volume'].diff(3)
 
     # Calculate rate per minute for volume
-    data['rate_per_minute_volume'] = data['volume_diff'] / (data['time_diff_sec'] / 60.0)
+    data['rate_per_minute_volume'] = data['volume_diff'] / 3.0
     threshold = 1e-4
 
     def classify(rate):
@@ -182,13 +182,14 @@ def super_trend(data, period=5, mul=1):
     cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
     ema3_rising = data['EMA3'] > data['EMA3'].shift(1)
     RSIs = data['RSI'] > 40
+    rate_pr=data['rate_per_minute_3']>0
     volume_move=data['volume_movement'] == "up"
     # Final SuperTrend-like Buy Signal
     data['st_sig'] = np.where(
         (
-            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & volume_move 
+            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & rate_pr 
         ) | (
-            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy & volume_move
+            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy & rate_pr
         ),
         1,
         0
