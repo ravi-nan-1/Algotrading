@@ -181,14 +181,14 @@ def super_trend(data, period=5, mul=1):
     cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
     cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
     ema3_rising = data['EMA3'] > data['EMA3'].shift(1)
-    RSI = data['RSI'] > 40
+    RSIs = data['RSI'] > 40
     volume_move=data['volume_movement'] == "up"
     # Final SuperTrend-like Buy Signal
     data['st_sig'] = np.where(
         (
-            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & RSI & volume_move
+            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema 
         ) | (
-            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy & RSI & volume_move
+            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy 
         ),
         1,
         0
