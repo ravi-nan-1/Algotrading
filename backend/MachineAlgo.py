@@ -116,7 +116,7 @@ def get_cash_market_data(symbol, timeframe):
 
 
 
-def super_trend(data, period=5, mul=1):
+def super_trend(data, period=3, mul=1):
     import pandas_ta as ta
     import numpy as np
 
@@ -150,8 +150,10 @@ def super_trend(data, period=5, mul=1):
     data.index = pd.to_datetime(data.index)
 
     data['price_diff_3'] = data['Close'].diff(3)
+    data['price_diff']=data['Close'].shift(1).diff(1)
     data['time_diff_sec'] = data.index.to_series().diff(3).dt.total_seconds().replace(0, np.nan)
     data['rate_per_minute_3'] = data['price_diff_3'] / 3.0
+    data['rate_per_minute'] = abs((data['price_diff'] / 3.0) / 2)
 
     # Calculate volume difference
     data['volume_diff'] = data['Volume'].diff(3)
@@ -182,7 +184,7 @@ def super_trend(data, period=5, mul=1):
     cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
     ema3_rising = data['EMA3'] > data['EMA3'].shift(1)
     RSIs = data['RSI'] > 40
-    rate_pr=data['rate_per_minute_3']>0
+    rate_pr=data['rate_per_minute_3']>data['rate_per_minute']
     volume_move=data['volume_movement'] == "up"
     # Final SuperTrend-like Buy Signal
     data['st_sig'] = np.where(
@@ -249,6 +251,28 @@ def Short_create_excel_sheet(filename):
 
 
 Short_create_excel_sheet(Short_Trade_File)
+
+
+def update_target_price(ticker, new_buy_price, tradefile):
+    try:
+        # Load the Excel file
+        df = pd.read_excel(tradefile)
+    except Exception as e:
+        print(f"Error reading Excel file: {e}")
+        return
+
+    # Find the row(s) where Symbol matches and Trade Status is OPEN
+    index = df[(df['Symbol'] == ticker) & (df['Trade Status'] == 'OPEN')].index
+
+    if not index.empty:
+        idx = index[0]  # Only update the first open trade
+        df.at[idx, 'Target_Price'] = new_buy_price
+
+        # Save the updated DataFrame
+        df.to_excel(tradefile, index=False)
+        print(f"Buy Price updated for {ticker}")
+    else:
+        print(f"No open trade found for {ticker}")
 
 def update_buy_price(ticker, new_buy_price, tradefile):
     try:
@@ -675,6 +699,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         print(f"Updated Trailing Target for {i}: {new_trailing_target}")
                         tele_msg(f"Updated Trailing Target for {i}: {new_trailing_target}")
                         update_buy_price(i, new_trailing_target, Long_Trade_File)
+                        update_target_price(i, new_trailing_target+10, Long_Trade_File)
                         continue  # Do not close trade yet; wait for next iteration
 
                     # Exit condition: current price exceeds latest target
