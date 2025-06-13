@@ -116,7 +116,9 @@ def get_cash_market_data(symbol, timeframe):
 
 
 
-def super_trend(data, period=3, mul=1):
+
+
+def super_trend(data, period=5, mul=1):
     import pandas_ta as ta
     import numpy as np
 
@@ -129,7 +131,7 @@ def super_trend(data, period=3, mul=1):
     macd = ta.macd(data['Close'], fast=fast, slow=slow, signal=signal)
     data['macd'] = macd['MACD_5_9_9']
     data['macd_signal'] = macd['MACDs_5_9_9']
-    data['macd_rising'] = (data['macd'] - data['macd_signal']) > 0.4
+    data['macd_rising'] = (data['macd']-data['macd_signal']) > 0.4
 
     data['EMA'] = ta.ema(data['Close'], length=ema_period)
     data['EMA20'] = ta.ema(data['Close'], length=20)
@@ -138,68 +140,56 @@ def super_trend(data, period=3, mul=1):
     data['box_high'] = data['High'].rolling(window=box_window).max()
     data['box_low'] = data['Low'].rolling(window=box_window).min()
 
-    # Calculate EMA20 slope and angle
-    data['EMA20_slope'] = data['EMA20'] - data['EMA20'].shift(1)
-    data['EMA20_angle'] = np.rad2deg(np.arctan(data['EMA20_slope']))
+    # Calculate EMA slope (current EMA > previous EMA means slope is rising)
+    #data['EMA_slope'] = data['EMA'] > data['EMA'].shift(1)
 
-    data['RSI'] = ta.rsi(data["Close"], length=14)
-    # Calculate EMA20 slope and angle
-    data['EMA20_slope'] = data['EMA20']-data['EMA20'].shift(1)
-    data['EMA20_angle'] = np.rad2deg(np.arctan(data['EMA20_slope']))
-    
-    data.index = pd.to_datetime(data.index)
-
-    data['price_diff_3'] = data['Close'].diff(3)
-    data['price_diff']=data['Close'].shift(1).diff(1)
-    data['time_diff_sec'] = data.index.to_series().diff(3).dt.total_seconds().replace(0, np.nan)
-    data['rate_per_minute_3'] = data['price_diff_3'] / 3.0
-    data['rate_per_minute'] = abs((data['price_diff'] / 3.0) / 2)
-
-    # Calculate volume difference
-    data['volume_diff'] = data['Volume'].diff(3)
-
-    # Calculate rate per minute for volume
-    data['rate_per_minute_volume'] = data['volume_diff'] / 3.0
-    threshold = 1e-4
-
-    def classify(rate):
-
-        if pd.isna(rate) or abs(rate) < threshold:
-
-            return 'no_move'
-        elif rate > 0:
-            return 'up'
-        else:
-            return 'down'
-
-    data['price_movement'] = data['rate_per_minute_3'].apply(lambda r: classify(r))
-    data['volume_movement'] = data['rate_per_minute_volume'].apply(lambda r: classify(r))
     # === Bullish Reversal Condition ===
     cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
     cond_bullish_candle = data['Close'] > data['Open']
     cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
-    cond_bearish_ema_below = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Open'].shift(1) < data['EMA'].shift(1))
-    cond_bearish_ema_above = data['Close'].shift(1) > data['EMA'].shift(1)
-    cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
-    cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
-    ema3_rising = data['EMA3'] > data['EMA3'].shift(1)
-    RSIs = data['RSI'] > 40
-    rate_pr=data['rate_per_minute_3']>data['rate_per_minute']
-    volume_move=data['volume_movement'] == "up"
-    # Final SuperTrend-like Buy Signal
-    data['st_sig'] = np.where(
-        (
-            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & rate_pr 
-        ) | (
-            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy & rate_pr
-        ),
-        1,
-        0
-    )
+    cond_bearish_ema_below=(data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Open'].shift(1) < data['EMA'].shift(1))
+    cond_bearish_ema_Above=(data['Close'].shift(1) > data['EMA'].shift(1))
+    Cond_buy= (data['Close']>data['Close'].shift(1)) & (data['Close']>data['EMA'])
+    cond_distance_from_ema = (data['EMA']-data['Close']) > 1.5
+    #cond_ema_slope_rising = data['EMA_slope']  # New condition: EMA slope is rising
+    ema_Above = (data['EMA3'] > data['EMA3'].shift(1))
+
+   
+    # Optional: Convert slope to angle (degrees) for better interpretation
+
+    cond_below_50ema = data['Close'] < data['EMA50']
+    cond_above_50ema = data['Close'] > data['EMA50']
+    cond_below_20ema = data['Close'] < data['EMA20']
+
+    # === Bearish Reversal Condition (for sell signals) ===
+    cond_bullish_candle_prev = data['Close'].shift(1) > data['Open'].shift(1)
+    cond_bearish_candle_current = data['Close'] < data['Open']
+    cond_above_ema = (data['Close'].shift(1) > data['EMA'].shift(1)) & (data['Close'] > data['EMA'])
+    cond_distance_from_ema_sell = (data['Close']-data['EMA']) > 1.5
+    angle_ema=data['EMA20_angle']>0
+    #EMA_diff =data['EMA20']-data['EMA20'].shift(1)   # New condition: EMA slope is falling
+
+    # Combine all into final signal
+    if data['Option_Type'].iloc[0] == 'PE':
+
+        data['st_sig'] = np.where(
+            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & cond_below_20ema   ) |
+            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy & cond_below_20ema  )
+            ,
+            1, 0
+        )
+
+
+    if data['Option_Type'].iloc[0] == 'CE':
+
+        data['st_sig'] = np.where(
+            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & cond_below_20ema)  |
+            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & Cond_buy & cond_below_20ema ) ,
+            1, 0
+        )
+
 
     return data[['st_sig']]
-
-
 
 
 
