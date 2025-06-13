@@ -185,9 +185,9 @@ def super_trend(data, period=3, mul=1):
     # Final SuperTrend-like Buy Signal
     data['st_sig'] = np.where(
         (
-            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & RATE_PR & Ema20_below
+            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema  & Ema20_below
         ) | (
-            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy & RATE_PR & Ema20_below
+            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy & Ema20_below
         ),
         1,
         0
