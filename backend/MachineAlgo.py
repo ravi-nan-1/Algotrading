@@ -132,8 +132,6 @@ def super_trend(data, period=3, mul=1):
     data['box_high'] = data['High'].rolling(window=box_window).max()
     data['box_low'] = data['Low'].rolling(window=box_window).min()
 
-    data['EMA20_slope'] = data['EMA20'] - data['EMA20'].shift(1)
-    data['EMA20_angle'] = np.rad2deg(np.arctan(data['EMA20_slope']))
 
     data['RSI'] = ta.rsi(data["Close"], length=14)
 
