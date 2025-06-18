@@ -181,7 +181,7 @@ def super_trend(data, period=3, mul=1):
     ema3_rising = data['EMA3'] > data['EMA3'].shift(1)
     RSIs = data['RSI'] > 40
     rate_pr=data['rate_per_minute_3']>data['rate_per_minute']
-    Ema20below=data['Close']< data['EMA20']
+    Ema20below=data['Close']> data['EMA50']
     volume_move=data['volume_movement'] == "up"
     # Final SuperTrend-like Buy Signal
     data['st_sig'] = np.where(
