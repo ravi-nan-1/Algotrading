@@ -135,7 +135,7 @@ def super_trend(data):
             total_range = curr_candle['High'] - curr_candle['Low']
 
             # Filter: Body should be at least 40% of total range (avoid doji/small body)
-            if total_range != 0 and (body_size / total_range) >= 0.4:
+            if total_range != 0 and (body_size / total_range) >= 0.34:
                 data.at[data.index[i], 'st_sig'] = 1
 
     return data[['st_sig']]
