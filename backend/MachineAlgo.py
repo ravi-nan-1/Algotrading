@@ -110,9 +110,71 @@ def get_cash_market_data(symbol, timeframe):
     print(df)
     return df
 
+def super_trend(data):
+    import pandas_ta as ta
+    import numpy as np
+    import pandas as pd
+
+    # Calculate Bollinger Bands
+    bb = ta.bbands(data['Close'], length=20, std=2)
+    data['BB_Upper'] = bb['BBU_20_2.0']
+    data['BB_Middle'] = bb['BBM_20_2.0']
+    data['BB_Lower'] = bb['BBL_20_2.0']
+    data['BB_Width'] = (data['BB_Upper'] - data['BB_Lower']) / data['BB_Middle']
+
+    # Initialize SuperTrend-like signal column
+    data['st_sig'] = 0
+
+    # Apply Bollinger Band Strategy with Strong Body Condition
+    for i in range(len(data)):
+        signal = check_bollinger_buy_signal(data, i)
+        if signal in ['Reversal Buy', 'Breakout Buy']:
+            # Check body strength for current candle
+            curr_candle = data.iloc[i]
+            body_size = abs(curr_candle['Close'] - curr_candle['Open'])
+            total_range = curr_candle['High'] - curr_candle['Low']
+
+            # Filter: Body should be at least 40% of total range (avoid doji/small body)
+            if total_range != 0 and (body_size / total_range) >= 0.4:
+                data.at[data.index[i], 'st_sig'] = 1
+
+    return data[['st_sig']]
 
 
-def super_trend(data, period=3, mul=1):
+def check_bollinger_buy_signal(df, i, width_threshold=0.5):
+    if i < 2:
+        return None
+
+    prev_candle = df.iloc[i - 1]
+    curr_candle = df.iloc[i]
+
+    prev_red = prev_candle['Close'] < prev_candle['Open']
+    curr_green = curr_candle['Close'] > curr_candle['Open']
+
+    prev_below_band = prev_candle['Low'] <= prev_candle['BB_Lower']
+    curr_below_band = curr_candle['Low'] <= curr_candle['BB_Lower']
+
+    engulfing = (curr_candle['Close'] - curr_candle['Open']) > (prev_candle['Open'] - prev_candle['Close'])
+
+    prev_total_range = prev_candle['High'] - prev_candle['Low']
+    prev_lower_wick = prev_candle['Open'] - prev_candle['Low'] if prev_red else prev_candle['Close'] - prev_candle['Low']
+    prev_wick_ratio = prev_lower_wick / prev_total_range if prev_total_range != 0 else 0
+
+    wick_significant = prev_wick_ratio >= 0.3
+
+    # Reversal Buy Condition
+    if prev_red and curr_green and (prev_below_band or curr_below_band):
+        return 'Reversal Buy'
+
+    # Breakout Buy Condition
+    bb_width = df.iloc[i - 1]['BB_Width']
+    if bb_width < width_threshold and curr_candle['Close'] > curr_candle['BB_Upper']:
+        return 'Breakout Buy'
+
+    return None
+
+
+def super_trend111(data, period=3, mul=1):
     import pandas_ta as ta
     import numpy as np
 
