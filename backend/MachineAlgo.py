@@ -115,8 +115,20 @@ def super_trend(data):
     import numpy as np
     import pandas as pd
 
+    # Check if there is enough data
+    if len(data) < 20:
+        print("Not enough data to calculate Bollinger Bands")
+        data['st_sig'] = 0
+        return data[['st_sig']]
+
     # Calculate Bollinger Bands
     bb = ta.bbands(data['Close'], length=20, std=2)
+
+    if bb is None or bb.isnull().values.any():
+        print("Bollinger Bands calculation returned None or NaNs")
+        data['st_sig'] = 0
+        return data[['st_sig']]
+
     data['BB_Upper'] = bb['BBU_20_2.0']
     data['BB_Middle'] = bb['BBM_20_2.0']
     data['BB_Lower'] = bb['BBL_20_2.0']
@@ -129,16 +141,15 @@ def super_trend(data):
     for i in range(len(data)):
         signal = check_bollinger_buy_signal(data, i)
         if signal in ['Reversal Buy', 'Breakout Buy']:
-            # Check body strength for current candle
             curr_candle = data.iloc[i]
             body_size = abs(curr_candle['Close'] - curr_candle['Open'])
             total_range = curr_candle['High'] - curr_candle['Low']
 
-            # Filter: Body should be at least 40% of total range (avoid doji/small body)
             if total_range != 0 and (body_size / total_range) >= 0.34:
                 data.at[data.index[i], 'st_sig'] = 1
 
     return data[['st_sig']]
+
 
 
 def check_bollinger_buy_signal(df, i, width_threshold=0.5):
