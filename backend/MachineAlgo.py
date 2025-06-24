@@ -112,42 +112,72 @@ def get_cash_market_data(symbol, timeframe):
 
 def super_trend(data):
     import pandas_ta as ta
-    import numpy as np
     import pandas as pd
 
-    # Check if there is enough data
-    if len(data) < 20:
+    if len(data) < 30:
         print("Not enough data to calculate Bollinger Bands")
         data['st_sig'] = 0
         return data[['st_sig']]
 
     # Calculate Bollinger Bands
     bb = ta.bbands(data['Close'], length=20, std=2)
-
-    if bb is None or bb.isnull().values.any():
-        print("Bollinger Bands calculation returned None or NaNs")
+    if bb is None or bb.isnull().values.all():
+        print("Bollinger Bands calculation failed")
         data['st_sig'] = 0
         return data[['st_sig']]
 
-    data['BB_Upper'] = bb['BBU_20_2.0']
-    data['BB_Middle'] = bb['BBM_20_2.0']
-    data['BB_Lower'] = bb['BBL_20_2.0']
-    data['BB_Width'] = (data['BB_Upper'] - data['BB_Lower']) / data['BB_Middle']
-
-    # Initialize SuperTrend-like signal column
+    # Merge BB columns
+    data = pd.concat([data, bb], axis=1)
+    data['BB_Width'] = (data['BBU_20_2.0'] - data['BBL_20_2.0']) / data['BBM_20_2.0']
     data['st_sig'] = 0
 
-    # Apply Bollinger Band Strategy with Strong Body Condition
-    for i in range(len(data)):
-        signal = check_bollinger_buy_signal(data, i)
-        if signal in ['Reversal Buy', 'Breakout Buy']:
+    # Memory setup
+    pending_signal_index = None
+    wait_count = 0
+    max_wait = 10
+
+    i = 20
+    while i < len(data):
+        if pending_signal_index is None:
+            # Look for BB lower band touch
+            signal = check_bollinger_buy_signal(data, i)
+            if signal in ['Reversal Buy', 'Breakout Buy']:
+                # Check last 10 candles for consolidation
+                if i >= 10:
+                    recent_high = data['High'].iloc[i - 10:i].max()
+                    recent_low = data['Low'].iloc[i - 10:i].min()
+                    price_range = recent_high - recent_low
+
+                    recent_close = data['Close'].iloc[i]
+                    threshold = recent_close * 0.005  # 0.5% movement to detect consolidation
+
+                    if price_range <= threshold:
+                        # Market is consolidating → use memory system
+                        pending_signal_index = i
+                        wait_count = 0
+                    else:
+                        # Market is moving → take trade immediately
+                        curr_candle = data.iloc[i]
+                        body_size = abs(curr_candle['Close'] - curr_candle['Open'])
+                        if curr_candle['Close'] > curr_candle['Open'] and body_size >= 5:
+                            data.at[data.index[i], 'st_sig'] = 1
+        else:
+            wait_count += 1
             curr_candle = data.iloc[i]
             body_size = abs(curr_candle['Close'] - curr_candle['Open'])
-            total_range = curr_candle['High'] - curr_candle['Low']
 
-            if total_range != 0 and (body_size / total_range) >= 0.34:
+            # Memory-based confirmation
+            if curr_candle['Close'] > curr_candle['Open'] and body_size >= 5:
                 data.at[data.index[i], 'st_sig'] = 1
+                pending_signal_index = None
+                wait_count = 0
+            elif wait_count >= max_wait:
+                # No confirmation within 10 candles → cancel signal
+                pending_signal_index = None
+                wait_count = 0
+        i += 1
 
+    data.to_excel("Filtered_Trades.xlsx", index=True)
     return data[['st_sig']]
 
 
@@ -162,8 +192,9 @@ def check_bollinger_buy_signal(df, i, width_threshold=0.5):
     prev_red = prev_candle['Close'] < prev_candle['Open']
     curr_green = curr_candle['Close'] > curr_candle['Open']
 
-    prev_below_band = prev_candle['Low'] <= prev_candle['BB_Lower']
-    curr_below_band = curr_candle['Low'] <= curr_candle['BB_Lower']
+    # Corrected column names
+    prev_below_band = prev_candle['Low'] <= prev_candle['BBL_20_2.0']
+    curr_below_band = curr_candle['Low'] <= curr_candle['BBL_20_2.0']
 
     engulfing = (curr_candle['Close'] - curr_candle['Open']) > (prev_candle['Open'] - prev_candle['Close'])
 
@@ -177,9 +208,8 @@ def check_bollinger_buy_signal(df, i, width_threshold=0.5):
     if prev_red and curr_green and (prev_below_band or curr_below_band):
         return 'Reversal Buy'
 
-    # Breakout Buy Condition
     bb_width = df.iloc[i - 1]['BB_Width']
-    if bb_width < width_threshold and curr_candle['Close'] > curr_candle['BB_Upper']:
+    if bb_width < width_threshold and curr_candle['Close'] > curr_candle['BBU_20_2.0']:
         return 'Breakout Buy'
 
     return None
