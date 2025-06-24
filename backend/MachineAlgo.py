@@ -99,7 +99,7 @@ def get_cash_market_data(symbol, timeframe):
     strike = float(parts[5])  # Extract strike price and convert to float
 
     df = pd.DataFrame(client.historical_data(Exch='N', ExchangeSegment='D', ScripCode=scriptcode, time=timeframe,
-                                             From=dt.date.today()-dt.timedelta(2), To=dt.date.today()))
+                                             From=dt.date.today()-dt.timedelta(4), To=dt.date.today()))
 
     df.set_index("Datetime", inplace=True)
     df["Option_Type"] = opttype
