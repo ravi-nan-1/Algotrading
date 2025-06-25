@@ -111,108 +111,91 @@ def get_cash_market_data(symbol, timeframe):
     return df
 
 def super_trend(data):
-    import pandas_ta as ta
-    import pandas as pd
-    data['st_sig'] = 0
-    if len(data) < 30:
+    if len(data) < 20:
         print("Not enough data to calculate Bollinger Bands")
         data['st_sig'] = 0
         return data[['st_sig']]
 
     # Calculate Bollinger Bands
     bb = ta.bbands(data['Close'], length=20, std=2)
-    if bb is None or bb.isnull().values.all():
+
+    if bb is None:
         print("Bollinger Bands calculation failed")
         data['st_sig'] = 0
         return data[['st_sig']]
 
-    # Merge BB columns
+    # Merge Bollinger Bands into the dataframe
     data = pd.concat([data, bb], axis=1)
-    data['BB_Width'] = (data['BBU_20_2.0'] - data['BBL_20_2.0']) / data['BBM_20_2.0']
+
+    # Drop initial NaN rows (normal for BB calculation)
+    data.dropna(inplace=True)
+
+    # Rename Bollinger Band columns for easier access
+    data['BB_Upper'] = data['BBU_20_2.0']
+    data['BB_Middle'] = data['BBM_20_2.0']
+    data['BB_Lower'] = data['BBL_20_2.0']
+
+    # Calculate Bollinger Band width
+    data['BB_Width'] = (data['BB_Upper'] - data['BB_Lower']) / data['BB_Middle']
+
+    # Initialize signal column
     data['st_sig'] = 0
 
-    # Memory setup
-    pending_signal_index = None
-    wait_count = 0
-    max_wait = 10
+    # Memory Logic
+    memory_active = False
+    memory_index = -1
+    memory_window = 3  # Number of candles to wait for confirmation
 
-    i = 20
-    while i < len(data):
-        if pending_signal_index is None:
-            # Look for BB lower band touch
-            signal = check_bollinger_buy_signal(data, i)
-            if signal in ['Reversal Buy', 'Breakout Buy']:
-                # Check last 10 candles for consolidation
-                if i >= 10:
-                    recent_high = data['High'].iloc[i - 10:i].max()
-                    recent_low = data['Low'].iloc[i - 10:i].min()
-                    price_range = recent_high - recent_low
+    for i in range(len(data)):
+        signal = check_bollinger_touch(data, i)
 
-                    recent_close = data['Close'].iloc[i]
-                    threshold = recent_close * 0.005  # 0.5% movement to detect consolidation
+        # If touch is detected, activate memory
+        if signal == 'Touch Detected' and not memory_active:
+            print(f"Touch detected at {data.index[i]}, Price: {data.iloc[i]['Low']}, BB Lower: {data.iloc[i]['BB_Lower']}")
+            memory_active = True
+            memory_index = i
 
-                    if price_range <= threshold:
-                        # Market is consolidating → use memory system
-                        pending_signal_index = i
-                        wait_count = 0
-                    else:
-                        # Market is moving → take trade immediately
-                        curr_candle = data.iloc[i]
-                        body_size = abs(curr_candle['Close'] - curr_candle['Open'])
-                        if curr_candle['Close'] > curr_candle['Open'] and body_size >= 1:
-                            data.at[data.index[i], 'st_sig'] = 1
-        else:
-            wait_count += 1
-            curr_candle = data.iloc[i]
-            body_size = abs(curr_candle['Close'] - curr_candle['Open'])
-
-            # Memory-based confirmation
-            if curr_candle['Close'] > curr_candle['Open'] and body_size >= 1:
+        # If memory is active, wait for confirmation
+        if memory_active and (i - memory_index) <= memory_window:
+            if check_confirmation(data, i):
+                print(f"Confirmed at {data.index[i]}, Price: {data.iloc[i]['Close']}")
                 data.at[data.index[i], 'st_sig'] = 1
-                pending_signal_index = None
-                wait_count = 0
-            elif wait_count >= max_wait:
-                # No confirmation within 10 candles → cancel signal
-                pending_signal_index = None
-                wait_count = 0
-        i += 1
+                memory_active = False  # Reset memory after confirmation
 
-    data.to_excel("Filtered_Trades.xlsx", index=True)
-    return data[['st_sig']]
+        # If confirmation not received within the window, reset memory
+        elif memory_active and (i - memory_index) > memory_window:
+            print(f"Memory expired at {data.index[i]}")
+            memory_active = False
+
+    return data
 
 
-
-def check_bollinger_buy_signal(df, i, width_threshold=0.5):
-    if i < 2:
+# ===================== Touch Detection =====================
+def check_bollinger_touch(df, i):
+    if i < 1:
         return None
 
-    prev_candle = df.iloc[i - 1]
     curr_candle = df.iloc[i]
 
-    prev_red = prev_candle['Close'] < prev_candle['Open']
-    curr_green = curr_candle['Close'] > curr_candle['Open']
+    # Relaxed condition: candle low is within 2% above the lower band
+    near_lower_band = curr_candle['Low'] <= curr_candle['BB_Lower'] * 1.02
+    return 'Touch Detected' if near_lower_band else None
 
-    # Corrected column names
-    prev_below_band = prev_candle['Low'] <= prev_candle['BBL_20_2.0']
-    curr_below_band = curr_candle['Low'] <= curr_candle['BBL_20_2.0']
 
-    engulfing = (curr_candle['Close'] - curr_candle['Open']) > (prev_candle['Open'] - prev_candle['Close'])
+# ===================== Confirmation Detection =====================
+def check_confirmation(df, i):
+    if i < 1:
+        return False
 
-    prev_total_range = prev_candle['High'] - prev_candle['Low']
-    prev_lower_wick = prev_candle['Open'] - prev_candle['Low'] if prev_red else prev_candle['Close'] - prev_candle['Low']
-    prev_wick_ratio = prev_lower_wick / prev_total_range if prev_total_range != 0 else 0
+    curr_candle = df.iloc[i]
+    is_green = curr_candle['Close'] > curr_candle['Open']
+    body = abs(curr_candle['Close'] - curr_candle['Open'])
+    range_ = curr_candle['High'] - curr_candle['Low']
 
-    wick_significant = prev_wick_ratio >= 0.3
+    # Slightly relaxed strong body condition
+    strong_body = (body / range_) >= 0.3 if range_ != 0 else False
 
-    # Reversal Buy Condition
-    if prev_red and curr_green and (prev_below_band or curr_below_band):
-        return 'Reversal Buy'
-
-    bb_width = df.iloc[i - 1]['BB_Width']
-    if bb_width < width_threshold and curr_candle['Close'] > curr_candle['BBU_20_2.0']:
-        return 'Breakout Buy'
-
-    return None
+    return is_green and strong_body
 
 
 def super_trend111(data, period=3, mul=1):
