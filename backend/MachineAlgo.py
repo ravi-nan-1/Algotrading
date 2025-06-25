@@ -167,7 +167,7 @@ def super_trend(data):
             body_size = abs(curr_candle['Close'] - curr_candle['Open'])
 
             # Memory-based confirmation
-            if curr_candle['Close'] > curr_candle['Open'] and body_size >= 5:
+            if curr_candle['Close'] > curr_candle['Open'] and body_size >= 1:
                 data.at[data.index[i], 'st_sig'] = 1
                 pending_signal_index = None
                 wait_count = 0
