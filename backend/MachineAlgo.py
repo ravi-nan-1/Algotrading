@@ -113,7 +113,7 @@ def get_cash_market_data(symbol, timeframe):
 def super_trend(data):
     import pandas_ta as ta
     import pandas as pd
-
+    data['st_sig'] = 0
     if len(data) < 30:
         print("Not enough data to calculate Bollinger Bands")
         data['st_sig'] = 0
