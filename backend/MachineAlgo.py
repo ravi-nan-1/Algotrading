@@ -159,7 +159,7 @@ def super_trend(data):
                         # Market is moving → take trade immediately
                         curr_candle = data.iloc[i]
                         body_size = abs(curr_candle['Close'] - curr_candle['Open'])
-                        if curr_candle['Close'] > curr_candle['Open'] and body_size >= 5:
+                        if curr_candle['Close'] > curr_candle['Open'] and body_size >= 1:
                             data.at[data.index[i], 'st_sig'] = 1
         else:
             wait_count += 1
