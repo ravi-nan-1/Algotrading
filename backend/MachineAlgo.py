@@ -112,92 +112,86 @@ def get_cash_market_data(symbol, timeframe):
     return df
 
 def super_trend(data):
-    if len(data) < 20:
-        print("Not enough data to calculate Bollinger Bands")
-        data['st_sig'] = 0
-        return data[['st_sig']]
+    import pandas_ta as ta
+    import numpy as np
+    import pandas as pd
 
-    # Calculate Bollinger Bands
-    data['st_sig'] = 0
-    bb = ta.bbands(data['Close'], length=20, std=2)
+    # Extract date from index since 'Datetime' is index
+    data['Date'] = pd.to_datetime(data.index).normalize()
+    today = data['Date'].iloc[-1]
+    today_data = data[data['Date'] == today]
 
-    if bb is None:
-        print("Bollinger Bands calculation failed")
-        data['st_sig'] = 0
-        return data[['st_sig']]
+    # Detect market type
+    market_type = detect_market_type(today_data)
 
-    # Merge Bollinger Bands into the dataframe
-    data = pd.concat([data, bb], axis=1)
-
-    # Drop initial NaN rows (normal for BB calculation)
-    data.dropna(inplace=True)
-
-    # Rename Bollinger Band columns for easier access
-    data['BB_Upper'] = data['BBU_20_2.0']
-    data['BB_Middle'] = data['BBM_20_2.0']
-    data['BB_Lower'] = data['BBL_20_2.0']
-
-    # Calculate Bollinger Band width
-    data['BB_Width'] = (data['BB_Upper'] - data['BB_Lower']) / data['BB_Middle']
-
-    # Initialize signal column
-    
-
-    # Memory Logic
-    memory_active = False
-    memory_index = -1
-    memory_window = 3  # Number of candles to wait for confirmation
-
-    for i in range(len(data)):
-        signal = check_bollinger_touch(data, i)
-
-        # If touch is detected, activate memory
-        if signal == 'Touch Detected' and not memory_active:
-            print(f"Touch detected at {data.index[i]}, Price: {data.iloc[i]['Low']}, BB Lower: {data.iloc[i]['BB_Lower']}")
-            memory_active = True
-            memory_index = i
-
-        # If memory is active, wait for confirmation
-        if memory_active and (i - memory_index) <= memory_window:
-            if check_confirmation(data, i):
-                print(f"Confirmed at {data.index[i]}, Price: {data.iloc[i]['Close']}")
-                data.at[data.index[i], 'st_sig'] = 1
-                memory_active = False  # Reset memory after confirmation
-
-        # If confirmation not received within the window, reset memory
-        elif memory_active and (i - memory_index) > memory_window:
-            print(f"Memory expired at {data.index[i]}")
-            memory_active = False
-
-    return data
+    # If not bullish, skip signals
 
 
-# ===================== Touch Detection =====================
-def check_bollinger_touch(df, i):
-    if i < 1:
-        return None
+    # === Indicators ===
+    data['EMA5'] = ta.ema(data['Close'], length=5)
 
-    curr_candle = df.iloc[i]
+    # Bollinger Bands (20,2) and (20,1)
+    bb_20_2 = ta.bbands(data['Close'], length=20, std=2.0)
+    bb_20_1 = ta.bbands(data['Close'], length=20, std=1.0)
 
-    # Relaxed condition: candle low is within 2% above the lower band
-    near_lower_band = curr_candle['Low'] <= curr_candle['BB_Lower'] * 1.02
-    return 'Touch Detected' if near_lower_band else None
+    data['BBL_20_2'] = bb_20_2['BBL_20_2.0']
+    data['BBM_20_2'] = bb_20_2['BBM_20_2.0']
+    data['BBU_20_2'] = bb_20_2['BBU_20_2.0']
+
+    data['BBL_20_1'] = bb_20_1['BBL_20_1.0']
+    data['BBM_20_1'] = bb_20_1['BBM_20_1.0']
+    data['BBU_20_1'] = bb_20_1['BBU_20_1.0']
+
+    # BB Width check
+    data['BB_width'] = (data['BBU_20_1'] - data['BBL_20_1'])
+    min_width = .10
 
 
-# ===================== Confirmation Detection =====================
-def check_confirmation(df, i):
-    if i < 1:
-        return False
 
-    curr_candle = df.iloc[i]
-    is_green = curr_candle['Close'] > curr_candle['Open']
-    body = abs(curr_candle['Close'] - curr_candle['Open'])
-    range_ = curr_candle['High'] - curr_candle['Low']
 
-    # Slightly relaxed strong body condition
-    strong_body = (body / range_) >= 0.3 if range_ != 0 else False
 
-    return is_green and strong_body
+    # === Conditions ===
+    bullish = data['Close'] > data['Open']
+    ema5_rising = data['EMA5'] > data['EMA5'].shift(1)
+
+    touched_upper_band = (
+        (data['High'] >= data['BBU_20_2']) |
+        (data['High'] >= data['BBU_20_1'])
+    )
+
+    # Scenario 1: Reversal from lower band to mid band
+    touch_lower_2_prev = data['Close'].shift(1) <= data['BBL_20_2'].shift(1)
+    cross_mid_2_now = data['Close'] > data['BBM_20_2']
+
+    touch_lower_1_prev = data['Close'].shift(1) <= data['BBL_20_1'].shift(1)
+    cross_mid_1_now = data['Close'] > data['BBM_20_1']
+
+    scenario1 = (
+        bullish & ema5_rising &
+        (
+            (cross_mid_2_now) |
+            (cross_mid_1_now)
+        )
+    )
+
+    # Scenario 2: Crosses up from below lower band
+    cross_from_below_2 = (data['Close'].shift(1) < data['BBL_20_2'].shift(1)) & (data['Close'] > data['BBL_20_2'])
+    cross_from_below_1 = (data['Close'].shift(1) < data['BBL_20_1'].shift(1)) & (data['Close'] > data['BBL_20_1'])
+
+    scenario2 = bullish & ema5_rising & (cross_from_below_2 | cross_from_below_1)
+
+    # Final signal condition
+    data['st_sig'] = np.where(
+        (scenario1 | scenario2) &
+        (~touched_upper_band) &
+        (data['BB_width'] > min_width),
+        1,
+        0
+    )
+    print("st_sig == 1 count (all rows):", data['st_sig'].sum())
+    print("st_sig == 1 count (valid rows only):", data.dropna().query("st_sig == 1").shape[0])
+    data.to_excel("BuyOnlyTradeResults.xlsx", index=True)
+    return data[['st_sig']]
 
 
 def super_trend111(data, period=3, mul=1):
