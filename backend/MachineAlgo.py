@@ -23,6 +23,7 @@ from sklearn.metrics import classification_report
 import joblib
 UTC = pytz.timezone('Asia/Kolkata')
 import time
+import pandas_ta as ta
 
 client = FivePaisaClient(cred=auth.cred)
 print(pyotp.TOTP(auth.token).now())
