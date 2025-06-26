@@ -118,6 +118,7 @@ def super_trend(data):
         return data[['st_sig']]
 
     # Calculate Bollinger Bands
+    data['st_sig'] = 0
     bb = ta.bbands(data['Close'], length=20, std=2)
 
     if bb is None:
@@ -140,7 +141,7 @@ def super_trend(data):
     data['BB_Width'] = (data['BB_Upper'] - data['BB_Lower']) / data['BB_Middle']
 
     # Initialize signal column
-    data['st_sig'] = 0
+    
 
     # Memory Logic
     memory_active = False
