@@ -122,7 +122,7 @@ def super_trend(data):
     today_data = data[data['Date'] == today]
 
     # Detect market type
-    market_type = detect_market_type(today_data)
+    
 
     # If not bullish, skip signals
 
