@@ -116,32 +116,68 @@ def super_trend(data):
     import numpy as np
     import pandas as pd
 
-    # === Calculate EMA and Bollinger Bands ===
-    data['EMA'] = ta.ema(data['Close'], length=20)  # You can change length if needed
+    data = data.copy()
 
-    bb = ta.bbands(data['Close'], length=20, std=1)
-    data['BBL'] = bb['BBL_20_1.0']  # Lower Bollinger Band
+    if data['Option_Type'].iloc[0] == 'PE':
+        # === PE: EMA Crossover Strategy ===
+        data['EMA_5'] = ta.ema(data['Close'], length=5)
+        data['EMA_9'] = ta.ema(data['Close'], length=9)
+        data['EMA_15'] = ta.ema(data['Close'], length=15)
 
-    # === Original Buy Conditions ===
-    cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
-    cond_bullish_candle = data['Close'] > data['Open']
-    cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
-    cond_bearish_ema_below = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Open'].shift(1) < data['EMA'].shift(1))
-    cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
-    cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
+        cond_cross_5_9 = (data['EMA_5'].shift(1) < data['EMA_9'].shift(1)) & (data['EMA_5'] > data['EMA_9'])
+        cond_cross_5_15 = (data['EMA_5'].shift(1) < data['EMA_15'].shift(1)) & (data['EMA_5'] > data['EMA_15'])
+        cond_cross_9_15 = (data['EMA_9'].shift(1) < data['EMA_15'].shift(1)) & (data['EMA_9'] > data['EMA_15'])
 
-    # === Bollinger Band Confirmation ===
-    cond_below_bollinger = data['Close'] <= data['BBL']
+        data['st_sig'] = np.where(
+            (cond_cross_5_9 | cond_cross_5_15 | cond_cross_9_15), 1, 0
+        )
 
-    # === Final Buy Signal ===
-    data['st_sig'] = np.where(
-        (
-            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & cond_below_bollinger
-        ) | (
-            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy & cond_below_bollinger
-        ),
-        1, 0
-    )
+    elif data['Option_Type'].iloc[0] == 'CE':
+        # === CE: Reversal + Order Block Confirmation Strategy ===
+        data['EMA'] = ta.ema(data['Close'], length=5)
+
+        cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
+        cond_bullish_candle = data['Close'] > data['Open']
+        cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
+        cond_bearish_ema_below = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Open'].shift(1) < data['EMA'].shift(1))
+        cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
+        cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
+
+        # === Raw Signal ===
+        data['raw_sig'] = np.where(
+            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema) |
+            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy),
+            1, 0
+        )
+
+        # === Order Block Detection ===
+        order_blocks = []
+        for i in range(2, len(data) - 1):
+            candle = data.iloc[i - 1]
+            next_candle = data.iloc[i]
+
+            if candle['Close'] < candle['Open'] and next_candle['Close'] > next_candle['Open']:
+                if next_candle['Close'] > candle['High']:
+                    order_blocks.append({
+                        'index': data.index[i - 1],
+                        'type': 'Buying OB',
+                        'price': candle['Low']
+                    })
+
+        ob_df = pd.DataFrame(order_blocks)
+
+        # === Final st_sig based on OB confirmation ===
+        data['st_sig'] = 0
+        signal_indices = data.index[data['raw_sig'] == 1]
+
+        for sig_idx in signal_indices:
+            next_obs = ob_df[ob_df['index'] > sig_idx]
+            if not next_obs.empty:
+                next_ob_idx = next_obs['index'].iloc[0]
+                data.loc[next_ob_idx, 'st_sig'] = 1
+
+    else:
+        raise ValueError("Option_Type must be either 'CE' or 'PE'")
 
     return data[['st_sig']]
 
