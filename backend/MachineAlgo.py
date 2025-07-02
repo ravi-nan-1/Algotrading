@@ -116,166 +116,31 @@ def super_trend(data):
     import numpy as np
     import pandas as pd
 
-    # Extract date from index since 'Datetime' is index
-    data['Date'] = pd.to_datetime(data.index).normalize()
-    today = data['Date'].iloc[-1]
-    today_data = data[data['Date'] == today]
+    # === Calculate EMA and Bollinger Bands ===
+    data['EMA'] = ta.ema(data['Close'], length=20)  # You can change length if needed
 
-    # Detect market type
-    
+    bb = ta.bbands(data['Close'], length=20, std=1)
+    data['BBL'] = bb['BBL_20_1.0']  # Lower Bollinger Band
 
-    # If not bullish, skip signals
-
-
-    # === Indicators ===
-    data['EMA5'] = ta.ema(data['Close'], length=5)
-
-    # Bollinger Bands (20,2) and (20,1)
-    bb_20_2 = ta.bbands(data['Close'], length=20, std=2.0)
-    bb_20_1 = ta.bbands(data['Close'], length=20, std=1.0)
-
-    data['BBL_20_2'] = bb_20_2['BBL_20_2.0']
-    data['BBM_20_2'] = bb_20_2['BBM_20_2.0']
-    data['BBU_20_2'] = bb_20_2['BBU_20_2.0']
-
-    data['BBL_20_1'] = bb_20_1['BBL_20_1.0']
-    data['BBM_20_1'] = bb_20_1['BBM_20_1.0']
-    data['BBU_20_1'] = bb_20_1['BBU_20_1.0']
-
-    # BB Width check
-    data['BB_width'] = (data['BBU_20_1'] - data['BBL_20_1'])
-    min_width = .10
-
-
-
-
-
-    # === Conditions ===
-    bullish = data['Close'] > data['Open']
-    ema5_rising = data['EMA5'] > data['EMA5'].shift(1)
-
-    touched_upper_band = (
-        (data['High'] >= data['BBU_20_2']) |
-        (data['High'] >= data['BBU_20_1'])
-    )
-
-    # Scenario 1: Reversal from lower band to mid band
-    touch_lower_2_prev = data['Close'].shift(1) <= data['BBL_20_2'].shift(1)
-    cross_mid_2_now = data['Close'] > data['BBM_20_2']
-
-    touch_lower_1_prev = data['Close'].shift(1) <= data['BBL_20_1'].shift(1)
-    cross_mid_1_now = data['Close'] > data['BBM_20_1']
-
-    scenario1 = (
-        bullish & ema5_rising &
-        (
-            (cross_mid_2_now) |
-            (cross_mid_1_now)
-        )
-    )
-
-    # Scenario 2: Crosses up from below lower band
-    cross_from_below_2 = (data['Close'].shift(1) < data['BBL_20_2'].shift(1)) & (data['Close'] > data['BBL_20_2'])
-    cross_from_below_1 = (data['Close'].shift(1) < data['BBL_20_1'].shift(1)) & (data['Close'] > data['BBL_20_1'])
-
-    scenario2 = bullish & ema5_rising & (cross_from_below_2 | cross_from_below_1)
-
-    # Final signal condition
-    data['st_sig'] = np.where(
-        (scenario1 | scenario2) &
-        (~touched_upper_band) &
-        (data['BB_width'] > min_width),
-        1,
-        0
-    )
-    print("st_sig == 1 count (all rows):", data['st_sig'].sum())
-    print("st_sig == 1 count (valid rows only):", data.dropna().query("st_sig == 1").shape[0])
-    data.to_excel("BuyOnlyTradeResults.xlsx", index=True)
-    return data[['st_sig']]
-
-
-def super_trend111(data, period=3, mul=1):
-    import pandas_ta as ta
-    import numpy as np
-
-    # Indicator parameters
-    fast, slow, signal = 5, 9, 9
-    ema_period = 5
-    box_window = 5
-
-    # === Indicators ===
-    macd = ta.macd(data['Close'], fast=fast, slow=slow, signal=signal)
-    data['macd'] = macd['MACD_5_9_9']
-    data['macd_signal'] = macd['MACDs_5_9_9']
-    data['macd_rising'] = (data['macd'] - data['macd_signal']) > 0.4
-
-    data['EMA'] = ta.ema(data['Close'], length=ema_period)
-    data['EMA20'] = ta.ema(data['Close'], length=20)
-    data['EMA3'] = ta.ema(data['Close'], length=3)
-    data['EMA50'] = ta.ema(data['Close'], length=50)
-    data['box_high'] = data['High'].rolling(window=box_window).max()
-    data['box_low'] = data['Low'].rolling(window=box_window).min()
-    Ema20_below=data["Close"] <data["EMA20"] 
-    # Calculate EMA20 slope and angle
-    data['EMA20_slope'] = data['EMA20'] - data['EMA20'].shift(1)
-    data['EMA20_angle'] = np.rad2deg(np.arctan(data['EMA20_slope']))
-
-    data['RSI'] = ta.rsi(data["Close"], length=14)
-    # Calculate EMA20 slope and angle
-    data['EMA20_slope'] = data['EMA20']-data['EMA20'].shift(1)
-    data['EMA20_angle'] = np.rad2deg(np.arctan(data['EMA20_slope']))
-    
-    data.index = pd.to_datetime(data.index)
-
-    data['price_diff_3'] = data['Close'].diff(3)
-    data['price_diff']=data['Close'].shift(1).diff(1)
-    data['time_diff_sec'] = data.index.to_series().diff(3).dt.total_seconds().replace(0, np.nan)
-    data['rate_per_minute_3'] = data['price_diff_3'] / 3.0
-    data['rate_per_minute'] = abs((data['price_diff'] / 3.0) / 2)
-
-    # Calculate volume difference
-    data['volume_diff'] = data['Volume'].diff(3)
-
-    # Calculate rate per minute for volume
-    data['rate_per_minute_volume'] = data['volume_diff'] / 3.0
-    threshold = 1e-4
-
-    def classify(rate):
-
-        if pd.isna(rate) or abs(rate) < threshold:
-
-            return 'no_move'
-        elif rate > 0:
-            return 'up'
-        else:
-            return 'down'
-
-    data['price_movement'] = data['rate_per_minute_3'].apply(lambda r: classify(r))
-    data['volume_movement'] = data['rate_per_minute_volume'].apply(lambda r: classify(r))
-    # === Bullish Reversal Condition ===
+    # === Original Buy Conditions ===
     cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
     cond_bullish_candle = data['Close'] > data['Open']
     cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
     cond_bearish_ema_below = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Open'].shift(1) < data['EMA'].shift(1))
-    cond_bearish_ema_above = data['Close'].shift(1) > data['EMA'].shift(1)
     cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
     cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
-    ema3_rising = data['EMA3'] > data['EMA3'].shift(1)
-    RSIs = data['RSI'] > 40
-    rate_pr=data['rate_per_minute_3']>data['rate_per_minute']
-    Ema20below=data['Close']> data['EMA50']
-    volume_move=data['volume_movement'] == "up"
-    # Final SuperTrend-like Buy Signal
+
+    # === Bollinger Band Confirmation ===
+    cond_below_bollinger = data['Close'] <= data['BBL']
+
+    # === Final Buy Signal ===
     data['st_sig'] = np.where(
         (
-            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema  
+            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema & cond_below_bollinger
         ) | (
-            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy
-
-          
+            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy & cond_below_bollinger
         ),
-        1,
-        0
+        1, 0
     )
 
     return data[['st_sig']]
