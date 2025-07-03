@@ -111,75 +111,97 @@ def get_cash_market_data(symbol, timeframe):
     print(df)
     return df
 
-def super_trend(data):
-    import pandas_ta as ta
-    import numpy as np
-    import pandas as pd
-    data['st_sig'] = 0
 
-    data = data.copy()
 
-    if data['Option_Type'].iloc[0] == 'PE':
-        # === PE: EMA Crossover Strategy ===
-        data['EMA_5'] = ta.ema(data['Close'], length=5)
-        data['EMA_9'] = ta.ema(data['Close'], length=9)
-        data['EMA_15'] = ta.ema(data['Close'], length=15)
+import pandas as pd
+import numpy as np
 
-        cond_cross_5_9 = (data['EMA_5'].shift(1) < data['EMA_9'].shift(1)) & (data['EMA_5'] > data['EMA_9'])
-        cond_cross_5_15 = (data['EMA_5'].shift(1) < data['EMA_15'].shift(1)) & (data['EMA_5'] > data['EMA_15'])
-        cond_cross_9_15 = (data['EMA_9'].shift(1) < data['EMA_15'].shift(1)) & (data['EMA_9'] > data['EMA_15'])
+def covwma(src, length):
+    cov = src.rolling(length).std() / src.rolling(length).mean()
+    cw = src * cov
+    return cw.rolling(length).sum() / cov.rolling(length).sum()
 
-        data['st_sig'] = np.where(
-            (cond_cross_5_9 | cond_cross_5_15 | cond_cross_9_15), 1, 0
-        )
+def kama(src, length, fast=0.666, slow=0.0645):
+    dist = src.diff().abs()
+    signal = (src - src.shift(length)).abs()
+    noise = dist.rolling(length).sum()
+    effr = signal / noise.replace(0, np.nan)
+    sc = (effr * (fast - slow) + slow) ** 2
+    kama_series = pd.Series(index=src.index, dtype=np.float64)
+    kama_series.iloc[0] = src.iloc[0]
+    for i in range(1, len(src)):
+        kama_series.iloc[i] = kama_series.iloc[i - 1] + sc.iloc[i] * (src.iloc[i] - kama_series.iloc[i - 1])
+    return kama_series
 
-    elif data['Option_Type'].iloc[0] == 'CE':
-        # === CE: Reversal + Order Block Confirmation Strategy ===
-        data['EMA'] = ta.ema(data['Close'], length=5)
+def frama(src, high, low, length, w=-4.6):
+    n3 = (high.rolling(length).max() - low.rolling(length).min()) / length
+    hd2 = high.rolling(length // 2).max()
+    ld2 = low.rolling(length // 2).min()
+    n2 = (hd2 - ld2) / (length / 2)
+    n1 = (hd2.shift(length // 2) - ld2.shift(length // 2)) / (length / 2)
+    dim = np.where((n1 > 0) & (n2 > 0) & (n3 > 0),
+                   (np.log(n1 + n2) - np.log(n3)) / np.log(2), 0)
+    alpha = np.exp(w * (dim - 1))
+    sc = np.clip(alpha, 0.01, 1.0)
+    frama_series = pd.Series(np.nan, index=src.index)
+    frama_series.iloc[0] = src.iloc[0]
+    for i in range(1, len(src)):
+        frama_series.iloc[i] = src.iloc[i] * sc[i] + frama_series.iloc[i - 1] * (1 - sc[i])
+    return frama_series
 
-        cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
-        cond_bullish_candle = data['Close'] > data['Open']
-        cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
-        cond_bearish_ema_below = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Open'].shift(1) < data['EMA'].shift(1))
-        cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
-        cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
+def super_trend(df, period=21, matype="COVWMA", ndev=2, sr=50,
+                            w=-4.6, fast=0.666, slow=0.0645):
+    src = df[['High', 'Low', 'Close']].mean(axis=1)
 
-        # === Raw Signal ===
-        data['raw_sig'] = np.where(
-            (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema) |
-            (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy),
-            1, 0
-        )
-
-        # === Order Block Detection ===
-        order_blocks = []
-        for i in range(2, len(data) - 1):
-            candle = data.iloc[i - 1]
-            next_candle = data.iloc[i]
-
-            if candle['Close'] < candle['Open'] and next_candle['Close'] > next_candle['Open']:
-                if next_candle['Close'] > candle['High']:
-                    order_blocks.append({
-                        'index': data.index[i - 1],
-                        'type': 'Buying OB',
-                        'price': candle['Low']
-                    })
-
-        ob_df = pd.DataFrame(order_blocks)
-
-        # === Final st_sig based on OB confirmation ===
-        data['st_sig'] = 0
-        signal_indices = data.index[data['raw_sig'] == 1]
-
-        for sig_idx in signal_indices:
-            next_obs = ob_df[ob_df['index'] > sig_idx]
-            if not next_obs.empty:
-                next_ob_idx = next_obs['index'].iloc[0]
-                data.loc[next_ob_idx, 'st_sig'] = 1
-
+    # === Select MA
+    if matype == "EMA":
+        ma = src.ewm(span=period, adjust=False).mean()
+    elif matype == "SMA":
+        ma = src.rolling(period).mean()
+    elif matype == "WMA":
+        weights = np.arange(1, period + 1)
+        ma = src.rolling(period).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
+    elif matype == "VWMA":
+        vmp = src * df['Volume']
+        ma = vmp.rolling(period).sum() / df['Volume'].rolling(period).sum()
+    elif matype == "COVWMA":
+        ma = covwma(src, period)
+    elif matype == "FRAMA":
+        ma = frama(src, df['High'], df['Low'], period, w)
+    elif matype == "KAMA":
+        ma = kama(src, period, fast, slow)
     else:
-        raise ValueError("Option_Type must be either 'CE' or 'PE'")
+        ma = src.ewm(span=period, adjust=False).mean()
 
+    # === Bollinger Band Width (Squeeze Calculation)
+    stdev = src.rolling(period).std()
+    bu = ma + stdev * ndev
+    bd = ma - stdev * ndev
+    bw = bu - bd
+    buh = bu.rolling(period).max()
+    bdl = bd.rolling(period).min()
+    brng = buh - bdl
+    sqp = 100 * bw / brng
+    squeeze = (sqp < sr).astype(int)
+
+    # === Slope and Signal
+    maslope = ma.diff()
+    signals = []
+    prev_signal = None
+    for slope in maslope:
+        if slope > 0 and prev_signal != 'Buy':
+            signals.append(1)   # Buy
+            prev_signal = 'Buy'
+        elif slope < 0 and prev_signal != 'Sell':
+            signals.append(-1)  # Sell
+            prev_signal = 'Sell'
+        else:
+            signals.append(0)  # Neutral
+
+    # === Add to df and return only st_sig column
+    data = df.copy()
+    data['st_sig'] = signals
+    data.to_excel("BuyOnlyTradeResults_Bollinger.xlsx", index=True)
     return data[['st_sig']]
 
 
