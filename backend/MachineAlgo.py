@@ -115,6 +115,7 @@ def super_trend(data):
     import pandas_ta as ta
     import numpy as np
     import pandas as pd
+    data['st_sig'] = 0
 
     data = data.copy()
 
