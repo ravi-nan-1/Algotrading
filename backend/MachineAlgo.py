@@ -152,7 +152,7 @@ def frama(src, high, low, length, w=-4.6):
 def super_trend(df, period=21, matype="COVWMA", ndev=2, sr=50,
                             w=-4.6, fast=0.666, slow=0.0645):
     src = df[['High', 'Low', 'Close']].mean(axis=1)
-    data['st_sig'] =0
+    df['st_sig'] =0
     # === Select MA
     if matype == "EMA":
         ma = src.ewm(span=period, adjust=False).mean()
