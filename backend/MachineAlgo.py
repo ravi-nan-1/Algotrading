@@ -120,8 +120,28 @@ def super_trend(data):
     import pandas as pd
 
     data = data.copy()
+
+    # === Indicators ===
     data['EMA'] = ta.ema(data['Close'], length=5)
     data['RSI'] = ta.rsi(data['Close'], length=14)
+    bb = ta.bbands(data['Close'], length=20, std=1)
+    data['BB_upper'] = bb['BBU_20_1.0']
+    data['BB_lower'] = bb['BBL_20_1.0']
+    data['BB_width'] = data['BB_upper'] - data['BB_lower']  # Bollinger Band width
+
+    # === Candle Stats ===
+    data['body'] = data['Close'] - data['Open']
+    data['range'] = data['High'] - data['Low']
+    data['upper_wick'] = data['High'] - data[['Close', 'Open']].max(axis=1)
+    data['lower_wick'] = data[['Close', 'Open']].min(axis=1) - data['Low']
+
+    # === Strong Bullish Candle Logic ===
+    strong_bullish_candle_logic = (
+        (data['body'] > 0) &
+        (data['body'] > 0.6 * data['range']) &
+        (data['upper_wick'] < 0.3 * data['body']) &
+        (data['lower_wick'] < 0.3 * data['body'])
+    )
 
     # === Setup Conditions ===
     cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
@@ -131,48 +151,56 @@ def super_trend(data):
     cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
     cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
 
-    setup_condition = (
+    setup_raw = (
         (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema)
         | (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy)
     )
 
-    data['setup'] = setup_condition.astype(int)
+    # === Time Filter: avoid 9:15–9:25 and 15:15–15:30 ===
+    data.index = pd.to_datetime(data.index)
+    time_filter = ~(
+        ((data.index.time >= pd.to_datetime("09:15").time()) & (data.index.time <= pd.to_datetime("09:25").time()))
+        | ((data.index.time >= pd.to_datetime("15:15").time()) & (data.index.time <= pd.to_datetime("15:30").time()))
+    )
 
-    signal = [0] * len(data)
-    signal_reason = [""] * len(data)
-
-    stored_prev_prev_ema = np.nan
-    waiting_since = -1
-    waiting = False
+    # === Setup Found Logic ===
+    setup_found = [0] * len(data)
+    active_trade = False
+    last_trade_index = -10
 
     for i in range(len(data)):
-        if not waiting and data['setup'].iloc[i] == 1 and i >= 2:
-            stored_prev_prev_ema = data['EMA'].iloc[i - 2]
-            waiting_since = i
-            waiting = True
+        if setup_raw.iloc[i] and not active_trade:
+            setup_found[i] = 1
+        if i - last_trade_index <= 2:
+            active_trade = True
+        else:
+            active_trade = False
 
-        if waiting:
-            # EMA crossover logic
-            if data['EMA'].iloc[i] > stored_prev_prev_ema:
-                signal[i] = 1
-                signal_reason[i] = "EMA_Crossover"
-                waiting = False
-                stored_prev_prev_ema = np.nan
+    setup_found_series = pd.Series(setup_found, index=data.index)
 
-            # RSI rising and crossing 45
-            elif i > 0:
-                rsi_prev = data['RSI'].iloc[i - 1]
-                rsi_curr = data['RSI'].iloc[i]
-                if rsi_curr > rsi_prev and rsi_prev <= 50 < rsi_curr:
-                    signal[i] = 1
-                    signal_reason[i] = "RSI_Cross_45"
-                    waiting = False
-                    stored_prev_prev_ema = np.nan
+    # === RSI Rising Condition ===
+    rsi_rising = data['RSI'] > data['RSI'].shift(1)
 
-    data['st_sig'] = signal
-    data['signal_reason'] = signal_reason
-    
-    return data[['st_sig', 'signal_reason']]
+    # === Branch Logic ===
+    cond_not_touching_bb_upper = data['High'] < data['BB_upper']
+
+    branch1 = (setup_found_series == 1) & strong_bullish_candle_logic & cond_not_touching_bb_upper & rsi_rising
+    branch2 = strong_bullish_candle_logic & (data['RSI'] > 50) & rsi_rising  & (data['RSI'] < 65)
+
+    # === Final Signal Assignment
+    signal_raw = np.where(branch1, 1, np.where(branch2, 1, 0))
+    signal_final = np.where(time_filter, signal_raw, 0)
+
+    # === Reason
+    reason = np.where(branch1, 'Branch1_StrongBullish_RSIUp_NoBBTouch',
+              np.where(branch2, 'Branch2_StrongBullish_RSI>50_RSIUp', ''))
+    reason = np.where(time_filter, reason, '')
+
+    data['st_sig'] = signal_final
+    data['signal_reason'] = reason
+    data['setup_found'] = setup_found_series
+   
+    return data[['st_sig', 'signal_reason', 'setup_found', 'BB_width']]
 
 
 
