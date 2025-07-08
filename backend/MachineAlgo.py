@@ -120,6 +120,7 @@ def super_trend(data):
     import pandas as pd
 
     data = data.copy()
+    data.index = pd.to_datetime(data.index)
 
     # === Indicators ===
     data['EMA'] = ta.ema(data['Close'], length=5)
@@ -127,9 +128,9 @@ def super_trend(data):
     bb = ta.bbands(data['Close'], length=20, std=1)
     data['BB_upper'] = bb['BBU_20_1.0']
     data['BB_lower'] = bb['BBL_20_1.0']
-    data['BB_width'] = data['BB_upper'] - data['BB_lower']  # Bollinger Band width
+    data['BB_width'] = data['BB_upper'] - data['BB_lower']
 
-    # === Candle Stats ===
+    # === Candle Anatomy ===
     data['body'] = data['Close'] - data['Open']
     data['range'] = data['High'] - data['Low']
     data['upper_wick'] = data['High'] - data[['Close', 'Open']].max(axis=1)
@@ -156,14 +157,14 @@ def super_trend(data):
         | (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy)
     )
 
-    # === Time Filter: avoid 9:15–9:25 and 15:15–15:30 ===
-    data.index = pd.to_datetime(data.index)
+    # === Time Filter ===
+    times = data.index.time
     time_filter = ~(
-        ((data.index.time >= pd.to_datetime("09:15").time()) & (data.index.time <= pd.to_datetime("09:25").time()))
-        | ((data.index.time >= pd.to_datetime("15:15").time()) & (data.index.time <= pd.to_datetime("15:30").time()))
+        ((times >= pd.to_datetime("09:15").time()) & (times <= pd.to_datetime("09:25").time())) |
+        ((times >= pd.to_datetime("15:15").time()) & (times <= pd.to_datetime("15:30").time()))
     )
 
-    # === Setup Found Logic ===
+    # === Setup Found (only one signal per window)
     setup_found = [0] * len(data)
     active_trade = False
     last_trade_index = -10
@@ -171,36 +172,38 @@ def super_trend(data):
     for i in range(len(data)):
         if setup_raw.iloc[i] and not active_trade:
             setup_found[i] = 1
-        if i - last_trade_index <= 2:
+            last_trade_index = i
             active_trade = True
-        else:
+        if i - last_trade_index > 2:
             active_trade = False
 
     setup_found_series = pd.Series(setup_found, index=data.index)
 
-    # === RSI Rising Condition ===
+    # === RSI Rising
     rsi_rising = data['RSI'] > data['RSI'].shift(1)
 
-    # === Branch Logic ===
+    # === Branch Conditions
     cond_not_touching_bb_upper = data['High'] < data['BB_upper']
 
     branch1 = (setup_found_series == 1) & strong_bullish_candle_logic & cond_not_touching_bb_upper & rsi_rising
-    branch2 = strong_bullish_candle_logic & (data['RSI'] > 50) & rsi_rising  & (data['RSI'] < 65)
+    branch2 = strong_bullish_candle_logic & (data['RSI'] > 50) & (data['RSI'] < 65) & rsi_rising
 
-    # === Final Signal Assignment
+    # === Final Signal and Reason
     signal_raw = np.where(branch1, 1, np.where(branch2, 1, 0))
     signal_final = np.where(time_filter, signal_raw, 0)
 
-    # === Reason
     reason = np.where(branch1, 'Branch1_StrongBullish_RSIUp_NoBBTouch',
               np.where(branch2, 'Branch2_StrongBullish_RSI>50_RSIUp', ''))
     reason = np.where(time_filter, reason, '')
 
+    # === Output Columns
     data['st_sig'] = signal_final
     data['signal_reason'] = reason
     data['setup_found'] = setup_found_series
-   
+
+    data.to_excel("BuyOnlyTradeResults_Bollinger.xlsx", index=True)
     return data[['st_sig', 'signal_reason', 'setup_found', 'BB_width']]
+
 
 
 
