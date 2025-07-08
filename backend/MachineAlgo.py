@@ -325,9 +325,22 @@ def update_Short_trades(ticker, entry_time, SellPrice, target_price,Sprice, qty,
 
 def all_trade_files():
     files = [Long_Trade_File, Short_Trade_File]
-    merged_df = pd.concat([pd.read_excel(file) for file in files], ignore_index=True)
-    merged_df.to_excel('All_Trades.xlsx', index=False)
-    return 'All_Trades.xlsx saved successfully.'
+    valid_dfs = []
+
+    for file in files:
+        if os.path.exists(file):
+            df = pd.read_excel(file)
+            if not df.empty:
+                valid_dfs.append(df)
+        else:
+            print(f"File not found: {file}")
+
+    if valid_dfs:
+        merged_df = pd.concat(valid_dfs, ignore_index=True)
+        merged_df.to_excel('All_Trades.xlsx', index=False)
+        return 'All_Trades.xlsx saved successfully.'
+    else:
+        return 'No valid trade files found to merge.'
 
 
 # Call the function
