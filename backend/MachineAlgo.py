@@ -201,8 +201,8 @@ def super_trend(data):
     data['signal_reason'] = reason
     data['setup_found'] = setup_found_series
 
-    data.to_excel("BuyOnlyTradeResults_Bollinger.xlsx", index=True)
-    return data[['st_sig', 'signal_reason', 'setup_found', 'BB_width']]
+    
+    return data[['st_sig']]
 
 
 
