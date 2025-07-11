@@ -114,7 +114,7 @@ def get_cash_market_data(symbol, timeframe):
 
 
 
-def super_trend(data):
+def super_trend_test(data):
     import pandas_ta as ta
     import numpy as np
     import pandas as pd
@@ -205,7 +205,57 @@ def super_trend(data):
     return data[['st_sig']]
 
 
+def is_stuck_zone(df_slice, max_range_percent=2):
+    recent_high = df_slice['High'].max()
+    recent_low = df_slice['Low'].min()
+    mid_price = df_slice['Close'].iloc[-1]
+    price_range = recent_high - recent_low
+    return (price_range / mid_price) * 100 < max_range_percent
 
+def super_trend(data, apply_stuck_zone_filter=False):
+    import pandas as pd
+    import numpy as np
+    import pandas_ta as ta
+
+    data = data.copy()
+    data['EMA5'] = ta.ema(data['Close'], length=5)
+    data['EMA9'] = ta.ema(data['Close'], length=9)
+    data['EMA15'] = ta.ema(data['Close'], length=15)
+    data['RSI'] = ta.rsi(data['Close'], length=14)
+    data['Body'] = abs(data['Close'] - data['Open'])
+    data['AvgBody'] = data['Body'].rolling(5).mean()
+    data['AvgVol'] = data['Volume'].rolling(5).mean()
+
+    # Time filter mask (exclude 9:15–9:25)
+    data['Time'] = data.index.time
+    data['valid_time'] = data['Time'] >= pd.to_datetime("09:25:00").time()
+
+    # === Bullish Breakout Conditions ===
+    cond_price_above_ema = data['Close'] > data['EMA5']
+    cond_bull_body = data['Body'] > data['AvgBody'] * 1.2
+    cond_rsi_bull = data['RSI'] > 50
+    cond_vol_bull = data['Volume'] > data['AvgVol'] * 1.1
+    cond_high_break = data['Close'] > data['High'].rolling(3).max().shift(1)
+
+    # Final bullish signal
+    bullish_signal = (
+        data['valid_time'] &
+        cond_price_above_ema &
+        cond_bull_body &
+        cond_rsi_bull &
+        cond_vol_bull &
+        cond_high_break
+    )
+
+    data['st_sig'] = np.where(bullish_signal, 1, 0)
+
+    # Optional stuck zone filter (disables signal if in stuck zone)
+    if apply_stuck_zone_filter:
+        for i in range(15, len(data)):
+            if is_stuck_zone(data.iloc[i-10:i]):
+                data.at[data.index[i], 'st_sig'] = 0
+
+    return data[['st_sig']]
 
 
 
