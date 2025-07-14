@@ -216,7 +216,7 @@ def super_trend(data, apply_stuck_zone_filter=False):
     import pandas as pd
     import numpy as np
     import pandas_ta as ta
-
+    data['st_sig']=0
     data = data.copy()
     data['EMA5'] = ta.ema(data['Close'], length=5)
     data['EMA9'] = ta.ema(data['Close'], length=9)
