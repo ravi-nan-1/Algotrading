@@ -114,20 +114,27 @@ def get_cash_market_data(symbol, timeframe):
 
 
 
-def super_trend_test(data):
+def super_trend_1(data):
     import pandas_ta as ta
     import numpy as np
     import pandas as pd
-    data['st_sig']=0
+
     data = data.copy()
-    data.index = pd.to_datetime(data.index)
+    data.index = pd.to_datetime(data.index, errors='coerce')
+    data = data.dropna(subset=['Close'])  # Ensure no NaT index or NaN in 'Close'
+    data['st_sig'] = 0
 
     # === Indicators ===
     data['EMA'] = ta.ema(data['Close'], length=5)
     data['RSI'] = ta.rsi(data['Close'], length=14)
+
     bb = ta.bbands(data['Close'], length=20, std=1)
-    data['BB_upper'] = bb['BBU_20_1.0']
-    data['BB_lower'] = bb['BBL_20_1.0']
+    if bb is not None and all(col in bb.columns for col in ['BBU_20_1.0', 'BBL_20_1.0']):
+        data['BB_upper'] = bb['BBU_20_1.0']
+        data['BB_lower'] = bb['BBL_20_1.0']
+    else:
+        data['BB_upper'] = np.nan
+        data['BB_lower'] = np.nan
     data['BB_width'] = data['BB_upper'] - data['BB_lower']
 
     # === Candle Anatomy ===
@@ -148,7 +155,8 @@ def super_trend_test(data):
     cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
     cond_bullish_candle = data['Close'] > data['Open']
     cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
-    cond_bearish_ema_below = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Open'].shift(1) < data['EMA'].shift(1))
+    cond_bearish_ema_below = (data['Close'].shift(1) < data['EMA'].shift(1)) & (
+        data['Open'].shift(1) < data['EMA'].shift(1))
     cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
     cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
 
@@ -164,7 +172,7 @@ def super_trend_test(data):
         ((times >= pd.to_datetime("15:15").time()) & (times <= pd.to_datetime("15:30").time()))
     )
 
-    # === Setup Found (only one signal per window)
+    # === Setup Found (one signal per window)
     setup_found = [0] * len(data)
     active_trade = False
     last_trade_index = -10
@@ -193,7 +201,7 @@ def super_trend_test(data):
     signal_final = np.where(time_filter, signal_raw, 0)
 
     reason = np.where(branch1, 'Branch1_StrongBullish_RSIUp_NoBBTouch',
-              np.where(branch2, 'Branch2_StrongBullish_RSI>50_RSIUp', ''))
+                      np.where(branch2, 'Branch2_StrongBullish_RSI>50_RSIUp', ''))
     reason = np.where(time_filter, reason, '')
 
     # === Output Columns
@@ -201,8 +209,8 @@ def super_trend_test(data):
     data['signal_reason'] = reason
     data['setup_found'] = setup_found_series
 
-    
-    return data[['st_sig']]
+    return data[['st_sig', 'signal_reason', 'setup_found']]
+
 
 
 def is_stuck_zone(df_slice, max_range_percent=2):
@@ -212,7 +220,7 @@ def is_stuck_zone(df_slice, max_range_percent=2):
     price_range = recent_high - recent_low
     return (price_range / mid_price) * 100 < max_range_percent
 
-def super_trend(data, apply_stuck_zone_filter=False):
+def super_trend_test(data, apply_stuck_zone_filter=False):
     import pandas as pd
     import numpy as np
     import pandas_ta as ta
