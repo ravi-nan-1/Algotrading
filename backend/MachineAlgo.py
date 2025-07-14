@@ -227,8 +227,8 @@ def super_trend(data, apply_stuck_zone_filter=False):
     data['AvgVol'] = data['Volume'].rolling(5).mean()
 
     # Time filter mask (exclude 9:15–9:25)
-    data['Time'] = data.index.time
-    data['valid_time'] = data['Time'] >= pd.to_datetime("09:25:00").time()
+    #data['Time'] = data.index.time
+    #data['valid_time'] = data['Time'] >= pd.to_datetime("09:25:00").time()
 
     # === Bullish Breakout Conditions ===
     cond_price_above_ema = data['Close'] > data['EMA5']
@@ -239,7 +239,7 @@ def super_trend(data, apply_stuck_zone_filter=False):
 
     # Final bullish signal
     bullish_signal = (
-        data['valid_time'] &
+        
         cond_price_above_ema &
         cond_bull_body &
         cond_rsi_bull &
