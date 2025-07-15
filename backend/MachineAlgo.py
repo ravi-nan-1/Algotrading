@@ -114,7 +114,7 @@ def get_cash_market_data(symbol, timeframe):
 
 
 
-def super_trend_1(data):
+def super_trend(data):
     import pandas_ta as ta
     import numpy as np
     import pandas as pd
