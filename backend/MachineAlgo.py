@@ -114,11 +114,17 @@ def get_cash_market_data(symbol, timeframe):
 
 
 
+def volume_oscillator(df, fast=14, slow=28):
+    ema_fast = df['Volume'].ewm(span=fast, adjust=False).mean()
+    ema_slow = df['Volume'].ewm(span=slow, adjust=False).mean()
+    vo = ((ema_fast - ema_slow) / ema_slow) * 100
+    return vo
+
 def super_trend(data):
     import pandas_ta as ta
     import numpy as np
     import pandas as pd
-    data['st_sig']=0
+    
 
 
     # Helper: check if open and close are inside any zone
@@ -128,7 +134,7 @@ def super_trend(data):
 
     # Midpoint of High and Low
     mid_price = (data['High']+data['Low']) / 2
-
+    data["VO"] = volume_oscillator(data, fast=10, slow=20)
     # Calculate bands
     data['upperBand'] = mid_price+data['ATR'] * multiplier
     data['lowerBand'] = mid_price-data['ATR'] * multiplier
@@ -205,7 +211,7 @@ def super_trend(data):
         (setup_found_series == 1)
         & strong_bullish_candle_logic
         & cond_not_touching_bb_upper
-        & rsi_rising & (data['diff']>60)
+        & rsi_rising & (data['VO']>0)
 
     )
 
@@ -213,7 +219,7 @@ def super_trend(data):
         strong_bullish_candle_logic
         & (data['RSI'] > 50)
         & (data['RSI'] < 65)
-        & rsi_rising  & (data['diff']>60)
+        & rsi_rising  & (data['VO']>0)
 
     )
 
