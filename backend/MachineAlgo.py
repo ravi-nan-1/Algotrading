@@ -124,37 +124,32 @@ def super_trend(data):
     import pandas_ta as ta
     import numpy as np
     import pandas as pd
-    
+    data['st_sig'] = 0
 
-
-    # Helper: check if open and close are inside any zone
-    volatility_period=10
-    multiplier=5.0
+    # === ATR & Bands ===
+    volatility_period = 10
+    multiplier = 5.0
     data['ATR'] = ta.atr(high=data['High'], low=data['Low'], close=data['Close'], length=volatility_period)
-
-    # Midpoint of High and Low
-    mid_price = (data['High']+data['Low']) / 2
+    mid_price = (data['High'] + data['Low']) / 2
     data["VO"] = volume_oscillator(data, fast=10, slow=20)
-    # Calculate bands
-    data['upperBand'] = mid_price+data['ATR'] * multiplier
-    data['lowerBand'] = mid_price-data['ATR'] * multiplier
-    data['diff']=(data['upperBand']-data['lowerBand'])
-    data = data.copy()
+    data['upperBand'] = mid_price + data['ATR'] * multiplier
+    data['lowerBand'] = mid_price - data['ATR'] * multiplier
+    data['diff'] = data['upperBand'] - data['lowerBand']
     data.index = pd.to_datetime(data.index, errors='coerce')
     data = data.dropna(subset=['Close'])
-    data['st_sig'] = 0
 
     # === Indicators ===
     data['EMA'] = ta.ema(data['Close'], length=5)
     data['RSI'] = ta.rsi(data['Close'], length=14)
-
     bb = ta.bbands(data['Close'], length=20, std=1)
+
     if bb is not None and all(col in bb.columns for col in ['BBU_20_1.0', 'BBL_20_1.0']):
         data['BB_upper'] = bb['BBU_20_1.0']
         data['BB_lower'] = bb['BBL_20_1.0']
     else:
         data['BB_upper'] = np.nan
         data['BB_lower'] = np.nan
+
     data['BB_width'] = data['BB_upper'] - data['BB_lower']
 
     # === Candle Anatomy ===
@@ -184,7 +179,7 @@ def super_trend(data):
         | (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy)
     )
 
-    # === Setup Found (one signal per window)
+    # === Setup Detection ===
     setup_found = [0] * len(data)
     active_trade = False
     last_trade_index = -10
@@ -202,31 +197,38 @@ def super_trend(data):
     # === RSI Rising
     rsi_rising = data['RSI'] > data['RSI'].shift(1)
 
-    # === Zone Filter Column (check all zones)
-
-    # === Branch Conditions with zone check
+    # === Branch 1
     cond_not_touching_bb_upper = data['High'] < data['BB_upper']
-
     branch1 = (
         (setup_found_series == 1)
         & strong_bullish_candle_logic
         & cond_not_touching_bb_upper
-        & rsi_rising & (data['VO']>0)
-
+        & rsi_rising & (data['VO'] > 0)
     )
 
+    # === Branch 2
     branch2 = (
         strong_bullish_candle_logic
         & (data['RSI'] > 50)
         & (data['RSI'] < 65)
-        & rsi_rising  & (data['VO']>0)
-
+        & rsi_rising & (data['VO'] > 0)
     )
 
-    # === Final Signal and Reason
-    signal_final = np.where(branch1, 1, np.where(branch2, 1, 0))
+    # === Branch 3: BB Breakout
+    branch3 = (
+        (data['Close'] > data['BB_upper']) &
+        (data['RSI'] > 50) &
+        (data['VO'] > 0)
+    )
+
+    # === Final Signal Logic
+    signal_final = np.where(branch1, 1,
+                     np.where(branch2, 1,
+                     np.where(branch3, 1, 0)))
+
     reason = np.where(branch1, 'Branch1_StrongBullish_RSIUp_NoBBTouch',
-                      np.where(branch2, 'Branch2_StrongBullish_RSI>50_RSIUp', ''))
+               np.where(branch2, 'Branch2_StrongBullish_RSI>50_RSIUp',
+               np.where(branch3, 'Branch3_BBUpperBreakout_RSI>50_VO>0', '')))
 
     # === Output Columns
     data['st_sig'] = signal_final
