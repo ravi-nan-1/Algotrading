@@ -114,75 +114,120 @@ def get_cash_market_data(symbol, timeframe):
 
 
 
-def super_trend(data, macd_fast=5, macd_slow=12, macd_signal_ema=12, rsi_period=14, atr_period=10, multiplier=5.0):
+def super_trend(data):
     import pandas_ta as ta
     import numpy as np
     import pandas as pd
 
-    df = data.copy()
 
-    # === MACD ===
-    macd = ta.macd(df['Close'], fast=macd_fast, slow=macd_slow, signal=macd_signal_ema)
-    df['macd'] = macd[f'MACD_{macd_fast}_{macd_slow}_{macd_signal_ema}']
-    df['signal'] = macd[f'MACDs_{macd_fast}_{macd_slow}_{macd_signal_ema}']
-    df['hist'] = macd[f'MACDh_{macd_fast}_{macd_slow}_{macd_signal_ema}']
 
-    # === RSI ===
-    df['rsi'] = ta.rsi(df['Close'], length=rsi_period)
-    df['rsisignal'] = df['rsi'] - 50
+    # Helper: check if open and close are inside any zone
+    volatility_period=10
+    multiplier=5.0
+    data['ATR'] = ta.atr(high=data['High'], low=data['Low'], close=data['Close'], length=volatility_period)
 
-    # === ATR and Bands ===
-    df['atr'] = ta.atr(df['High'], df['Low'], df['Close'], length=atr_period)
-    df['mid'] = (df['High'] + df['Low']) / 2
-    df['upperBand'] = df['mid'] + df['atr'] * multiplier
-    df['lowerBand'] = df['mid'] - df['atr'] * multiplier
-    df['ZOnediff']=(df['upperBand']-df['lowerBand'])
-    # === Support/Resistance Zones ===
-    df['supportLevel'] = df['Low'].rolling(20).min()
-    df['resistanceLevel'] = df['High'].rolling(20).max()
-    df['minLowerBand'] = df['lowerBand'].rolling(20).min()
-    df['maxLowerBand'] = df['lowerBand'].rolling(20).max()
-    df['minUpperBand'] = df['upperBand'].rolling(20).min()
-    df['maxUpperBand'] = df['upperBand'].rolling(20).max()
+    # Midpoint of High and Low
+    mid_price = (data['High']+data['Low']) / 2
 
-    df['preciseSupportStart'] = df[['supportLevel', 'minLowerBand']].max(axis=1)
-    df['preciseSupportEnd'] = pd.concat([df['supportLevel'], df['maxLowerBand']], axis=1).min(axis=1)
-    df['preciseResistanceStart'] = pd.concat([df['resistanceLevel'], df['minUpperBand']], axis=1).max(axis=1)
-    df['preciseResistanceEnd'] = pd.concat([df['resistanceLevel'], df['maxUpperBand']], axis=1).min(axis=1)
+    # Calculate bands
+    data['upperBand'] = mid_price+data['ATR'] * multiplier
+    data['lowerBand'] = mid_price-data['ATR'] * multiplier
+    data['diff']=(data['upperBand']-data['lowerBand'])
+    data = data.copy()
+    data.index = pd.to_datetime(data.index, errors='coerce')
+    data = data.dropna(subset=['Close'])
+    data['st_sig'] = 0
 
-    # === Kalman Filter ===
-    def kalman_filter(series, q=0.01, r=0.1):
-        x = np.zeros(len(series))
-        p = np.zeros(len(series))
-        x[0] = series.fillna(method='bfill').iloc[0]
-        p[0] = 1.0
-        for i in range(1, len(series)):
-            k = p[i - 1] / (p[i - 1] + r)
-            x[i] = x[i - 1] + k * (series.iloc[i] - x[i - 1])
-            p[i] = (1 - k) * p[i - 1] + q
-        return pd.Series(x, index=series.index)
+    # === Indicators ===
+    data['EMA'] = ta.ema(data['Close'], length=5)
+    data['RSI'] = ta.rsi(data['Close'], length=14)
 
-    df['smoothedSupportEnd'] = kalman_filter(df['preciseSupportEnd'].fillna(method='bfill'))
-    df['smoothedResistanceStart'] = kalman_filter(df['preciseResistanceStart'].fillna(method='bfill'))
+    bb = ta.bbands(data['Close'], length=20, std=1)
+    if bb is not None and all(col in bb.columns for col in ['BBU_20_1.0', 'BBL_20_1.0']):
+        data['BB_upper'] = bb['BBU_20_1.0']
+        data['BB_lower'] = bb['BBL_20_1.0']
+    else:
+        data['BB_upper'] = np.nan
+        data['BB_lower'] = np.nan
+    data['BB_width'] = data['BB_upper'] - data['BB_lower']
 
-    # === MACD Crossovers ===
-    df['cross_up'] = (df['macd'] > df['signal']) & (df['macd'].shift(1) <= df['signal'].shift(1))
-    df['cross_down'] = (df['macd'] < df['signal']) & (df['macd'].shift(1) >= df['signal'].shift(1))
+    # === Candle Anatomy ===
+    data['body'] = data['Close'] - data['Open']
+    data['range'] = data['High'] - data['Low']
+    data['upper_wick'] = data['High'] - data[['Close', 'Open']].max(axis=1)
+    data['lower_wick'] = data[['Close', 'Open']].min(axis=1) - data['Low']
 
-    # === Signal Logic ===
-    df['strong_buy'] = df['cross_up'] & (df['rsisignal'] > 0) & (df['Close'] > df['smoothedSupportEnd']) & (df['ZOnediff']>150)
-    df['buy'] = df['cross_up'] & (df['Close'] > df['smoothedSupportEnd']) & (df['ZOnediff']>150)
+    # === Strong Bullish Candle Logic ===
+    strong_bullish_candle_logic = (
+        (data['body'] > 0) &
+        (data['body'] > 0.6 * data['range']) &
+        (data['upper_wick'] < 0.3 * data['body']) &
+        (data['lower_wick'] < 0.3 * data['body'])
+    )
 
-    df['strong_sell'] = df['cross_down'] & (df['rsisignal'] < 0) & (df['Close'] < df['smoothedResistanceStart']) & (df['ZOnediff']>150)
-    df['sell'] = df['cross_down'] & (df['Close'] < df['smoothedResistanceStart']) & (df['ZOnediff']>150)
+    # === Setup Conditions ===
+    cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
+    cond_bullish_candle = data['Close'] > data['Open']
+    cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
+    cond_bearish_ema_below = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Open'].shift(1) < data['EMA'].shift(1))
+    cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
+    cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
 
-    # === Unified Signal ===
-    df['st_sig'] = 0
-    df.loc[df['strong_buy'] | df['buy'], 'st_sig'] = 1
-    df.loc[df['strong_sell'] | df['sell'], 'st_sig'] = -1
+    setup_raw = (
+        (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema)
+        | (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy)
+    )
 
-    return df[['st_sig', 'strong_buy', 'strong_sell','ZOnediff']]
+    # === Setup Found (one signal per window)
+    setup_found = [0] * len(data)
+    active_trade = False
+    last_trade_index = -10
 
+    for i in range(len(data)):
+        if setup_raw.iloc[i] and not active_trade:
+            setup_found[i] = 1
+            last_trade_index = i
+            active_trade = True
+        if i - last_trade_index > 2:
+            active_trade = False
+
+    setup_found_series = pd.Series(setup_found, index=data.index)
+
+    # === RSI Rising
+    rsi_rising = data['RSI'] > data['RSI'].shift(1)
+
+    # === Zone Filter Column (check all zones)
+
+    # === Branch Conditions with zone check
+    cond_not_touching_bb_upper = data['High'] < data['BB_upper']
+
+    branch1 = (
+        (setup_found_series == 1)
+        & strong_bullish_candle_logic
+        & cond_not_touching_bb_upper
+        & rsi_rising & (data['diff']>60)
+
+    )
+
+    branch2 = (
+        strong_bullish_candle_logic
+        & (data['RSI'] > 50)
+        & (data['RSI'] < 65)
+        & rsi_rising  & (data['diff']>60)
+
+    )
+
+    # === Final Signal and Reason
+    signal_final = np.where(branch1, 1, np.where(branch2, 1, 0))
+    reason = np.where(branch1, 'Branch1_StrongBullish_RSIUp_NoBBTouch',
+                      np.where(branch2, 'Branch2_StrongBullish_RSI>50_RSIUp', ''))
+
+    # === Output Columns
+    data['st_sig'] = signal_final
+    data['signal_reason'] = reason
+    data['setup_found'] = setup_found_series
+    data.to_excel("BuyOnlyTradeResults.xlsx", index=True)
+    return data[['st_sig', 'signal_reason', 'setup_found']]
 
 
 
