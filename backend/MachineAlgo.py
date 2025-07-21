@@ -23,7 +23,6 @@ from sklearn.metrics import classification_report
 import joblib
 UTC = pytz.timezone('Asia/Kolkata')
 import time
-import pandas_ta as ta
 
 client = FivePaisaClient(cred=auth.cred)
 print(pyotp.TOTP(auth.token).now())
@@ -100,7 +99,7 @@ def get_cash_market_data(symbol, timeframe):
     strike = float(parts[5])  # Extract strike price and convert to float
 
     df = pd.DataFrame(client.historical_data(Exch='N', ExchangeSegment='D', ScripCode=scriptcode, time=timeframe,
-                                             From=dt.date.today()-dt.timedelta(4), To=dt.date.today()))
+                                             From=dt.date.today()-dt.timedelta(2), To=dt.date.today()))
 
     df.set_index("Datetime", inplace=True)
     df["Option_Type"] = opttype
@@ -113,157 +112,91 @@ def get_cash_market_data(symbol, timeframe):
 
 
 
-
-def super_trend(data):
+def super_trend(data, period=3, mul=1):
     import pandas_ta as ta
     import numpy as np
-    import pandas as pd
 
-    data = data.copy()
-    data.index = pd.to_datetime(data.index, errors='coerce')
-    data = data.dropna(subset=['Close'])  # Ensure no NaT index or NaN in 'Close'
-    data['st_sig'] = 0
+    # Indicator parameters
+    fast, slow, signal = 5, 9, 9
+    ema_period = 5
+    box_window = 5
 
     # === Indicators ===
-    data['EMA'] = ta.ema(data['Close'], length=5)
-    data['RSI'] = ta.rsi(data['Close'], length=14)
+    macd = ta.macd(data['Close'], fast=fast, slow=slow, signal=signal)
+    data['macd'] = macd['MACD_5_9_9']
+    data['macd_signal'] = macd['MACDs_5_9_9']
+    data['macd_rising'] = (data['macd'] - data['macd_signal']) > 0.4
 
-    bb = ta.bbands(data['Close'], length=20, std=1)
-    if bb is not None and all(col in bb.columns for col in ['BBU_20_1.0', 'BBL_20_1.0']):
-        data['BB_upper'] = bb['BBU_20_1.0']
-        data['BB_lower'] = bb['BBL_20_1.0']
-    else:
-        data['BB_upper'] = np.nan
-        data['BB_lower'] = np.nan
-    data['BB_width'] = data['BB_upper'] - data['BB_lower']
+    data['EMA'] = ta.ema(data['Close'], length=ema_period)
+    data['EMA20'] = ta.ema(data['Close'], length=20)
+    data['EMA3'] = ta.ema(data['Close'], length=3)
+    data['EMA50'] = ta.ema(data['Close'], length=50)
+    data['box_high'] = data['High'].rolling(window=box_window).max()
+    data['box_low'] = data['Low'].rolling(window=box_window).min()
+    Ema20_below=data["Close"] <data["EMA20"] 
+    # Calculate EMA20 slope and angle
+    data['EMA20_slope'] = data['EMA20'] - data['EMA20'].shift(1)
+    data['EMA20_angle'] = np.rad2deg(np.arctan(data['EMA20_slope']))
 
-    # === Candle Anatomy ===
-    data['body'] = data['Close'] - data['Open']
-    data['range'] = data['High'] - data['Low']
-    data['upper_wick'] = data['High'] - data[['Close', 'Open']].max(axis=1)
-    data['lower_wick'] = data[['Close', 'Open']].min(axis=1) - data['Low']
+    data['RSI'] = ta.rsi(data["Close"], length=14)
+    # Calculate EMA20 slope and angle
+    data['EMA20_slope'] = data['EMA20']-data['EMA20'].shift(1)
+    data['EMA20_angle'] = np.rad2deg(np.arctan(data['EMA20_slope']))
+    
+    data.index = pd.to_datetime(data.index)
 
-    # === Strong Bullish Candle Logic ===
-    strong_bullish_candle_logic = (
-        (data['body'] > 0) &
-        (data['body'] > 0.6 * data['range']) &
-        (data['upper_wick'] < 0.3 * data['body']) &
-        (data['lower_wick'] < 0.3 * data['body'])
-    )
+    data['price_diff_3'] = data['Close'].diff(3)
+    data['price_diff']=data['Close'].shift(1).diff(1)
+    data['time_diff_sec'] = data.index.to_series().diff(3).dt.total_seconds().replace(0, np.nan)
+    data['rate_per_minute_3'] = data['price_diff_3'] / 3.0
+    data['rate_per_minute'] = abs((data['price_diff'] / 3.0) / 2)
 
-    # === Setup Conditions ===
+    # Calculate volume difference
+    data['volume_diff'] = data['Volume'].diff(3)
+
+    # Calculate rate per minute for volume
+    data['rate_per_minute_volume'] = data['volume_diff'] / 3.0
+    threshold = 1e-4
+
+    def classify(rate):
+
+        if pd.isna(rate) or abs(rate) < threshold:
+
+            return 'no_move'
+        elif rate > 0:
+            return 'up'
+        else:
+            return 'down'
+
+    data['price_movement'] = data['rate_per_minute_3'].apply(lambda r: classify(r))
+    data['volume_movement'] = data['rate_per_minute_volume'].apply(lambda r: classify(r))
+    # === Bullish Reversal Condition ===
     cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
     cond_bullish_candle = data['Close'] > data['Open']
     cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
-    cond_bearish_ema_below = (data['Close'].shift(1) < data['EMA'].shift(1)) & (
-        data['Open'].shift(1) < data['EMA'].shift(1))
+    cond_bearish_ema_below = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Open'].shift(1) < data['EMA'].shift(1))
+    cond_bearish_ema_above = data['Close'].shift(1) > data['EMA'].shift(1)
     cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
     cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
-
-    setup_raw = (
-        (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema)
-        | (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy)
+    ema3_rising = data['EMA3'] > data['EMA3'].shift(1)
+    RSIs = data['RSI'] > 40
+    rate_pr=data['rate_per_minute_3']>data['rate_per_minute']
+    Ema20below=data['Close']> data['EMA50']
+    volume_move=data['volume_movement'] == "up"
+    # Final SuperTrend-like Buy Signal
+    data['st_sig'] = np.where(
+        (
+            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema  & Ema20below
+        ) | (
+            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy & Ema20below
+        ),
+        1,
+        0
     )
-
-    # === Time Filter ===
-    times = data.index.time
-    time_filter = ~(
-        ((times >= pd.to_datetime("09:15").time()) & (times <= pd.to_datetime("09:25").time())) |
-        ((times >= pd.to_datetime("15:15").time()) & (times <= pd.to_datetime("15:30").time()))
-    )
-
-    # === Setup Found (one signal per window)
-    setup_found = [0] * len(data)
-    active_trade = False
-    last_trade_index = -10
-
-    for i in range(len(data)):
-        if setup_raw.iloc[i] and not active_trade:
-            setup_found[i] = 1
-            last_trade_index = i
-            active_trade = True
-        if i - last_trade_index > 2:
-            active_trade = False
-
-    setup_found_series = pd.Series(setup_found, index=data.index)
-
-    # === RSI Rising
-    rsi_rising = data['RSI'] > data['RSI'].shift(1)
-
-    # === Branch Conditions
-    cond_not_touching_bb_upper = data['High'] < data['BB_upper']
-
-    branch1 = (setup_found_series == 1) & strong_bullish_candle_logic & cond_not_touching_bb_upper & rsi_rising
-    branch2 = strong_bullish_candle_logic & (data['RSI'] > 50) & (data['RSI'] < 65) & rsi_rising
-
-    # === Final Signal and Reason
-    signal_raw = np.where(branch1, 1, np.where(branch2, 1, 0))
-    signal_final = np.where(time_filter, signal_raw, 0)
-
-    reason = np.where(branch1, 'Branch1_StrongBullish_RSIUp_NoBBTouch',
-                      np.where(branch2, 'Branch2_StrongBullish_RSI>50_RSIUp', ''))
-    reason = np.where(time_filter, reason, '')
-
-    # === Output Columns
-    data['st_sig'] = signal_final
-    data['signal_reason'] = reason
-    data['setup_found'] = setup_found_series
-
-    return data[['st_sig', 'signal_reason', 'setup_found']]
-
-
-
-def is_stuck_zone(df_slice, max_range_percent=2):
-    recent_high = df_slice['High'].max()
-    recent_low = df_slice['Low'].min()
-    mid_price = df_slice['Close'].iloc[-1]
-    price_range = recent_high - recent_low
-    return (price_range / mid_price) * 100 < max_range_percent
-
-def super_trend_test(data, apply_stuck_zone_filter=False):
-    import pandas as pd
-    import numpy as np
-    import pandas_ta as ta
-    data['st_sig']=0
-    data = data.copy()
-    data['EMA5'] = ta.ema(data['Close'], length=5)
-    data['EMA9'] = ta.ema(data['Close'], length=9)
-    data['EMA15'] = ta.ema(data['Close'], length=15)
-    data['RSI'] = ta.rsi(data['Close'], length=14)
-    data['Body'] = abs(data['Close'] - data['Open'])
-    data['AvgBody'] = data['Body'].rolling(5).mean()
-    data['AvgVol'] = data['Volume'].rolling(5).mean()
-
-    # Time filter mask (exclude 9:15–9:25)
-    #data['Time'] = data.index.time
-    #data['valid_time'] = data['Time'] >= pd.to_datetime("09:25:00").time()
-
-    # === Bullish Breakout Conditions ===
-    cond_price_above_ema = data['Close'] > data['EMA5']
-    cond_bull_body = data['Body'] > data['AvgBody'] * 1.2
-    cond_rsi_bull = data['RSI'] > 50
-    cond_vol_bull = data['Volume'] > data['AvgVol'] * 1.1
-    cond_high_break = data['Close'] > data['High'].rolling(3).max().shift(1)
-
-    # Final bullish signal
-    bullish_signal = (
-        
-        cond_price_above_ema &
-        cond_bull_body &
-        cond_rsi_bull &
-        cond_vol_bull &
-        cond_high_break
-    )
-
-    data['st_sig'] = np.where(bullish_signal, 1, 0)
-
-    # Optional stuck zone filter (disables signal if in stuck zone)
-    if apply_stuck_zone_filter:
-        for i in range(15, len(data)):
-            if is_stuck_zone(data.iloc[i-10:i]):
-                data.at[data.index[i], 'st_sig'] = 0
 
     return data[['st_sig']]
+
+
 
 
 
@@ -386,22 +319,9 @@ def update_Short_trades(ticker, entry_time, SellPrice, target_price,Sprice, qty,
 
 def all_trade_files():
     files = [Long_Trade_File, Short_Trade_File]
-    valid_dfs = []
-
-    for file in files:
-        if os.path.exists(file):
-            df = pd.read_excel(file)
-            if not df.empty:
-                valid_dfs.append(df)
-        else:
-            print(f"File not found: {file}")
-
-    if valid_dfs:
-        merged_df = pd.concat(valid_dfs, ignore_index=True)
-        merged_df.to_excel('All_Trades.xlsx', index=False)
-        return 'All_Trades.xlsx saved successfully.'
-    else:
-        return 'No valid trade files found to merge.'
+    merged_df = pd.concat([pd.read_excel(file) for file in files], ignore_index=True)
+    merged_df.to_excel('All_Trades.xlsx', index=False)
+    return 'All_Trades.xlsx saved successfully.'
 
 
 # Call the function
@@ -467,48 +387,6 @@ def close_short_trade(ticker, exit_time, buy_price, points, brokerage, profit_lo
 
 
 # Define the required times
-required_times11 = [
-    (9, 20), (9, 21), (9, 22), (9, 23), (9, 24), (9, 25), (9, 26), (9, 27), (9, 28), (9, 29),
-    (9, 30), (9, 31), (9, 32), (9, 33), (9, 34), (9, 35), (9, 36), (9, 37), (9, 38), (9, 39),
-    (9, 40), (9, 41), (9, 42), (9, 43), (9, 44), (9, 45), (9, 46), (9, 47), (9, 48), (9, 49),
-    (9, 50), (9, 51), (9, 52), (9, 53), (9, 54), (9, 55), (9, 56), (9, 57), (9, 58), (9, 59),
-    (10, 0), (10, 1), (10, 2), (10, 3), (10, 4), (10, 5), (10, 6), (10, 7), (10, 8), (10, 9),
-    (10, 10), (10, 11), (10, 12), (10, 13), (10, 14), (10, 15), (10, 16), (10, 17), (10, 18), (10, 19),
-    (10, 20), (10, 21), (10, 22), (10, 23), (10, 24), (10, 25), (10, 26), (10, 27), (10, 28), (10, 29),
-    (10, 30), (10, 31), (10, 32), (10, 33), (10, 34), (10, 35), (10, 36), (10, 37), (10, 38), (10, 39),
-    (10, 40), (10, 41), (10, 42), (10, 43), (10, 44), (10, 45), (10, 46), (10, 47), (10, 48), (10, 49),
-    (10, 50), (10, 51), (10, 52), (10, 53), (10, 54), (10, 55), (10, 56), (10, 57), (10, 58), (10, 59),
-    (11, 0), (11, 1), (11, 2), (11, 3), (11, 4), (11, 5), (11, 6), (11, 7), (11, 8), (11, 9),
-    (11, 10), (11, 11), (11, 12), (11, 13), (11, 14), (11, 15), (11, 16), (11, 17), (11, 18), (11, 19),
-    (11, 20), (11, 21), (11, 22), (11, 23), (11, 24), (11, 25), (11, 26), (11, 27), (11, 28), (11, 29),
-    (11, 30), (11, 31), (11, 32), (11, 33), (11, 34), (11, 35), (11, 36), (11, 37), (11, 38), (11, 39),
-    (11, 40), (11, 41), (11, 42), (11, 43), (11, 44), (11, 45), (11, 46), (11, 47), (11, 48), (11, 49),
-    (11, 50), (11, 51), (11, 52), (11, 53), (11, 54), (11, 55), (11, 56), (11, 57), (11, 58), (11, 59),
-    (12, 0), (12, 1), (12, 2), (12, 3), (12, 4), (12, 5), (12, 6), (12, 7), (12, 8), (12, 9),
-    (12, 10), (12, 11), (12, 12), (12, 13), (12, 14), (12, 15), (12, 16), (12, 17), (12, 18), (12, 19),
-    (12, 20), (12, 21), (12, 22), (12, 23), (12, 24), (12, 25), (12, 26), (12, 27), (12, 28), (12, 29),
-    (12, 30), (12, 31), (12, 32), (12, 33), (12, 34), (12, 35), (12, 36), (12, 37), (12, 38), (12, 39),
-    (12, 40), (12, 41), (12, 42), (12, 43), (12, 44), (12, 45), (12, 46), (12, 47), (12, 48), (12, 49),
-    (12, 50), (12, 51), (12, 52), (12, 53), (12, 54), (12, 55), (12, 56), (12, 57), (12, 58), (12, 59),
-    (13, 0), (13, 1), (13, 2), (13, 3), (13, 4), (13, 5), (13, 6), (13, 7), (13, 8), (13, 9),
-    (13, 10), (13, 11), (13, 12), (13, 13), (13, 14), (13, 15), (13, 16), (13, 17), (13, 18), (13, 19),
-    (13, 20), (13, 21), (13, 22), (13, 23), (13, 24), (13, 25), (13, 26), (13, 27), (13, 28), (13, 29),
-    (13, 30), (13, 31), (13, 32), (13, 33), (13, 34), (13, 35), (13, 36), (13, 37), (13, 38), (13, 39),
-    (13, 40), (13, 41), (13, 42), (13, 43), (13, 44), (13, 45), (13, 46), (13, 47), (13, 48), (13, 49),
-    (13, 50), (13, 51), (13, 52), (13, 53), (13, 54), (13, 55), (13, 56), (13, 57), (13, 58), (13, 59),
-    (14, 0), (14, 1), (14, 2), (14, 3), (14, 4), (14, 5), (14, 6), (14, 7), (14, 8), (14, 9),
-    (14, 10), (14, 11), (14, 12), (14, 13), (14, 14), (14, 15), (14, 16), (14, 17), (14, 18), (14, 19),
-    (14, 20), (14, 21), (14, 22), (14, 23), (14, 24), (14, 25), (14, 26), (14, 27), (14, 28), (14, 29),
-    (14, 30), (14, 31), (14, 32), (14, 33), (14, 34), (14, 35), (14, 36), (14, 37), (14, 38), (14, 39),
-    (14, 40), (14, 41), (14, 42), (14, 43), (14, 44), (14, 45), (14, 46), (14, 47), (14, 48), (14, 49),
-    (14, 50), (14, 51), (14, 52), (14, 53), (14, 54), (14, 55), (14, 56), (14, 57), (14, 58), (14, 59),
-    (15, 0), (15, 1), (15, 2), (15, 3), (15, 4), (15, 5), (15, 6), (15, 7), (15, 8), (15, 9),
-    (15, 10), (15, 11), (15, 12), (15, 13), (15, 14), (15, 15), (15, 16), (15, 17), (15, 18), (15, 19),
-    (15, 20), (15, 21), (15, 22), (15, 23), (15, 24), (15, 25), (15, 26), (15, 27), (15, 28), (15, 29),
-    (15, 30)
-]
-
-
 required_times = [(9, 20), (9, 25), (9, 30), (9, 35), (9, 40), (9, 45), (9, 50), (9, 55), (10, 0), (10, 5), (10, 10),
                   (10, 15), (10, 20), (10, 25), (10, 30), (10, 35), (10, 40), (10, 45), (10, 50), (10, 55), (11, 0),
                   (11, 5), (11, 10), (11, 15), (11, 20), (11, 25), (11, 30), (11, 35), (11, 40), (11, 45), (11, 50),
@@ -517,6 +395,7 @@ required_times = [(9, 20), (9, 25), (9, 30), (9, 35), (9, 40), (9, 45), (9, 50),
                   (13, 35), (13, 40), (13, 45), (13, 50), (13, 55), (14, 0), (14, 5), (14, 10), (14, 15), (14, 20),
                   (14, 25), (14, 30), (14, 35), (14, 40), (14, 45), (14, 50), (14, 55), (15, 0), (15, 5), (15, 10),
                   (15, 15), (15, 20), (15, 25), (15, 30)]
+
 
 # Define a function to check if the current time matches any of the required times
 def is_required_time():
@@ -663,7 +542,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                 # Checking For SuperTrend Long
                 # Checking For SuperTrend Long
                 trail_sl=0
-                if data_list[i]['st_sig'].iloc[-1] == 1:
+                if data_list[i]['st_sig'][-1] == 1:
 
 
                     all_trade_files()
@@ -737,7 +616,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                     # Checking SuperTrend Signal Change
                     # Stop loss condition
-                    if data_list[i]['st_sig'].iloc[-1] == -1:
+                    if data_list[i]['st_sig'][-1] == -1:
                         print(f"Long Entry Stop Loss Hit for {i}. Closing position.")
 
                         # Fetch the Buy Price and Quantity
@@ -924,7 +803,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         continue
 
                 # Checking For Short Position
-                if data_list[i]['st_sig'].iloc[-1] == -1:
+                if data_list[i]['st_sig'][-1] == -1:
 
                     all_trade_files()
                     open_trades_df = pd.read_excel('All_Trades.xlsx')
@@ -993,7 +872,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                     # Checking SuperTrend Signal Change
                     # Stop loss condition
-                    if data_list[i]['st_sig'].iloc[-1] == 1:
+                    if data_list[i]['st_sig'][-1] == 1:
                         print(f"Short Entry Stop Loss Hit for {i}. Closing position.")
 
                         # Fetch the Buy Price and Quantity
@@ -1178,20 +1057,3 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
         with open("error_log.txt", "a") as error_log_file:
             error_log_file.write(error_message+"\n")
         raise ValueError("I have raised an Exception in main")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
