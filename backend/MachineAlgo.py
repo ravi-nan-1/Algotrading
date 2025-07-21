@@ -111,68 +111,80 @@ def get_cash_market_data(symbol, timeframe):
     print(df)
     return df
 
-def super_trend(data):
+
+
+
+def super_trend(data, macd_fast=5, macd_slow=12, macd_signal_ema=12, rsi_period=14, atr_period=10, multiplier=5.0):
     import pandas_ta as ta
     import numpy as np
     import pandas as pd
 
-    # Calculate Bollinger Bands
-    bb = ta.bbands(data['Close'], length=20, std=2)
-    data['BB_Upper'] = bb['BBU_20_2.0']
-    data['BB_Middle'] = bb['BBM_20_2.0']
-    data['BB_Lower'] = bb['BBL_20_2.0']
-    data['BB_Width'] = (data['BB_Upper'] - data['BB_Lower']) / data['BB_Middle']
+    df = data.copy()
 
-    # Initialize SuperTrend-like signal column
-    data['st_sig'] = 0
+    # === MACD ===
+    macd = ta.macd(df['Close'], fast=macd_fast, slow=macd_slow, signal=macd_signal_ema)
+    df['macd'] = macd[f'MACD_{macd_fast}_{macd_slow}_{macd_signal_ema}']
+    df['signal'] = macd[f'MACDs_{macd_fast}_{macd_slow}_{macd_signal_ema}']
+    df['hist'] = macd[f'MACDh_{macd_fast}_{macd_slow}_{macd_signal_ema}']
 
-    # Apply Bollinger Band Strategy with Strong Body Condition
-    for i in range(len(data)):
-        signal = check_bollinger_buy_signal(data, i)
-        if signal in ['Reversal Buy', 'Breakout Buy']:
-            # Check body strength for current candle
-            curr_candle = data.iloc[i]
-            body_size = abs(curr_candle['Close'] - curr_candle['Open'])
-            total_range = curr_candle['High'] - curr_candle['Low']
+    # === RSI ===
+    df['rsi'] = ta.rsi(df['Close'], length=rsi_period)
+    df['rsisignal'] = df['rsi'] - 50
 
-            # Filter: Body should be at least 40% of total range (avoid doji/small body)
-            if total_range != 0 and (body_size / total_range) >= 0.34:
-                data.at[data.index[i], 'st_sig'] = 1
+    # === ATR and Bands ===
+    df['atr'] = ta.atr(df['High'], df['Low'], df['Close'], length=atr_period)
+    df['mid'] = (df['High'] + df['Low']) / 2
+    df['upperBand'] = df['mid'] + df['atr'] * multiplier
+    df['lowerBand'] = df['mid'] - df['atr'] * multiplier
+    df['ZOnediff']=(df['upperBand']-df['lowerBand'])
+    # === Support/Resistance Zones ===
+    df['supportLevel'] = df['Low'].rolling(20).min()
+    df['resistanceLevel'] = df['High'].rolling(20).max()
+    df['minLowerBand'] = df['lowerBand'].rolling(20).min()
+    df['maxLowerBand'] = df['lowerBand'].rolling(20).max()
+    df['minUpperBand'] = df['upperBand'].rolling(20).min()
+    df['maxUpperBand'] = df['upperBand'].rolling(20).max()
 
-    return data[['st_sig']]
+    df['preciseSupportStart'] = df[['supportLevel', 'minLowerBand']].max(axis=1)
+    df['preciseSupportEnd'] = pd.concat([df['supportLevel'], df['maxLowerBand']], axis=1).min(axis=1)
+    df['preciseResistanceStart'] = pd.concat([df['resistanceLevel'], df['minUpperBand']], axis=1).max(axis=1)
+    df['preciseResistanceEnd'] = pd.concat([df['resistanceLevel'], df['maxUpperBand']], axis=1).min(axis=1)
+
+    # === Kalman Filter ===
+    def kalman_filter(series, q=0.01, r=0.1):
+        x = np.zeros(len(series))
+        p = np.zeros(len(series))
+        x[0] = series.fillna(method='bfill').iloc[0]
+        p[0] = 1.0
+        for i in range(1, len(series)):
+            k = p[i - 1] / (p[i - 1] + r)
+            x[i] = x[i - 1] + k * (series.iloc[i] - x[i - 1])
+            p[i] = (1 - k) * p[i - 1] + q
+        return pd.Series(x, index=series.index)
+
+    df['smoothedSupportEnd'] = kalman_filter(df['preciseSupportEnd'].fillna(method='bfill'))
+    df['smoothedResistanceStart'] = kalman_filter(df['preciseResistanceStart'].fillna(method='bfill'))
+
+    # === MACD Crossovers ===
+    df['cross_up'] = (df['macd'] > df['signal']) & (df['macd'].shift(1) <= df['signal'].shift(1))
+    df['cross_down'] = (df['macd'] < df['signal']) & (df['macd'].shift(1) >= df['signal'].shift(1))
+
+    # === Signal Logic ===
+    df['strong_buy'] = df['cross_up'] & (df['rsisignal'] > 0) & (df['Close'] > df['smoothedSupportEnd']) & (df['ZOnediff']>150)
+    df['buy'] = df['cross_up'] & (df['Close'] > df['smoothedSupportEnd']) & (df['ZOnediff']>150)
+
+    df['strong_sell'] = df['cross_down'] & (df['rsisignal'] < 0) & (df['Close'] < df['smoothedResistanceStart']) & (df['ZOnediff']>150)
+    df['sell'] = df['cross_down'] & (df['Close'] < df['smoothedResistanceStart']) & (df['ZOnediff']>150)
+
+    # === Unified Signal ===
+    df['st_sig'] = 0
+    df.loc[df['strong_buy'] | df['buy'], 'st_sig'] = 1
+    df.loc[df['strong_sell'] | df['sell'], 'st_sig'] = -1
+
+    return df[['st_sig', 'strong_buy', 'strong_sell','ZOnediff']]
 
 
-def check_bollinger_buy_signal(df, i, width_threshold=0.5):
-    if i < 2:
-        return None
 
-    prev_candle = df.iloc[i - 1]
-    curr_candle = df.iloc[i]
-
-    prev_red = prev_candle['Close'] < prev_candle['Open']
-    curr_green = curr_candle['Close'] > curr_candle['Open']
-
-    prev_below_band = prev_candle['Low'] <= prev_candle['BB_Lower']
-    curr_below_band = curr_candle['Low'] <= curr_candle['BB_Lower']
-
-    engulfing = (curr_candle['Close'] - curr_candle['Open']) > (prev_candle['Open'] - prev_candle['Close'])
-
-    prev_total_range = prev_candle['High'] - prev_candle['Low']
-    prev_lower_wick = prev_candle['Open'] - prev_candle['Low'] if prev_red else prev_candle['Close'] - prev_candle['Low']
-    prev_wick_ratio = prev_lower_wick / prev_total_range if prev_total_range != 0 else 0
-
-    wick_significant = prev_wick_ratio >= 0.3
-
-    # Reversal Buy Condition
-    if prev_red and curr_green and (prev_below_band or curr_below_band):
-        return 'Reversal Buy'
-
-    # Breakout Buy Condition
-    bb_width = df.iloc[i - 1]['BB_Width']
-    if bb_width < width_threshold and curr_candle['Close'] > curr_candle['BB_Upper']:
-        return 'Breakout Buy'
-
-    return None
 
 
 def super_trend111(data, period=3, mul=1):
