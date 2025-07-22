@@ -120,36 +120,35 @@ def volume_oscillator(df, fast=14, slow=28):
     vo = ((ema_fast - ema_slow) / ema_slow) * 100
     return vo
 
-def super_trend(data):
+def super_trend(data, period=3, mul=1):
     import pandas_ta as ta
     import numpy as np
     import pandas as pd
-    data['st_sig'] = 0
 
-    # === ATR & Bands ===
-    volatility_period = 10
-    multiplier = 5.0
-    data['ATR'] = ta.atr(high=data['High'], low=data['Low'], close=data['Close'], length=volatility_period)
-    mid_price = (data['High'] + data['Low']) / 2
-    data["VO"] = volume_oscillator(data, fast=10, slow=20)
-    data['upperBand'] = mid_price + data['ATR'] * multiplier
-    data['lowerBand'] = mid_price - data['ATR'] * multiplier
-    data['diff'] = data['upperBand'] - data['lowerBand']
-    data.index = pd.to_datetime(data.index, errors='coerce')
-    data = data.dropna(subset=['Close'])
+    # Indicator parameters
+    fast, slow, signal = 5, 9, 9
+    ema_period = 5
+    box_window = 5
 
     # === Indicators ===
-    data['EMA'] = ta.ema(data['Close'], length=5)
-    data['RSI'] = ta.rsi(data['Close'], length=14)
+    macd = ta.macd(data['Close'], fast=fast, slow=slow, signal=signal)
+    data['macd'] = macd['MACD_5_9_9']
+    data['macd_signal'] = macd['MACDs_5_9_9']
+    data['macd_rising'] = (data['macd'] - data['macd_signal']) > 0.4
+
+    data['EMA'] = ta.ema(data['Close'], length=ema_period)
+    data['EMA20'] = ta.ema(data['Close'], length=20)
+    data['EMA3'] = ta.ema(data['Close'], length=3)
+    data['EMA50'] = ta.ema(data['Close'], length=50)
+    data['box_high'] = data['High'].rolling(window=box_window).max()
+    data['box_low'] = data['Low'].rolling(window=box_window).min()
+
+    data['RSI'] = ta.rsi(data["Close"], length=14)
+    data['VO'] = volume_oscillator(data, fast=10, slow=20)
+
     bb = ta.bbands(data['Close'], length=20, std=1)
-
-    if bb is not None and all(col in bb.columns for col in ['BBU_20_1.0', 'BBL_20_1.0']):
-        data['BB_upper'] = bb['BBU_20_1.0']
-        data['BB_lower'] = bb['BBL_20_1.0']
-    else:
-        data['BB_upper'] = np.nan
-        data['BB_lower'] = np.nan
-
+    data['BB_upper'] = bb['BBU_20_1.0']
+    data['BB_lower'] = bb['BBL_20_1.0']
     data['BB_width'] = data['BB_upper'] - data['BB_lower']
 
     # === Candle Anatomy ===
@@ -158,84 +157,54 @@ def super_trend(data):
     data['upper_wick'] = data['High'] - data[['Close', 'Open']].max(axis=1)
     data['lower_wick'] = data[['Close', 'Open']].min(axis=1) - data['Low']
 
-    # === Strong Bullish Candle Logic ===
-    strong_bullish_candle_logic = (
+    strong_bullish_candle = (
         (data['body'] > 0) &
         (data['body'] > 0.6 * data['range']) &
         (data['upper_wick'] < 0.3 * data['body']) &
         (data['lower_wick'] < 0.3 * data['body'])
     )
 
-    # === Setup Conditions ===
+    rsi_rising = data['RSI'] > data['RSI'].shift(1)
+    Volume_rising=data['VO']> data['VO'].shift(1)
+
+    # === Branch 1: Setup + Strong Bull + RSI rising + BB upper not touched + VO > 0
     cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
     cond_bullish_candle = data['Close'] > data['Open']
     cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
     cond_bearish_ema_below = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Open'].shift(1) < data['EMA'].shift(1))
     cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
     cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
-
-    setup_raw = (
-        (cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema)
-        | (cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy)
-    )
-
-    # === Setup Detection ===
-    setup_found = [0] * len(data)
-    active_trade = False
-    last_trade_index = -10
-
-    for i in range(len(data)):
-        if setup_raw.iloc[i] and not active_trade:
-            setup_found[i] = 1
-            last_trade_index = i
-            active_trade = True
-        if i - last_trade_index > 2:
-            active_trade = False
-
-    setup_found_series = pd.Series(setup_found, index=data.index)
-
-    # === RSI Rising
-    rsi_rising = data['RSI'] > data['RSI'].shift(1)
-
-    # === Branch 1
     cond_not_touching_bb_upper = data['High'] < data['BB_upper']
+
     branch1 = (
-        (setup_found_series == 1)
-        & strong_bullish_candle_logic
-        & cond_not_touching_bb_upper
-        & rsi_rising & (data['VO'] > 0)
+        cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema &
+        strong_bullish_candle  & rsi_rising & (data['VO'] > 0) & Volume_rising
     )
 
-    # === Branch 2
+    # === Branch 2: Strong Bull + RSI between 50-65 + RSI rising + VO > 0
     branch2 = (
-        strong_bullish_candle_logic
-        & (data['RSI'] > 50)
-        & (data['RSI'] < 65)
-        & rsi_rising & (data['VO'] > 0)
+        strong_bullish_candle & (data['RSI'] > 50) &
+        rsi_rising & (data['VO'] > 0) & Volume_rising
     )
 
-    # === Branch 3: BB Breakout
+    # === Branch 3: Close above BB upper + RSI > 50 + VO > 0
     branch3 = (
-        (data['Close'] > data['BB_upper']) &
-        (data['RSI'] > 50) &
-        (data['VO'] > 0)
+        (data['Close'] > data['BB_upper']) & (data['RSI'] > 50) & (data['VO'] > 0) & Volume_rising
     )
 
-    # === Final Signal Logic
-    signal_final = np.where(branch1, 1,
-                     np.where(branch2, 1,
-                     np.where(branch3, 1, 0)))
+    # === Combine All Branches
+    data['st_sig'] = np.where(branch1 | branch2 | branch3, 1, 0)
 
-    reason = np.where(branch1, 'Branch1_StrongBullish_RSIUp_NoBBTouch',
-               np.where(branch2, 'Branch2_StrongBullish_RSI>50_RSIUp',
-               np.where(branch3, 'Branch3_BBUpperBreakout_RSI>50_VO>0', '')))
+    # Optional: Add reason column for debugging
+    data['signal_reason'] = np.select(
+        [branch1, branch2, branch3],
+        ['Branch1_StrongBullish_RSIUp_NoBBTouch',
+         'Branch2_StrongBullish_RSI>50_RSIUp',
+         'Branch3_BBUpperBreakout_RSI>50_VO>0'],
+        default=''
+    )
 
-    # === Output Columns
-    data['st_sig'] = signal_final
-    data['signal_reason'] = reason
-    data['setup_found'] = setup_found_series
-    data.to_excel("BuyOnlyTradeResults.xlsx", index=True)
-    return data[['st_sig', 'signal_reason', 'setup_found']]
+    return data[['st_sig', 'signal_reason']]
 
 
 
@@ -517,14 +486,15 @@ def close_short_trade(ticker, exit_time, buy_price, points, brokerage, profit_lo
 
 
 # Define the required times
-required_times = [(9, 20), (9, 25), (9, 30), (9, 35), (9, 40), (9, 45), (9, 50), (9, 55), (10, 0), (10, 5), (10, 10),
-                  (10, 15), (10, 20), (10, 25), (10, 30), (10, 35), (10, 40), (10, 45), (10, 50), (10, 55), (11, 0),
-                  (11, 5), (11, 10), (11, 15), (11, 20), (11, 25), (11, 30), (11, 35), (11, 40), (11, 45), (11, 50),
-                  (11, 55), (12, 0), (12, 5), (12, 10), (12, 15), (12, 20), (12, 25), (12, 30), (12, 35), (12, 40),
-                  (12, 45), (12, 50), (12, 55), (13, 0), (13, 5), (13, 10), (13, 15), (13, 20), (13, 25), (13, 30),
-                  (13, 35), (13, 40), (13, 45), (13, 50), (13, 55), (14, 0), (14, 5), (14, 10), (14, 15), (14, 20),
-                  (14, 25), (14, 30), (14, 35), (14, 40), (14, 45), (14, 50), (14, 55), (15, 0), (15, 5), (15, 10),
-                  (15, 15), (15, 20), (15, 25), (15, 30)]
+required_times =  [
+    (9, 15), (9, 18), (9, 21), (9, 24), (9, 27), (9, 30), (9, 33), (9, 36), (9, 39), (9, 42), (9, 45), (9, 48), (9, 51), (9, 54), (9, 57),
+    (10, 0), (10, 3), (10, 6), (10, 9), (10, 12), (10, 15), (10, 18), (10, 21), (10, 24), (10, 27), (10, 30), (10, 33), (10, 36), (10, 39), (10, 42), (10, 45), (10, 48), (10, 51), (10, 54), (10, 57),
+    (11, 0), (11, 3), (11, 6), (11, 9), (11, 12), (11, 15), (11, 18), (11, 21), (11, 24), (11, 27), (11, 30), (11, 33), (11, 36), (11, 39), (11, 42), (11, 45), (11, 48), (11, 51), (11, 54), (11, 57),
+    (12, 0), (12, 3), (12, 6), (12, 9), (12, 12), (12, 15), (12, 18), (12, 21), (12, 24), (12, 27), (12, 30), (12, 33), (12, 36), (12, 39), (12, 42), (12, 45), (12, 48), (12, 51), (12, 54), (12, 57),
+    (13, 0), (13, 3), (13, 6), (13, 9), (13, 12), (13, 15), (13, 18), (13, 21), (13, 24), (13, 27), (13, 30), (13, 33), (13, 36), (13, 39), (13, 42), (13, 45), (13, 48), (13, 51), (13, 54), (13, 57),
+    (14, 0), (14, 3), (14, 6), (14, 9), (14, 12), (14, 15), (14, 18), (14, 21), (14, 24), (14, 27), (14, 30), (14, 33), (14, 36), (14, 39), (14, 42), (14, 45), (14, 48), (14, 51), (14, 54), (14, 57),
+    (15, 0), (15, 3), (15, 6), (15, 9), (15, 12), (15, 15), (15, 18), (15, 21), (15, 24), (15, 27), (15, 30)
+]
 
 
 # Define a function to check if the current time matches any of the required times
@@ -621,7 +591,7 @@ data_list = {}
 
 for h in Tickers:
 
-    data_fut = get_cash_market_data(h, '5m')
+    data_fut = get_cash_market_data(h, '3m')
     data_fut.drop(data_fut.tail(1).index, inplace=True)
 
     super_trend(data_fut)
