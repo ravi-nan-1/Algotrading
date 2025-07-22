@@ -627,7 +627,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
 
             if is_required_time():
-                data_fut = get_cash_market_data(i, '5m')
+                data_fut = get_cash_market_data(i, '3m')
                 data_fut.drop(data_fut.tail(1).index, inplace=True)
                 super_trend(data_fut)
 
