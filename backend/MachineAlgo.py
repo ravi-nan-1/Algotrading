@@ -621,8 +621,10 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
             print("###################################################################")
             print('Spot prices of', i, ' ', spot_prices1[i])
+            print(dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p"))
             print("###################################################################")
             send_to_ui(i, spot_prices1[i])
+            
             time.sleep(0.5)
 
 
@@ -694,7 +696,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                         # BuyPrice = position_df[position_df.ScripName==i].BuyAvgRate.values[0]
 
-                        entry_time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
+                        entry_time = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
 
                         BuyPrice = current_price
 
@@ -726,7 +728,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                         Trade_quantity = 75  # int(trade_row['Qty'].values[0])
 
-                        Exit_Time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
+                        Exit_Time = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
 
                         # For Real Money
 
@@ -802,7 +804,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     if float(spot_prices1[i]) >= float(Target_Price):
                         print(f"Long Entry Target Hit for {i}. Closing position.")
                         # --- Exit logic as in your existing code ---
-                        Exit_Time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
+                        Exit_Time = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
                         Sell_Price = float(current_price)
                         Points = Sell_Price-BuyPrice
                         Brokerage = ((BuyPrice * Trade_quantity)+(Sell_Price * Trade_quantity)) * 0.00015
@@ -834,7 +836,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         Trade_quantity = trade_row['Qty'].values[0]
 
                         # For Paper Trade
-                        Exit_Time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
+                        Exit_Time = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
                         Sell_Price = float(spot_prices1[i])  # Selling at market price
                         Points = Sell_Price-BuyPrice
                         Brokerage = ((BuyPrice * Trade_quantity)+(Sell_Price * Trade_quantity)) * 0.00015
@@ -884,7 +886,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         # Sell_Price = position_df[position_df.ScripName==i].SellAvgRate.values[0]
 
                         # For Paper Trade
-                        Exit_Time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
+                        Exit_Time = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
                         Sell_Price = float(spot_prices1[i])  # Selling at market price
                         Points = Sell_Price-BuyPrice
                         Brokerage = ((BuyPrice * Trade_quantity)+(Sell_Price * Trade_quantity)) * 0.00015
@@ -952,7 +954,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                         # SellPrice = position_df[position_df.ScripName==i].SellAvgRate.values[0]
 
-                        entry_time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
+                        entry_time = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
 
                         SellPrice = current_price
                         Sprice = current_price
@@ -1042,7 +1044,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                         Trade_quantity = int(trade_row['Qty'].values[0])
 
-                        Exit_Time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
+                        Exit_Time = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
 
                         # For Real Money
 
@@ -1101,7 +1103,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                         Trade_quantity = int(trade_row['Qty'].values[0])
 
-                        Exit_Time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
+                        Exit_Time = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
 
                         # For Real Money
 
