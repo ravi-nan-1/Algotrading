@@ -782,7 +782,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     # Calculate how many steps of 10 points we've moved
                     step_count = int(profit_from_entry // Trail_Step)
                     new_trailing_target = BuyPrice+(step_count * Trail_Step)
-                    Target_Price=new_trailing_target
+                    
 
                     if profit_from_entry>10:
                         #BuyPrice=BuyPrice+10
@@ -794,6 +794,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                     # Update the target if price moved significantly
                     if new_trailing_target > Target_Price:
+                        Target_Price=new_trailing_target
                         Long_Open_Position.loc[Long_Open_Position['Symbol'] == i, 'Target Price'] = new_trailing_target
                         print(f"Updated Trailing Target for {i}: {new_trailing_target}")
                         tele_msg(f"Updated Trailing Target for {i}: {new_trailing_target}")
