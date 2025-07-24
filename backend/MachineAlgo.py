@@ -782,6 +782,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     # Calculate how many steps of 10 points we've moved
                     step_count = int(profit_from_entry // Trail_Step)
                     new_trailing_target = BuyPrice+(step_count * Trail_Step)
+                    Target_Price=new_trailing_target
 
                     if profit_from_entry>10:
                         #BuyPrice=BuyPrice+10
