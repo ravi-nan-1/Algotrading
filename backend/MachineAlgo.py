@@ -138,6 +138,7 @@ def super_trend(data, period=3, mul=1):
     data['EMA50'] = ta.ema(data['Close'], length=50)
     data['box_high'] = data['High'].rolling(window=box_window).max()
     data['box_low'] = data['Low'].rolling(window=box_window).min()
+    data['ADX'] = ta.adx(data['High'], data['Low'], data['Close'], length=14)['ADX_14']
 
     data['RSI'] = ta.rsi(data["Close"], length=14)
     data['VO'] = volume_oscillator(data, fast=10, slow=20)
@@ -174,18 +175,18 @@ def super_trend(data, period=3, mul=1):
 
     branch1 = (
         cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema &
-        strong_bullish_candle  & rsi_rising & (data['VO'] > 0) & Volume_rising
+        strong_bullish_candle  & (data['RSI'] < 40)  
     )
 
     # === Branch 2: Strong Bull + RSI between 50-65 + RSI rising + VO > 0
     branch2 = (
         strong_bullish_candle & (data['RSI'] > 50) &
-        rsi_rising & (data['VO'] > 0) & Volume_rising & (data['Close'] > data['Open'])
+        rsi_rising & (data['VO'] > 0) & Volume_rising & (data['Close'] > data['Open']) & (data['ADX']>20)
     )
 
     # === Branch 3: Close above BB upper + RSI > 50 + VO > 0
     branch3 = (
-        (data['Close'] > data['BB_upper']) & (data['RSI'] > 50) & (data['VO'] > 0) & Volume_rising & (data['Close'] > data['Open'])
+        (data['Close'] > data['BB_upper']) & (data['RSI'] > 50) & (data['VO'] > 0) & Volume_rising & (data['Close'] > data['Open']) & (data['ADX']>20)
     )
 
     # === Combine All Branches
