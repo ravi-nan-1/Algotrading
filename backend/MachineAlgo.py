@@ -131,7 +131,7 @@ def super_trend(data, period=3, mul=1):
     box_window = 5
 
     # === Indicators ===
-    
+
     data['EMA'] = ta.ema(data['Close'], length=ema_period)
     data['EMA20'] = ta.ema(data['Close'], length=20)
     data['EMA3'] = ta.ema(data['Close'], length=3)
@@ -146,47 +146,50 @@ def super_trend(data, period=3, mul=1):
     bb = ta.bbands(data['Close'], length=20, std=1)
     data['BB_upper'] = bb['BBU_20_1.0']
     data['BB_lower'] = bb['BBL_20_1.0']
-    data['BB_width'] = data['BB_upper'] - data['BB_lower']
+    data['BB_width'] = data['BB_upper']-data['BB_lower']
 
     # === Candle Anatomy ===
-    data['body'] = data['Close'] - data['Open']
-    data['range'] = data['High'] - data['Low']
-    data['upper_wick'] = data['High'] - data[['Close', 'Open']].max(axis=1)
-    data['lower_wick'] = data[['Close', 'Open']].min(axis=1) - data['Low']
+    data['body'] = data['Close']-data['Open']
+    data['range'] = data['High']-data['Low']
+    data['upper_wick'] = data['High']-data[['Close', 'Open']].max(axis=1)
+    data['lower_wick'] = data[['Close', 'Open']].min(axis=1)-data['Low']
 
     strong_bullish_candle = (
-        (data['body'] > 0) &
-        (data['body'] > 0.6 * data['range']) &
-        (data['upper_wick'] < 0.3 * data['body']) &
-        (data['lower_wick'] < 0.3 * data['body'])
+            (data['body'] > 0) &
+            (data['body'] > 0.6 * data['range']) &
+            (data['upper_wick'] < 0.3 * data['body']) &
+            (data['lower_wick'] < 0.3 * data['body'])
     )
 
     rsi_rising = data['RSI'] > data['RSI'].shift(1)
-    Volume_rising=data['VO']> data['VO'].shift(1)
+    Volume_rising = data['VO'] > data['VO'].shift(1)
 
     # === Branch 1: Setup + Strong Bull + RSI rising + BB upper not touched + VO > 0
     cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
+    cod_bull=data['Close'].shift(1) > data['Open'].shift(1)
     cond_bullish_candle = data['Close'] > data['Open']
     cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
-    cond_bearish_ema_below = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Open'].shift(1) < data['EMA'].shift(1))
+    cond_bearish_ema_below = (data['Close'].shift(1) < data['EMA'].shift(1)) & (
+                data['Open'].shift(1) < data['EMA'].shift(1))
     cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
-    cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
+    cond_distance_from_ema = (data['EMA']-data['Close']) > 1.5
     cond_not_touching_bb_upper = data['High'] < data['BB_upper']
 
     branch1 = (
-        cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema &
-        strong_bullish_candle  & (data['RSI'] < 40)  
+            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema &
+            strong_bullish_candle & (data['RSI'] < 40)
     )
 
     # === Branch 2: Strong Bull + RSI between 50-65 + RSI rising + VO > 0
     branch2 = (
-        strong_bullish_candle & (data['RSI'] > 50) &
-        rsi_rising & (data['VO'] > 0) & Volume_rising & (data['Close'] > data['Open']) & (data['ADX']>20)
+            strong_bullish_candle & (data['RSI'] > 50) & cod_bull &
+            rsi_rising & (data['VO'] > 0) & (data['VO'] < 30) & Volume_rising & (data['Close'] > data['Open']) & (data['ADX'] > 20)
     )
 
     # === Branch 3: Close above BB upper + RSI > 50 + VO > 0
     branch3 = (
-        (data['Close'] > data['BB_upper']) & (data['RSI'] > 50) & (data['VO'] > 0) & Volume_rising & (data['Close'] > data['Open']) & (data['ADX']>20)
+            (data['Close'] > data['BB_upper']) & (data['RSI'] > 50) & (data['VO'] > 0) & (data['VO'] < 30) & Volume_rising & (
+                data['Close'] > data['Open']) & (data['ADX'] > 20) & cod_bull
     )
 
     # === Combine All Branches
@@ -200,7 +203,7 @@ def super_trend(data, period=3, mul=1):
          'Branch3_BBUpperBreakout_RSI>50_VO>0'],
         default=''
     )
-
+    
     return data[['st_sig', 'signal_reason']]
 
 
