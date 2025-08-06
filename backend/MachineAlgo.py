@@ -155,7 +155,7 @@ def super_trend(data, period=3, mul=1):
     data['lower_wick'] = data[['Close', 'Open']].min(axis=1)-data['Low']
 
     source = 'Close'
-    per = 34
+    per = 24
     eper = 5
     eper2 = 21
     src = data[source]
@@ -187,14 +187,14 @@ def super_trend(data, period=3, mul=1):
             (data['TII'] > data['TII_Signal1']) &
             (data['TII_Signal1'] > data['TII_Signal2']) &
             (data['TII'] > 7) &
-            (data['TII'] < 15) &
+            
             (data['RSI'] > 50)
     )
 
     tafil = (
             (data['TII'] > data['TII_Signal1']+4) &
             (data['TII_Signal1'] > data['TII_Signal2']+4) &
-            (data['TII'] != 100) &
+            
             (data['TII'] != 00)
 
     )
