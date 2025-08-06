@@ -219,14 +219,14 @@ def super_trend(data, period=3, mul=1):
     branch2 = (
         strong_bullish_candle & (data['RSI'] > 50) &
 
-        volume_rising & (data['Close'] > data['Open']) & tafil
+        Volume_rising & (data['Close'] > data['Open']) & tafil
 
     )
 
     # === Branch 3: Close above BB upper + RSI > 50 + VO > 0
     branch3 = (
         (data['Close'] > data['BB_upper']) & (data['RSI'] > 50) & (data['VO'] > 0) & (data['VO'] < 30) &
-        volume_rising & (data['Close'] > data['Open'])  & cod_bull & tafil
+        Volume_rising & (data['Close'] > data['Open'])  & cod_bull & tafil
     )
 
     # === Combine All Branches
