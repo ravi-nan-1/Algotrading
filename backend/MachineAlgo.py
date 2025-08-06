@@ -154,6 +154,24 @@ def super_trend(data, period=3, mul=1):
     data['upper_wick'] = data['High']-data[['Close', 'Open']].max(axis=1)
     data['lower_wick'] = data[['Close', 'Open']].min(axis=1)-data['Low']
 
+    source = 'Close'
+    per = 34
+    eper = 5
+    eper2 = 21
+    src = data[source]
+    av = src.rolling(window=per).mean()
+
+    dev = src-av
+    udev = dev.where(dev > 0, 0).abs()
+    ddev = dev.where(dev < 0, 0).abs()
+
+    sudev = udev.rolling(window=per // 2).sum()
+    sddev = ddev.rolling(window=per // 2).sum()
+
+    data['TII'] = (100 * sudev) / (sudev+sddev)
+    data['TII_Signal1'] = data['TII'].ewm(span=eper, adjust=False).mean()
+    data['TII_Signal2'] = data['TII'].ewm(span=eper2, adjust=False).mean()
+    
     strong_bullish_candle = (
             (data['body'] > 0) &
             (data['body'] > 0.6 * data['range']) &
@@ -164,6 +182,24 @@ def super_trend(data, period=3, mul=1):
     rsi_rising = data['RSI'] > data['RSI'].shift(1)
     Volume_rising = data['VO'] > data['VO'].shift(1)
 
+
+    tii_filter = (
+            (data['TII'] > data['TII_Signal1']) &
+            (data['TII_Signal1'] > data['TII_Signal2']) &
+            (data['TII'] > 7) &
+            (data['TII'] < 15) &
+            (data['RSI'] > 50)
+    )
+
+    tafil = (
+            (data['TII'] > data['TII_Signal1']+4) &
+            (data['TII_Signal1'] > data['TII_Signal2']+4) &
+            (data['TII'] != 100) &
+            (data['TII'] != 00)
+
+    )
+
+    
     # === Branch 1: Setup + Strong Bull + RSI rising + BB upper not touched + VO > 0
     cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
     cod_bull=data['Close'].shift(1) > data['Open'].shift(1)
@@ -176,20 +212,21 @@ def super_trend(data, period=3, mul=1):
     cond_not_touching_bb_upper = data['High'] < data['BB_upper']
 
     branch1 = (
-            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema &
-            strong_bullish_candle & (data['RSI'] < 40)
+        tii_filter
     )
 
     # === Branch 2: Strong Bull + RSI between 50-65 + RSI rising + VO > 0
     branch2 = (
-            strong_bullish_candle & (data['RSI'] > 50) & cod_bull &
-            rsi_rising & (data['VO'] > 0) & (data['VO'] < 30) & Volume_rising & (data['Close'] > data['Open']) & (data['ADX'] > 20)
+        strong_bullish_candle & (data['RSI'] > 50) &
+
+        volume_rising & (data['Close'] > data['Open']) & tafil
+
     )
 
     # === Branch 3: Close above BB upper + RSI > 50 + VO > 0
     branch3 = (
-            (data['Close'] > data['BB_upper']) & (data['RSI'] > 50) & (data['VO'] > 0) & (data['VO'] < 30) & Volume_rising & (
-                data['Close'] > data['Open']) & (data['ADX'] > 20) & cod_bull
+        (data['Close'] > data['BB_upper']) & (data['RSI'] > 50) & (data['VO'] > 0) & (data['VO'] < 30) &
+        volume_rising & (data['Close'] > data['Open'])  & cod_bull & tafil
     )
 
     # === Combine All Branches
