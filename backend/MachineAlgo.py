@@ -39,7 +39,7 @@ Total_Cash = 10000
 Max_Position = 1
 Total_Cash_per_position = int(Total_Cash / Max_Position)
 
-Take_Profit = 20
+Take_Profit = 40
 
 #Tickers = ['NIFTY 08 MAY 2025 CE 24400.00','NIFTY 08 MAY 2025 PE 24400.00']
 
@@ -185,8 +185,8 @@ def super_trend(data, period=3, mul=1):
 
     tii_filter = (
             (data['TII'] > data['TII_Signal1']) &
-            (data['TII_Signal1'] > data['TII_Signal2']) &
-            (data['TII'] > 5) &
+            
+            (data['TII'] > 2) &
             
             (data['RSI'] > 50)
     )
