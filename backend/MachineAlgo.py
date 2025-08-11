@@ -186,7 +186,7 @@ def super_trend(data, period=3, mul=1):
     tii_filter = (
             (data['TII'] > data['TII_Signal1']) &
             (data['TII_Signal1'] > data['TII_Signal2']) &
-            (data['TII'] > 7) &
+            (data['TII'] > 5) &
             
             (data['RSI'] > 50)
     )
