@@ -340,7 +340,10 @@ def super_trend(data):
     data['st_sig'] = np.where((data['st_sig'] == 1) & (data['ai_prediction'] == 1), 1, 0)
 
     data.to_excel("BuyOnlyTradeResults.xlsx", index=True)
-
+    print(data[['TII', 'TII_Signal1', 'TII_Signal2']].tail(10))
+    print("branch1 count:", branch1.sum())
+    print("branch2 count:", branch2.sum())
+    print("branch3 count:", branch3.sum())
     # Return st_sig AND signal_reason so no KeyError when accessing signal_reason later
     return data[['st_sig', 'signal_reason']]
 
