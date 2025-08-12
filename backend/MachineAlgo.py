@@ -247,7 +247,9 @@ def super_trendhfghfgh(data, period=3, mul=1):
 
 
 def super_trend(data):
-    # Compute indicators
+    import joblib
+
+    # Indicators
     data['EMA'] = ta.ema(data['Close'], length=5)
     data['EMA20'] = ta.ema(data['Close'], length=20)
     data['EMA3'] = ta.ema(data['Close'], length=3)
@@ -269,7 +271,7 @@ def super_trend(data):
     data['upper_wick'] = data['High'] - data[['Close', 'Open']].max(axis=1)
     data['lower_wick'] = data[['Close', 'Open']].min(axis=1) - data['Low']
 
-    # TII calculation
+    # TII calc
     src = data['Close']
     per = 34
     eper = 5
@@ -280,7 +282,6 @@ def super_trend(data):
     ddev = dev.where(dev < 0, 0).abs()
     sudev = udev.rolling(per // 2).sum()
     sddev = ddev.rolling(per // 2).sum()
-
     data['TII'] = (100 * sudev) / (sudev + sddev)
     data['TII_Signal1'] = data['TII'].ewm(span=eper, adjust=False).mean()
     data['TII_Signal2'] = data['TII'].ewm(span=eper2, adjust=False).mean()
@@ -294,7 +295,6 @@ def super_trend(data):
     )
     rsi_rising = data['RSI'] > data['RSI'].shift(1)
     volume_rising = data['VO'] > data['VO'].shift(1)
-    cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
     cond_bull = data['Close'].shift(1) > data['Open'].shift(1)
     tafil = (
         (data['TII'] > data['TII_Signal1'] + 4) &
@@ -319,33 +319,20 @@ def super_trend(data):
         default=''
     )
 
-    # Generate training dataset
-    data['future_return'] = data['Close'].shift(-5) - data['Close']
-    data['profitable'] = (data['future_return'] > 0).astype(int)
-
+    # Load saved model
+    model = joblib.load("trade_filter_model.pkl")
     features = ['RSI', 'ADX', 'VO', 'TII', 'TII_Signal1', 'TII_Signal2',
                 'BB_width', 'EMA', 'EMA20', 'EMA50', 'upper_wick', 'lower_wick', 'body']
-    dataset = data[features + ['profitable']].dropna()
 
-    # Train model only if not already trained (for real use, save/load model separately)
-    X = dataset.drop('profitable', axis=1)
-    y = dataset['profitable']
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    model = RandomForestClassifier(n_estimators=200, random_state=42)
-    model.fit(X_train, y_train)
-    print(classification_report(y_test, model.predict(X_test)))
+    # Fill NaNs before prediction
+    data[features] = data[features].fillna(0)
 
-    # Apply AI filter on full data
-    data.loc[dataset.index, 'ai_prediction'] = model.predict(dataset[features])
+    # Apply AI filter
+    data['ai_prediction'] = model.predict(data[features])
     data['st_sig'] = np.where((data['st_sig'] == 1) & (data['ai_prediction'] == 1), 1, 0)
 
-    data.to_excel("BuyOnlyTradeResults.xlsx", index=True)
-    print(data[['TII', 'TII_Signal1', 'TII_Signal2']].tail(10))
-    print("branch1 count:", branch1.sum())
-    print("branch2 count:", branch2.sum())
-    print("branch3 count:", branch3.sum())
-    # Return st_sig AND signal_reason so no KeyError when accessing signal_reason later
     return data[['st_sig', 'signal_reason']]
+
 
 
 
