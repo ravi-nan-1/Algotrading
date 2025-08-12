@@ -8,7 +8,7 @@ working_dir = os.path.dirname(os.path.abspath(__file__))
 import pandas as pd
 import datetime as dt
 import auth
-import pandas_ta as indi
+import pandas_ta as ta
 import numpy as np
 import requests
 import Telegram_token
