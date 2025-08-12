@@ -341,7 +341,8 @@ def super_trend(data):
 
     data.to_excel("BuyOnlyTradeResults.xlsx", index=True)
 
-    return data[['st_sig']]
+    # Return st_sig AND signal_reason so no KeyError when accessing signal_reason later
+    return data[['st_sig', 'signal_reason']]
 
 
 
