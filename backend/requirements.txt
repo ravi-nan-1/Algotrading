@@ -17,7 +17,7 @@ pandas-ta==0.3.14b0
 
 # Math & ML
 numpy==1.26.4
-scikit-learn==1.4.1.post1
+scikit-learn==1.3.2
 joblib==1.4.0
 mibian
 APScheduler==3.11.0  # or whatever version you're using
@@ -32,3 +32,4 @@ threadpoolctl==3.4.0
 pyotp==2.9.0
 # python-dotenv==1.0.1
 # Jinja2==3.1.3
+
