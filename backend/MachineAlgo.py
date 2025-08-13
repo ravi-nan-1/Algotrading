@@ -246,7 +246,7 @@ def super_trendhfghfgh(data, period=3, mul=1):
 
 
 
-def super_trend(data):
+def super_trend_AI(data):
     import joblib
 
     # Indicators
@@ -335,7 +335,112 @@ def super_trend(data):
 
 
 
+def super_trend(data):
+    import joblib
 
+    # Indicators
+    data['EMA'] = ta.ema(data['Close'], length=5)
+    data['EMA20'] = ta.ema(data['Close'], length=20)
+    data['EMA3'] = ta.ema(data['Close'], length=3)
+    data['EMA50'] = ta.ema(data['Close'], length=50)
+    data['box_high'] = data['High'].rolling(5).max()
+    data['box_low'] = data['Low'].rolling(5).min()
+    data['ADX'] = ta.adx(data['High'], data['Low'], data['Close'], length=14)['ADX_14']
+    data['RSI'] = ta.rsi(data['Close'], length=14)
+    data['VO'] = volume_oscillator(data, fast=10, slow=20)
+
+    bb = ta.bbands(data['Close'], length=20, std=1)
+    data['BB_upper'] = bb['BBU_20_1.0']
+    data['BB_lower'] = bb['BBL_20_1.0']
+    data['BB_width'] = data['BB_upper'] - data['BB_lower']
+
+    # Candle anatomy
+    data['body'] = data['Close'] - data['Open']
+    data['range'] = data['High'] - data['Low']
+    data['upper_wick'] = data['High'] - data[['Close', 'Open']].max(axis=1)
+    data['lower_wick'] = data[['Close', 'Open']].min(axis=1) - data['Low']
+
+    # TII calc
+    src = data['Close']
+    per = 34
+    eper = 5
+    eper2 = 21
+    av = src.rolling(per).mean()
+    dev = src - av
+    udev = dev.where(dev > 0, 0).abs()
+    ddev = dev.where(dev < 0, 0).abs()
+    sudev = udev.rolling(per // 2).sum()
+    sddev = ddev.rolling(per // 2).sum()
+    data['TII'] = (100 * sudev) / (sudev + sddev)
+    data['TII_Signal1'] = data['TII'].ewm(span=eper, adjust=False).mean()
+    data['TII_Signal2'] = data['TII'].ewm(span=eper2, adjust=False).mean()
+
+    # Conditions
+    strong_bullish_candle = (
+        (data['body'] > 0) &
+        (data['body'] > 0.6 * data['range']) &
+        (data['upper_wick'] < 0.3 * data['body']) &
+        (data['lower_wick'] < 0.3 * data['body'])
+    )
+    rsi_rising = data['RSI'] > data['RSI'].shift(1)
+    volume_rising = data['VO'] > data['VO'].shift(1)
+    cond_bull = data['Close'].shift(1) > data['Open'].shift(1)
+    tafil = (
+        (data['TII'] > data['TII_Signal1'] + 4) &
+        (data['TII_Signal1'] > data['TII_Signal2'] + 4) &
+        (data['TII'] != 100) &
+        (data['TII'] != 0)
+    )
+    tii_filter = (
+        (data['TII'] > data['TII_Signal1']) &
+        (data['TII'] > 2) &
+        (data['RSI'] > 50)
+    )
+
+    # Hammer detection (small body, long lower wick)
+    hammer_candle = (
+        (abs(data['body']) <= 0.3 * data['range']) &
+        (data['lower_wick'] >= 2 * abs(data['body'])) &
+        (data['upper_wick'] <= abs(data['body']))
+    )
+
+    branch1 = tii_filter
+    branch2 = strong_bullish_candle & (data['RSI'] > 50) & volume_rising & (data['Close'] > data['Open']) & tafil
+    branch3 = (data['Close'] > data['BB_upper']) & (data['RSI'] > 50) & (data['VO'] > 0) & (data['VO'] < 30) & volume_rising & (data['Close'] > data['Open']) & cond_bull & tafil
+
+    # Branch 4 - Prev bearish, current bullish hammer, prev close below EMA
+    branch4 = (
+        (data['Close'].shift(1) < data['Open'].shift(1)) &  # prev bearish
+        (data['Close'] > data['Open']) &                    # current bullish
+        hammer_candle &                                     # hammer pattern
+        (data['Close'].shift(1) < data['EMA'].shift(1))      # prev close below EMA
+    )
+
+    data['st_sig'] = np.where(branch1 | branch2 | branch3 | branch4, 1, 0)
+    data['signal_reason'] = np.select(
+        [branch1, branch2, branch3, branch4],
+        [
+            'Branch1_StrongBullish_RSIUp_TII',
+            'Branch2_StrongBullish_RSI>50_TII',
+            'Branch3_BBUpperBreakout_TII',
+            'Branch4_BullishHammerAfterBearishBelowEMA'
+        ],
+        default=''
+    )
+
+    # Load saved model
+    model = joblib.load("trade_filter_model.pkl")
+    features = ['RSI', 'ADX', 'VO', 'TII', 'TII_Signal1', 'TII_Signal2',
+                'BB_width', 'EMA', 'EMA20', 'EMA50', 'upper_wick', 'lower_wick', 'body']
+
+    # Fill NaNs before prediction
+    data[features] = data[features].fillna(0)
+
+    # Apply AI filter
+    data['ai_prediction'] = model.predict(data[features])
+    data['st_sig'] = np.where((data['st_sig'] == 1) & (data['ai_prediction'] == 1), 1, 0)
+
+    return data[['st_sig', 'signal_reason']]
 
 
 def super_trend111(data, period=3, mul=1):
