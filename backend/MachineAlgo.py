@@ -411,10 +411,11 @@ def super_trend(data):
     # Branch 4 - Prev bearish, current bullish hammer, prev close below EMA
     branch4 = (
         (data['Close'].shift(1) < data['Open'].shift(1)) &  # prev bearish
-        (data['Close'] > data['Open']) &                    # current bullish
-        hammer_candle &                                     # hammer pattern
-        (data['Close'].shift(1) < data['EMA'].shift(1))      # prev close below EMA
+        (data['Close'] > data['Open'])                     # current bullish
+         &                                     # hammer pattern
+        (data['Open'].shift(1) < data['EMA'].shift(1))      # prev close below EMA
     )
+
 
     data['st_sig'] = np.where(branch1 | branch2 | branch3 | branch4, 1, 0)
     data['signal_reason'] = np.select(
