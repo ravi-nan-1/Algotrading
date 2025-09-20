@@ -27,14 +27,17 @@ UTC = pytz.timezone('Asia/Kolkata')
 import time
 from pymongo import MongoClient
 
+ssl_context = ssl.create_default_context(cafile=certifi.where())
+
 
 uri = "mongodb+srv://singhrajeev1470_db_user:kaPh8sxuaVFWWsSr@cluster0.mtmtbrr.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0&tls=true"
 
 # Connect to MongoDB
-client = MongoClient(uri)
+client1 = MongoClient(uri, tls=True, tlsCAFile=certifi.where())
 
 # Choose a database (it will be created if not exist)
-db = client['AlgoTradingDB']
+db = client1['AlgoTradingDB']
+print(db.list_collection_names())
 ce_collection = db["CE_Options"]
 pe_collection = db["PE_Options"]
 
