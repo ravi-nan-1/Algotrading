@@ -26,6 +26,7 @@ import joblib
 UTC = pytz.timezone('Asia/Kolkata')
 import time
 from pymongo import MongoClient
+import sklearn
 
 ssl_context = ssl.create_default_context(cafile=certifi.where())
 
