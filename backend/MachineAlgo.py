@@ -289,6 +289,7 @@ def super_trend(data):
     data['VO'] = volume_oscillator(data, fast=10, slow=20)
 
     bb = ta.bbands(data['Close'], length=20, std=1)
+    print("BB columns:", bb.columns)
     data['BB_upper'] = bb['BBU_20_1.0']
     data['BB_lower'] = bb['BBL_20_1.0']
     data['BB_width'] = data['BB_upper'] - data['BB_lower']
