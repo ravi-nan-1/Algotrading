@@ -379,8 +379,8 @@ def super_trend(data):
     data[features] = data[features].fillna(0)
 
     # Apply AI filter
-    data['ai_prediction'] = model.predict(data[features])
-    data['st_sig'] = np.where((data['st_sig'] == 1) & (data['ai_prediction'] == 1), 1, 0)
+    #data['ai_prediction'] = model.predict(data[features]) & (data['ai_prediction'] == 1)
+    data['st_sig'] = np.where((data['st_sig'] == 1) , 1, 0)
 
     return data[['st_sig', 'signal_reason']]
 
