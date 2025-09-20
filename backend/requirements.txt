@@ -14,10 +14,11 @@ certifi>=2023.7.22
 py5paisa
 
 # TA indicators
-numpy>=1.26,<3
-pandas>=2.3.2
-pandas-ta==0.4.71b0
+numpy>=1.26,<2
+pandas-ta==0.4.0
 scikit-learn==1.3.2
+pandas-ta==0.4.71b0
+
 
 # Math & ML
 
@@ -36,6 +37,7 @@ threadpoolctl==3.4.0
 pyotp==2.9.0
 # python-dotenv==1.0.1
 # Jinja2==3.1.3
+
 
 
 
