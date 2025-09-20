@@ -290,8 +290,8 @@ def super_trend(data):
 
     bb = ta.bbands(data['Close'], length=20, std=1)
     print("BB columns:", bb.columns)
-    data['BB_upper'] = bb['BBU_20_1.0']
-    data['BB_lower'] = bb['BBL_20_1.0']
+    data['BB_upper'] = bb['BBU_20_2.0_2.0']
+    data['BB_lower'] = bb['BBL_20_2.0_2.0']
     data['BB_width'] = data['BB_upper'] - data['BB_lower']
 
     # Candle anatomy
