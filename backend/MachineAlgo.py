@@ -29,7 +29,7 @@ from pymongo import MongoClient
 
 ssl_context = ssl.create_default_context(cafile=certifi.where())
 
-
+print("scikit-learn version:", sklearn.__version__)
 uri = "mongodb+srv://singhrajeev1470_db_user:kaPh8sxuaVFWWsSr@cluster0.mtmtbrr.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0&tls=true"
 
 # Connect to MongoDB
