@@ -24,6 +24,18 @@ from sklearn.metrics import classification_report
 import joblib
 UTC = pytz.timezone('Asia/Kolkata')
 import time
+from pymongo import MongoClient
+
+
+uri = "mongodb+srv://singhrajeev1470_db_user:kaPh8sxuaVFWWsSr@cluster0.mtmtbrr.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+
+# Connect to MongoDB
+client = MongoClient(uri)
+
+# Choose a database (it will be created if not exist)
+db = client['AlgoTradingDB']
+ce_collection = db["CE_Options"]
+pe_collection = db["PE_Options"]
 
 client = FivePaisaClient(cred=auth.cred)
 print(pyotp.TOTP(auth.token).now())
@@ -105,12 +117,146 @@ def get_cash_market_data(symbol, timeframe):
     df.set_index("Datetime", inplace=True)
     df["Option_Type"] = opttype
     df["Strike_Price"] = strike
+    fetch_option_data(symbol);
 
 
 
     print(df)
     return df
 
+def opt_exp(ticker):
+    # Filter the relevant data for the given ticker and options
+    dates = instrument_df[
+        (instrument_df.SymbolRoot == ticker) & ((instrument_df.ScripType == 'CE') | (instrument_df.ScripType == 'PE'))]
+
+    # Get the unique expiry dates and convert them to datetime objects
+    dates = dates['Expiry'].unique().tolist()
+
+    dates = [dt.datetime.strptime(date, '%Y-%m-%d') for date in dates]
+
+    # Get today's date
+    today = dt.datetime.today()
+
+    # Sort the dates in ascending order
+    dates.sort()
+
+    # Find the next available date after today (skip today's date)
+    future_dates = [date for date in dates if date > today]
+
+    if future_dates:
+        # Get the next available future date
+        trade = future_dates[0]
+    else:
+        # If no future date is found, return None or handle the fallback
+        return "No future expiry dates available."
+
+    # Return the selected expiry date in the desired format
+    return trade.strftime('%d %b %Y')
+
+
+
+def process_expiry_date(date_str):
+    # Extract the timestamp from the '/Date(...)' format
+    timestamp = int(date_str.split('(')[1].split('+')[0])
+
+    # Convert the timestamp to a datetime object
+    date = dt.datetime.utcfromtimestamp(timestamp / 1000.0)
+
+    # Convert datetime to the required format
+    formatted_date = date.strftime('%d %b %Y')
+
+    return timestamp, formatted_date
+
+
+DELTA = 30
+
+def fetch_option_data(option_string):
+    print(option_string)
+    expiry1 = opt_exp("NIFTY")
+    print(expiry1)
+    parts = option_string.split()
+    ticker = parts[0]  # Extract ticker
+    expiry = f"{parts[1]} {parts[2]} {parts[3]}"  # Extract expiry date
+    opttype = parts[4]  # Extract option type (CE/PE)
+    strike = float(parts[5])  # Extract strike price and convert to float
+
+    target_strike = int(strike)  # Convert strike price to integer
+
+    a = client.get_expiry("N", ticker)
+    expiry_list = pd.DataFrame(a['Expiry'])
+    spot_price = a['lastrate'][0]['LTP']
+
+    # Process expiry dates
+    expiry_list['Timestamp'], expiry_list['Format'] = zip(*expiry_list['ExpiryDate'].apply(process_expiry_date))
+
+    # Get timestamp for target expiry
+    timestamp_row = expiry_list[expiry_list.Format == expiry1]
+    if timestamp_row.empty:
+        print("Error: Expiry date not found")
+        return None
+    timestamp = timestamp_row.Timestamp.values[0]
+
+    # Fetch option chain for the expiry
+    option_chain = client.get_option_chain("N", ticker, timestamp)
+    option_chain = pd.DataFrame(option_chain['Options'])
+
+    # Filter for specified option type (CE or PE) & non-zero last traded price
+    option_chain = option_chain[(option_chain.CPType == opttype) & (option_chain.LastRate != 0)]
+
+    # Filter only for the target strike price
+    option_chain = option_chain[option_chain.StrikeRate == target_strike]
+
+    if option_chain.empty:
+        print("Error: No data for target strike price")
+        return None
+
+    option_chain['SPOT'] = spot_price
+    startTime = dt.datetime.today()
+    date_obj = dt.datetime.strptime(expiry, "%d %b %Y")
+    daysToExpiry = max((date_obj-startTime).days, 1)  # Ensure non-negative days
+
+    # Create DataFrame
+    opt_data = pd.DataFrame()
+    opt_data['SPOT'] = option_chain['SPOT']
+    opt_data['STRIKE'] = option_chain['StrikeRate']
+    opt_data[f'{opttype}_LTP'] = option_chain['LastRate']
+    opt_data['OI'] = option_chain['OpenInterest']
+    opt_data['SYMBOL'] = option_chain['Name']
+    opt_data = opt_data.reset_index(drop=True)
+
+    Delta, Gamma, Theta, IV = [], [], [], []
+
+    # Calculate Implied Volatility, Delta, Gamma, Theta
+    r = 10  # Risk-free rate
+    for i in range(len(opt_data)):
+        c = mb.BS([opt_data['SPOT'][i], opt_data['STRIKE'][i], r, daysToExpiry],
+                  callPrice=opt_data[f'{opttype}_LTP'][i])
+        civ = c.impliedVolatility  # Fetch implied volatility
+        cg = mb.BS([opt_data['SPOT'][i], opt_data['STRIKE'][i], r, daysToExpiry], volatility=civ)
+
+        if opttype == 'CE':
+            Delta.append(cg.callDelta * 100)
+            Theta.append(cg.callTheta)
+        else:
+            Delta.append(cg.putDelta * 100)
+            Theta.append(cg.putTheta)
+
+        Gamma.append(cg.gamma * 100)  # Convert to percentage
+        IV.append(civ)  # Store IV
+
+    # Storing calculated Greeks in DataFrame
+    opt_data[f'{opttype}_Delta'] = Delta
+    opt_data[f'{opttype}_Gamma'] = Gamma
+    opt_data[f'{opttype}_Theta'] = Theta
+    opt_data['Implied_Volatility'] = IV
+
+    # Save to Excel
+    if opttype == 'CE':
+        db['NIFTY_CE'].insert_many(opt_data.to_dict('records'))
+    else:
+        db['NIFTY_PE'].insert_many(opt_data.to_dict('records'))
+
+    return opt_data
 
 
 
@@ -120,218 +266,7 @@ def volume_oscillator(df, fast=14, slow=28):
     vo = ((ema_fast - ema_slow) / ema_slow) * 100
     return vo
 
-def super_trendhfghfgh(data, period=3, mul=1):
-    import pandas_ta as ta
-    import numpy as np
-    import pandas as pd
 
-    # Indicator parameters
-    fast, slow, signal = 5, 9, 9
-    ema_period = 5
-    box_window = 5
-
-    # === Indicators ===
-
-    data['EMA'] = ta.ema(data['Close'], length=ema_period)
-    data['EMA20'] = ta.ema(data['Close'], length=20)
-    data['EMA3'] = ta.ema(data['Close'], length=3)
-    data['EMA50'] = ta.ema(data['Close'], length=50)
-    data['box_high'] = data['High'].rolling(window=box_window).max()
-    data['box_low'] = data['Low'].rolling(window=box_window).min()
-    data['ADX'] = ta.adx(data['High'], data['Low'], data['Close'], length=14)['ADX_14']
-
-    data['RSI'] = ta.rsi(data["Close"], length=14)
-    data['VO'] = volume_oscillator(data, fast=10, slow=20)
-
-    bb = ta.bbands(data['Close'], length=20, std=1)
-    data['BB_upper'] = bb['BBU_20_1.0']
-    data['BB_lower'] = bb['BBL_20_1.0']
-    data['BB_width'] = data['BB_upper']-data['BB_lower']
-
-    # === Candle Anatomy ===
-    data['body'] = data['Close']-data['Open']
-    data['range'] = data['High']-data['Low']
-    data['upper_wick'] = data['High']-data[['Close', 'Open']].max(axis=1)
-    data['lower_wick'] = data[['Close', 'Open']].min(axis=1)-data['Low']
-
-    source = 'Close'
-    per = 24
-    eper = 5
-    eper2 = 21
-    src = data[source]
-    av = src.rolling(window=per).mean()
-
-    dev = src-av
-    udev = dev.where(dev > 0, 0).abs()
-    ddev = dev.where(dev < 0, 0).abs()
-
-    sudev = udev.rolling(window=per // 2).sum()
-    sddev = ddev.rolling(window=per // 2).sum()
-
-    data['TII'] = (100 * sudev) / (sudev+sddev)
-    data['TII_Signal1'] = data['TII'].ewm(span=eper, adjust=False).mean()
-    data['TII_Signal2'] = data['TII'].ewm(span=eper2, adjust=False).mean()
-    
-    strong_bullish_candle = (
-            (data['body'] > 0) &
-            (data['body'] > 0.6 * data['range']) &
-            (data['upper_wick'] < 0.3 * data['body']) &
-            (data['lower_wick'] < 0.3 * data['body'])
-    )
-
-    rsi_rising = data['RSI'] > data['RSI'].shift(1)
-    Volume_rising = data['VO'] > data['VO'].shift(1)
-
-
-    tii_filter = (
-            (data['TII'] > data['TII_Signal1']) &
-            
-            (data['TII'] > 2) &
-            
-            (data['RSI'] > 50)
-    )
-
-    tafil = (
-            (data['TII'] > data['TII_Signal1']+4) &
-            (data['TII_Signal1'] > data['TII_Signal2']+4) &
-            
-            (data['TII'] != 00)
-
-    )
-
-    
-    # === Branch 1: Setup + Strong Bull + RSI rising + BB upper not touched + VO > 0
-    cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
-    cod_bull=data['Close'].shift(1) > data['Open'].shift(1)
-    cond_bullish_candle = data['Close'] > data['Open']
-    cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
-    cond_bearish_ema_below = (data['Close'].shift(1) < data['EMA'].shift(1)) & (
-                data['Open'].shift(1) < data['EMA'].shift(1))
-    cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
-    cond_distance_from_ema = (data['EMA']-data['Close']) > 1.5
-    cond_not_touching_bb_upper = data['High'] < data['BB_upper']
-
-    branch1 = (
-        tii_filter
-    )
-
-    # === Branch 2: Strong Bull + RSI between 50-65 + RSI rising + VO > 0
-    branch2 = (
-        strong_bullish_candle & (data['RSI'] > 50) &
-
-        Volume_rising & (data['Close'] > data['Open']) & tafil
-
-    )
-
-    # === Branch 3: Close above BB upper + RSI > 50 + VO > 0
-    branch3 = (
-        (data['Close'] > data['BB_upper']) & (data['RSI'] > 50) & (data['VO'] > 0) & (data['VO'] < 30) &
-        Volume_rising & (data['Close'] > data['Open'])  & cod_bull & tafil
-    )
-
-    # === Combine All Branches
-    data['st_sig'] = np.where(branch1 | branch2 | branch3, 1, 0)
-
-    # Optional: Add reason column for debugging
-    data['signal_reason'] = np.select(
-        [branch1, branch2, branch3],
-        ['Branch1_StrongBullish_RSIUp_NoBBTouch',
-         'Branch2_StrongBullish_RSI>50_RSIUp',
-         'Branch3_BBUpperBreakout_RSI>50_VO>0'],
-        default=''
-    )
-    
-    return data[['st_sig', 'signal_reason']]
-
-
-
-
-def super_trend_AI(data):
-    import joblib
-
-    # Indicators
-    data['EMA'] = ta.ema(data['Close'], length=5)
-    data['EMA20'] = ta.ema(data['Close'], length=20)
-    data['EMA3'] = ta.ema(data['Close'], length=3)
-    data['EMA50'] = ta.ema(data['Close'], length=50)
-    data['box_high'] = data['High'].rolling(5).max()
-    data['box_low'] = data['Low'].rolling(5).min()
-    data['ADX'] = ta.adx(data['High'], data['Low'], data['Close'], length=14)['ADX_14']
-    data['RSI'] = ta.rsi(data['Close'], length=14)
-    data['VO'] = volume_oscillator(data, fast=10, slow=20)
-
-    bb = ta.bbands(data['Close'], length=20, std=1)
-    data['BB_upper'] = bb['BBU_20_1.0']
-    data['BB_lower'] = bb['BBL_20_1.0']
-    data['BB_width'] = data['BB_upper'] - data['BB_lower']
-
-    # Candle anatomy
-    data['body'] = data['Close'] - data['Open']
-    data['range'] = data['High'] - data['Low']
-    data['upper_wick'] = data['High'] - data[['Close', 'Open']].max(axis=1)
-    data['lower_wick'] = data[['Close', 'Open']].min(axis=1) - data['Low']
-
-    # TII calc
-    src = data['Close']
-    per = 34
-    eper = 5
-    eper2 = 21
-    av = src.rolling(per).mean()
-    dev = src - av
-    udev = dev.where(dev > 0, 0).abs()
-    ddev = dev.where(dev < 0, 0).abs()
-    sudev = udev.rolling(per // 2).sum()
-    sddev = ddev.rolling(per // 2).sum()
-    data['TII'] = (100 * sudev) / (sudev + sddev)
-    data['TII_Signal1'] = data['TII'].ewm(span=eper, adjust=False).mean()
-    data['TII_Signal2'] = data['TII'].ewm(span=eper2, adjust=False).mean()
-
-    # Conditions
-    strong_bullish_candle = (
-        (data['body'] > 0) &
-        (data['body'] > 0.6 * data['range']) &
-        (data['upper_wick'] < 0.3 * data['body']) &
-        (data['lower_wick'] < 0.3 * data['body'])
-    )
-    rsi_rising = data['RSI'] > data['RSI'].shift(1)
-    volume_rising = data['VO'] > data['VO'].shift(1)
-    cond_bull = data['Close'].shift(1) > data['Open'].shift(1)
-    tafil = (
-        (data['TII'] > data['TII_Signal1'] + 4) &
-        (data['TII_Signal1'] > data['TII_Signal2'] + 4) &
-        (data['TII'] != 100) &
-        (data['TII'] != 0)
-    )
-    tii_filter = (
-        (data['TII'] > data['TII_Signal1']) &
-        (data['TII'] > 2) &
-        (data['RSI'] > 50)
-    )
-
-    branch1 = tii_filter
-    branch2 = strong_bullish_candle & (data['RSI'] > 50) & volume_rising & (data['Close'] > data['Open']) & tafil
-    branch3 = (data['Close'] > data['BB_upper']) & (data['RSI'] > 50) & (data['VO'] > 0) & (data['VO'] < 30) & volume_rising & (data['Close'] > data['Open']) & cond_bull & tafil
-
-    data['st_sig'] = np.where(branch1 | branch2 | branch3, 1, 0)
-    data['signal_reason'] = np.select(
-        [branch1, branch2, branch3],
-        ['Branch1_StrongBullish_RSIUp_TII', 'Branch2_StrongBullish_RSI>50_TII', 'Branch3_BBUpperBreakout_TII'],
-        default=''
-    )
-
-    # Load saved model
-    model = joblib.load("trade_filter_model.pkl")
-    features = ['RSI', 'ADX', 'VO', 'TII', 'TII_Signal1', 'TII_Signal2',
-                'BB_width', 'EMA', 'EMA20', 'EMA50', 'upper_wick', 'lower_wick', 'body']
-
-    # Fill NaNs before prediction
-    data[features] = data[features].fillna(0)
-
-    # Apply AI filter
-    data['ai_prediction'] = model.predict(data[features])
-    data['st_sig'] = np.where((data['st_sig'] == 1) & (data['ai_prediction'] == 1), 1, 0)
-
-    return data[['st_sig', 'signal_reason']]
 
 
 
