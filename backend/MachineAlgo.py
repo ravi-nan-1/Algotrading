@@ -391,26 +391,38 @@ def super_trend(symbol,data):
     data['st_sig'] = np.where((data['st_sig'] == 1) , 1, 0)
 
     inserted_at = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
+    data['inserted_at'] = inserted_at
 
-    # Fetch CE/PE data
+    # === Fetch last row of option data and merge ===
+    last_row_main = data.tail(1).copy()
+
     if opttype == 'CE':
         ce_data = fetch_option_data(symbol)
         if ce_data is not None and not ce_data.empty:
-            # Add a timestamp column
-            ce_data['inserted_at'] = inserted_at
-            # Merge CE data into main data
-            for col in ce_data.columns:
-                data[f"CE_{col}"] = ce_data[col].iloc[0]
-            db['All_NIFTY_CE'].insert_many(data.to_dict('records'))
+            last_row_ce = ce_data.tail(1).copy()
+            last_row_ce['inserted_at'] = inserted_at
+            last_row_ce = last_row_ce.where(pd.notnull(last_row_ce), None)
+            last_row_ce_prefixed = last_row_ce.add_prefix("CE_")
+
+            # Concatenate last row of main + last row CE side by side
+            merged_row = pd.concat([last_row_main.reset_index(drop=True),
+                                    last_row_ce_prefixed.reset_index(drop=True)], axis=1)
+
+            # Insert into DB
+            db['All_NIFTY_CE'].insert_many(merged_row.to_dict('records'))
 
     elif opttype == 'PE':
         pe_data = fetch_option_data(symbol)
         if pe_data is not None and not pe_data.empty:
-            pe_data['inserted_at'] = inserted_at
-            for col in pe_data.columns:
-                data[f"PE_{col}"] = pe_data[col].iloc[0]
+            last_row_pe = pe_data.tail(1).copy()
+            last_row_pe['inserted_at'] = inserted_at
+            last_row_pe = last_row_pe.where(pd.notnull(last_row_pe), None)
+            last_row_pe_prefixed = last_row_pe.add_prefix("PE_")
 
-            db['All_NIFTY_PE'].insert_many(data.to_dict('records'))
+            merged_row = pd.concat([last_row_main.reset_index(drop=True),
+                                    last_row_pe_prefixed.reset_index(drop=True)], axis=1)
+
+            db['All_NIFTY_PE'].insert_many(merged_row.to_dict('records'))
 
     return data[['st_sig', 'signal_reason']]
 
