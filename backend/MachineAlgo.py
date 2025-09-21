@@ -255,6 +255,9 @@ def fetch_option_data(option_string):
     opt_data[f'{opttype}_Theta'] = Theta
     opt_data['Implied_Volatility'] = IV
 
+    opt_data["inserted_at"] = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
+    records = opt_data.to_dict("records")
+
     # Save to Excel
     if opttype == 'CE':
         db['NIFTY_CE'].insert_many(opt_data.to_dict('records'))
@@ -275,7 +278,7 @@ def volume_oscillator(df, fast=14, slow=28):
 
 
 
-def super_trend(data):
+def super_trend(symbol,data):
     import joblib
 
     # Indicators
@@ -381,6 +384,28 @@ def super_trend(data):
     # Apply AI filter
     #data['ai_prediction'] = model.predict(data[features]) & (data['ai_prediction'] == 1)
     data['st_sig'] = np.where((data['st_sig'] == 1) , 1, 0)
+
+    inserted_at = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
+
+    # Fetch CE/PE data
+    if opttype == 'CE':
+        ce_data = fetch_option_data(symbol)
+        if ce_data is not None and not ce_data.empty:
+            # Add a timestamp column
+            ce_data['inserted_at'] = inserted_at
+            # Merge CE data into main data
+            for col in ce_data.columns:
+                data[f"CE_{col}"] = ce_data[col].iloc[0]
+            db['All_NIFTY_CE'].insert_many(ce_data.to_dict('records'))
+
+    elif opttype == 'PE':
+        pe_data = fetch_option_data(symbol)
+        if pe_data is not None and not pe_data.empty:
+            pe_data['inserted_at'] = inserted_at
+            for col in pe_data.columns:
+                data[f"PE_{col}"] = pe_data[col].iloc[0]
+
+            db['All_NIFTY_PE'].insert_many(pe_data.to_dict('records'))
 
     return data[['st_sig', 'signal_reason']]
 
@@ -770,7 +795,7 @@ for h in Tickers:
     data_fut = get_cash_market_data(h, '3m')
     data_fut.drop(data_fut.tail(1).index, inplace=True)
 
-    super_trend(data_fut)
+    super_trend(h,data_fut)
 
     data_list[h] = data_fut
 
@@ -807,7 +832,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
             if is_required_time():
                 data_fut = get_cash_market_data(i, '3m')
                 data_fut.drop(data_fut.tail(1).index, inplace=True)
-                super_trend(data_fut)
+                super_trend(i,data_fut)
 
                 data_list[i] = data_fut
 
