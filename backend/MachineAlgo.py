@@ -122,7 +122,7 @@ def get_cash_market_data(symbol, timeframe):
     df.set_index("Datetime", inplace=True)
     df["Option_Type"] = opttype
     df["Strike_Price"] = strike
-    fetch_option_data(symbol);
+    
 
 
 
@@ -279,6 +279,11 @@ def volume_oscillator(df, fast=14, slow=28):
 
 
 def super_trend(symbol,data):
+    parts = symbol.split()
+    ticker = parts[0]  # Extract ticker
+    expiry = f"{parts[1]} {parts[2]} {parts[3]}"  # Extract expiry date
+    opttype = parts[4]  # Extract option type (CE/PE)
+    strike = float(parts[5])  # Extract strike price and convert to float
     import joblib
 
     # Indicators
