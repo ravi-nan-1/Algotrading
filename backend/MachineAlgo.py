@@ -401,7 +401,7 @@ def super_trend(symbol,data):
             # Merge CE data into main data
             for col in ce_data.columns:
                 data[f"CE_{col}"] = ce_data[col].iloc[0]
-            db['All_NIFTY_CE'].insert_many(ce_data.to_dict('records'))
+            db['All_NIFTY_CE'].insert_many(data.to_dict('records'))
 
     elif opttype == 'PE':
         pe_data = fetch_option_data(symbol)
@@ -410,7 +410,7 @@ def super_trend(symbol,data):
             for col in pe_data.columns:
                 data[f"PE_{col}"] = pe_data[col].iloc[0]
 
-            db['All_NIFTY_PE'].insert_many(pe_data.to_dict('records'))
+            db['All_NIFTY_PE'].insert_many(data.to_dict('records'))
 
     return data[['st_sig', 'signal_reason']]
 
