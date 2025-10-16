@@ -278,7 +278,7 @@ def volume_oscillator(df, fast=14, slow=28):
 
 
 
-def super_trend(symbol,data):
+def super_trend_opti(symbol,data):
     parts = symbol.split()
     ticker = parts[0]  # Extract ticker
     expiry = f"{parts[1]} {parts[2]} {parts[3]}"  # Extract expiry date
@@ -426,6 +426,281 @@ def super_trend(symbol,data):
 
     return data[['st_sig', 'signal_reason']]
 
+
+
+def super_trend(symbol, data):
+    import pandas_ta as ta
+    import numpy as np
+    import pandas as pd
+
+    # Early validation
+    required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+    missing_cols = [col for col in required_cols if col not in data.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {missing_cols}")
+
+    print("Columns available:", data.columns)
+    print(data.head())
+
+    # ========================================
+    # PARSE SYMBOL METADATA
+    # ========================================
+    parts = symbol.split()
+    ticker = parts[0]
+    expiry = f"{parts[1]} {parts[2]} {parts[3]}"
+    opttype = parts[4]  # CE or PE
+    strike = float(parts[5])
+
+    is_call = (opttype == 'CE')
+
+    # ========================================
+    # TECHNICAL INDICATORS
+    # ========================================
+    # EMAs
+    for period in [5, 9, 20, 50]:
+        data[f'EMA{period}'] = ta.ema(data['Close'], length=period)
+
+    # RSI
+    data['RSI'] = ta.rsi(data['Close'], length=14)
+    data['RSI_EMA'] = data['RSI'].ewm(span=3, adjust=False).mean()
+
+    # ADX
+    adx = ta.adx(data['High'], data['Low'], data['Close'], length=14)
+    data['ADX'] = adx['ADX_14']
+    data['DI_plus'] = adx['DMP_14']
+    data['DI_minus'] = adx['DMN_14']
+
+    # Volume
+    data['Volume_MA'] = data['Volume'].rolling(20).mean()
+    data['Volume_Ratio'] = data['Volume'] / data['Volume_MA']
+
+    # Bollinger Bands
+    bb = ta.bbands(data['Close'], length=20, std=2)
+    data['BB_upper'] = bb['BBU_20_2.0']
+    data['BB_lower'] = bb['BBL_20_2.0']
+    data['BB_mid'] = bb['BBM_20_2.0']
+    data['BB_width_pct'] = ((data['BB_upper']-data['BB_lower']) / data['BB_mid']) * 100
+    data['BB_position'] = ((data['Close']-data['BB_lower']) /
+                           (data['BB_upper']-data['BB_lower'])) * 100
+
+    # Candle Analysis (pre-compute abs_body for reuse)
+    data['body'] = data['Close']-data['Open']
+    abs_body = abs(data['body'])
+    data['range'] = data['High']-data['Low']
+    data['upper_wick'] = data['High']-data[['Close', 'Open']].max(axis=1)
+    data['lower_wick'] = data[['Close', 'Open']].min(axis=1)-data['Low']
+    data['body_pct'] = (abs_body / data['range'].replace(0, np.nan)) * 100
+
+    # TII (Trend Intensity Index) - added fillna to handle NaNs
+    per = 34
+    av = data['Close'].rolling(per).mean()
+    dev = data['Close']-av
+    udev = dev.where(dev > 0, 0).abs()
+    ddev = dev.where(dev < 0, 0).abs()
+    sudev = udev.rolling(per // 2).sum()
+    sddev = ddev.rolling(per // 2).sum()
+    data['TII'] = (100 * sudev) / (sudev+sddev).replace(0, np.nan)
+    data['TII'] = data['TII'].fillna(0)  # Avoid NaN propagation
+    data['TII_EMA5'] = data['TII'].ewm(span=5, adjust=False).mean()
+    data['TII_EMA21'] = data['TII'].ewm(span=21, adjust=False).mean()
+
+    data['Price_Change'] = data['Close'].pct_change() * 100
+    data['Price_Momentum'] = data['Close'].diff(3)  # For scoring
+
+    # ========================================
+    # TIME FILTER (Fixed: Direct dt access for naive DatetimeIndex)
+    # ========================================
+    try:
+        datetime_col = data.index
+        if not isinstance(datetime_col, pd.DatetimeIndex):
+            raise ValueError("Index must be DatetimeIndex")
+        time_minutes = datetime_col.hour * 60+datetime_col.minute
+        # Trading windows: 09:15-11:30 (555-690), 13:00-15:30 (780-930)
+        morning_session = (time_minutes >= 555) & (time_minutes < 690)
+        afternoon_session = (time_minutes >= 780) & (time_minutes <= 930)
+        good_time = morning_session | afternoon_session
+        print(f"Time filter active: {good_time.sum()}/{len(data)} bars ({good_time.mean():.1%})")
+    except Exception as e:
+        print(f"Warning: Time filter failed ({e}); using full session.")
+        good_time = pd.Series([True] * len(data), index=data.index)
+
+    # ========================================
+    # FILTER LOGIC (Vectorized - includes good_time + PE tweaks)
+    # ========================================
+    if is_call:
+        trend_ok = (data['EMA20'] > data['EMA50']) | (data['Close'] > data['EMA20'])
+        rsi_ok = data['RSI'].between(40, 80)
+        normal_volatility = data['BB_width_pct'].between(0.3, 40)
+        min_volume = data['Volume'] > 10000  # Basic for CE
+        momentum_ok = data['Price_Change'] > -0.5  # Mild up bias
+    else:
+        trend_ok = (data['EMA20'] < data['EMA50']) | (data['Close'] < data['EMA20'])
+        trend_ok = trend_ok & (data['Close'] < data['EMA50'])  # Strong down
+        rsi_ok = data['RSI'].between(20, 55)
+        normal_volatility = data['BB_width_pct'].between(0.3, 45)
+        min_volume = data['Volume'] > 50000  # HIGHER for PE (filter low-liq)
+        momentum_ok = data['Price_Change'] < -0.3  # NEW: Downward momentum
+        decay_safe = data['Close'] >= 25  # Avoid near-worthless PEs
+
+    volume_ok = data['Volume'] > (0.3 * data['Volume_MA'])
+    master_filter = (trend_ok & rsi_ok & normal_volatility & volume_ok &
+                     min_volume & momentum_ok & good_time)
+    if not is_call:
+        master_filter = master_filter & decay_safe  # PE only
+    master_filter = master_filter.fillna(False)
+
+    # ========================================
+    # BRANCH SIGNAL CONDITIONS (PE: Higher vol ratio)
+    # ========================================
+    vol_ratio_threshold = 1.5 if not is_call else 1.2  # Tighter for PE
+
+    def get_branches_call(d, mf):
+        """Get all branch conditions for CE"""
+        b1 = (mf & (d['Close'] > d['EMA5']) &
+              (d['Close'].shift(1) <= d['EMA5'].shift(1)) &
+              (d['RSI'] > 45) & (d['Volume_Ratio'] > 0.8)).fillna(False)
+
+        b2 = (mf & (d['Close'] > d['EMA20']) &
+              (d['Low'] <= d['EMA9'] * 1.005) & (d['Close'] > d['EMA9'])).fillna(False)
+
+        b3 = (mf & (d['RSI'].shift(1) < 45) & (d['RSI'] > 45) &
+              (d['Close'] > d['Open']) & (d['Volume_Ratio'] > 0.7)).fillna(False)
+
+        b4 = (mf & (d['BB_position'] < 30) &
+              (d['BB_position'] > d['BB_position'].shift(1)) &
+              (d['Close'] > d['Open']) & (d['lower_wick'] > abs_body * 0.5)).fillna(False)
+
+        b5 = (mf & d['RSI'].between(55, 75) &
+              (d['Price_Change'] > 0.5) & (d['Volume_Ratio'] > vol_ratio_threshold) &  # Dynamic
+              (d['Close'] > d['Open']) & (d['body_pct'] > 60)).fillna(False)
+
+        b6 = (mf & (d['TII'] > d['TII_EMA5']) & (d['TII_EMA5'] > d['TII_EMA21']) &
+              d['TII'].between(15, 85) & (d['DI_plus'] > d['DI_minus']) &
+              (d['Close'] > d['EMA9'])).fillna(False)
+
+        return [b1, b2, b3, b4, b5, b6]
+
+    def get_branches_put(d, mf):
+        """Get all branch conditions for PE"""
+        b1 = (mf & (d['Close'] < d['EMA5']) &
+              (d['Close'].shift(1) >= d['EMA5'].shift(1)) &
+              (d['RSI'] < 55) & (d['Volume_Ratio'] > 0.8)).fillna(False)
+
+        b2 = (mf & (d['Close'] < d['EMA20']) &
+              (d['High'] >= d['EMA9'] * 0.995) & (d['Close'] < d['EMA9'])).fillna(False)
+
+        b3 = (mf & (d['RSI'].shift(1) > 55) & (d['RSI'] < 55) &
+              (d['Close'] < d['Open']) & (d['Volume_Ratio'] > 0.7)).fillna(False)
+
+        b4 = (mf & (d['BB_position'] > 70) &
+              (d['BB_position'] < d['BB_position'].shift(1)) &
+              (d['Close'] < d['Open']) & (d['upper_wick'] > abs_body * 0.5)).fillna(False)
+
+        b5 = (mf & d['RSI'].between(25, 45) &
+              (d['Price_Change'] < -0.5) & (d['Volume_Ratio'] > vol_ratio_threshold) &  # Dynamic, tighter
+              (d['Close'] < d['Open']) & (d['body_pct'] > 60)).fillna(False)
+
+        b6 = (mf & (d['TII'] < d['TII_EMA5']) & (d['TII_EMA5'] < d['TII_EMA21']) &
+              d['TII'].between(15, 85) & (d['DI_minus'] > d['DI_plus']) &
+              (d['Close'] < d['EMA9'])).fillna(False)
+
+        return [b1, b2, b3, b4, b5, b6]
+
+    # Get branches
+    branches = get_branches_call(data, master_filter) if is_call else get_branches_put(data, master_filter)
+
+    # Count triggered branches
+    branch_count = sum(b.astype(int) for b in branches)
+    data['branches_triggered'] = branch_count
+
+    # Primary branches (1 and 5)
+    primary_branch = branches[0] | branches[4]
+
+    # ========================================
+    # HELPER LOGIC: Candle + Divergence
+    # ========================================
+    if is_call:
+        candle_confirm = ((data['body'] > 0) & (data['body_pct'] > 50) &
+                          (data['lower_wick'] < abs_body * 0.3)).fillna(False)
+        divergence_safe = ((data['RSI'] > data['RSI'].shift(5)) | (data['RSI'] > 50)).fillna(False)
+    else:
+        candle_confirm = ((data['body'] < 0) & (data['body_pct'] > 50) &
+                          (data['upper_wick'] < abs_body * 0.3)).fillna(False)
+        divergence_safe = ((data['RSI'] < data['RSI'].shift(5)) | (data['RSI'] < 50)).fillna(False)
+
+    # Strong signal definition (PE: >=3 branches for fewer signals)
+    min_branches = 3 if not is_call else 2
+    data['st_sig'] = ((branch_count >= min_branches) & candle_confirm & divergence_safe).astype(int)
+
+    # ========================================
+    # QUALITY SCORING (Added momentum bonus)
+    # ========================================
+    quality_score = np.zeros(len(data))
+
+    # Common scoring
+    quality_score += np.where(data['ADX'] > 30, 25, 0)
+    quality_score += np.where(data['Volume_Ratio'] > 1.3, 15, 0)
+    quality_score += np.where(data['body_pct'] > 65, 10, 0)
+    quality_score += np.where(branch_count >= 4, 10, 0)
+    quality_score += np.where(candle_confirm, 10, 0)
+    quality_score += np.where(primary_branch, 10, 0)
+
+    # Type-specific + momentum
+    if is_call:
+        quality_score += np.where(data['EMA20'] > data['EMA50'], 15, 0)
+        quality_score += np.where(data['RSI'].between(50, 70), 15, 0)
+        quality_score += np.where(data['Price_Momentum'] > 0, 5, 0)  # NEW
+    else:
+        quality_score += np.where(data['EMA20'] < data['EMA50'], 15, 0)
+        quality_score += np.where(data['RSI'].between(30, 50), 15, 0)
+        quality_score += np.where(data['Price_Momentum'] < 0, 5, 0)  # NEW
+
+    data['signal_quality'] = np.clip(quality_score, 0, 100)
+
+    # High quality signals (>=3 branches, quality >=70)
+    data['high_quality'] = ((data['st_sig'] == 1) & primary_branch &
+                            (branch_count >= 3) & (data['signal_quality'] >= 70)).astype(int)
+
+    # ========================================
+    # DEBUGGING (Enhanced for PE)
+    # ========================================
+    n_bars = min(100, len(data))
+    last = data.tail(n_bars)
+    sig_count = last['st_sig'].sum()
+    hq_count = last['high_quality'].sum()
+    time_filtered = good_time.tail(n_bars).sum()
+
+    # Slice confirms to match last
+    candle_confirm_last = candle_confirm.tail(n_bars)
+    divergence_safe_last = divergence_safe.tail(n_bars)
+    primary_last = primary_branch.tail(n_bars)
+
+    print("\n📊 DEBUGGING SUMMARY")
+    print(f"  Option Type: {opttype}")
+    print(f"  Analyzed Bars: {n_bars}")
+    print(f"  Time-Filtered Bars: {time_filtered}/{n_bars} ({time_filtered / n_bars:.1%})")
+    print(f"  Total Signals: {sig_count}/{n_bars}")
+    print(f"  High Quality: {hq_count}/{n_bars}")
+    if sig_count > 0:
+        sig_data = last[last['st_sig'] == 1]
+        print(f"  Avg Branches: {sig_data['branches_triggered'].mean():.2f}")
+        print(f"  Avg Quality: {sig_data['signal_quality'].mean():.2f}")
+        st_sig_bool = last['st_sig'].astype(bool)
+        candle_rate = (st_sig_bool & candle_confirm_last).sum() / sig_count
+        div_rate = (st_sig_bool & divergence_safe_last).sum() / sig_count
+        primary_rate = (st_sig_bool & primary_last).sum() / sig_count
+        print(f"  Candle Confirm Rate: {candle_rate:.1%}")
+        print(f"  Divergence Safe Rate: {div_rate:.1%}")
+        print(f"  Primary Branch Rate: {primary_rate:.1%}")
+        filtered_bars_day = time_filtered / n_bars * 250  # ~250 min filtered/day
+        print(f"  Projected daily signals: {(sig_count / n_bars) * filtered_bars_day:.1f}")
+        if not is_call:
+            low_vol_signals = (sig_data['Volume'] < 50000).sum()
+            print(f"  PE Low-Vol Signals Filtered: {low_vol_signals}/{sig_count}")
+    else:
+        print("  No signals - filters too tight? Loosen volume/RSI.")
+
+    return data
 
 def super_trend111(data, period=3, mul=1):
     import pandas_ta as ta
