@@ -475,10 +475,12 @@ def super_trend(symbol, data):
     data['Volume_Ratio'] = data['Volume'] / data['Volume_MA']
 
     # Bollinger Bands
-    bb = ta.bbands(data['Close'], length=20, std=2)
-    data['BB_upper'] = bb['BBU_20_2.0']
-    data['BB_lower'] = bb['BBL_20_2.0']
-    data['BB_mid'] = bb['BBM_20_2.0']
+    bb = ta.bbands(data['Close'], length=20, std=1)
+    
+    data['BB_upper'] = bb['BBU_20_2.0_2.0']
+    data['BB_lower'] = bb['BBL_20_2.0_2.0']
+    #data['BB_width'] = data['BB_upper'] - data['BB_lower']
+    data['BB_mid'] = bb['BBM_20_2.0_2.0']
     data['BB_width_pct'] = ((data['BB_upper']-data['BB_lower']) / data['BB_mid']) * 100
     data['BB_position'] = ((data['Close']-data['BB_lower']) /
                            (data['BB_upper']-data['BB_lower'])) * 100
