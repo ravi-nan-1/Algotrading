@@ -428,7 +428,7 @@ def super_trend_opti(symbol,data):
 
 
 
-def super_trend(symbol, data):
+def super_trendstoch(symbol, data):
     import pandas_ta as ta
     import numpy as np
     import pandas as pd
@@ -487,6 +487,127 @@ def super_trend(symbol, data):
     data.ffill(inplace=True)
 
     return data
+
+
+def super_trend(symbol, data):
+    import pandas_ta as ta
+    import numpy as np
+    import pandas as pd
+    from joblib import load
+
+    # === SYMBOL PARSING ===
+    parts = symbol.split()
+    ticker = parts[0]
+    expiry = f"{parts[1]} {parts[2]} {parts[3]}"
+    opttype = parts[4]
+    strike = float(parts[5])
+
+    # === INDICATORS ===
+    data['EMA'] = ta.ema(data['Close'], length=5)
+    data['EMA20'] = ta.ema(data['Close'], length=20)
+    data['EMA3'] = ta.ema(data['Close'], length=3)
+    data['EMA50'] = ta.ema(data['Close'], length=50)
+    data['box_high'] = data['High'].rolling(5).max()
+    data['box_low'] = data['Low'].rolling(5).min()
+    data['ADX'] = ta.adx(data['High'], data['Low'], data['Close'], length=14)['ADX_14']
+    data['RSI'] = ta.rsi(data['Close'], length=14)
+    data['VO'] = volume_oscillator(data, fast=10, slow=20)
+
+    bb = ta.bbands(data['Close'], length=20, std=1)
+    data['BB_upper'] = bb['BBU_20_2.0_2.0']
+    data['BB_lower'] = bb['BBL_20_2.0_2.0']
+    data['BB_width'] = data['BB_upper'] - data['BB_lower']
+
+    # === STOCHASTIC INDICATOR ===
+    stoch = ta.stoch(data['High'], data['Low'], data['Close'], k=14, d=3, smooth_k=3)
+    data['Stoch_K'] = stoch['STOCHk_14_3_3']
+    data['Stoch_D'] = stoch['STOCHd_14_3_3']
+
+    # === STOCHASTIC BUY CONDITION ===
+    stoch_buy = (
+        (data['Stoch_K'] < 20) &
+        (data['Stoch_D'] < 20) &
+        (data['Stoch_K'] > data['Stoch_D']) &
+        (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1)) &
+        (data['Stoch_K'] > 20) &  # crossing above 20
+        ((data['Stoch_K'] - data['Stoch_K'].shift(1)) > 5)  # rate of change
+    )
+
+    # === CANDLE ANATOMY ===
+    data['body'] = data['Close'] - data['Open']
+    data['range'] = data['High'] - data['Low']
+    data['upper_wick'] = data['High'] - data[['Close', 'Open']].max(axis=1)
+    data['lower_wick'] = data[['Close', 'Open']].min(axis=1) - data['Low']
+
+    # === TII CALCULATION ===
+    src = data['Close']
+    per = 34
+    eper = 5
+    eper2 = 21
+    av = src.rolling(per).mean()
+    dev = src - av
+    udev = dev.where(dev > 0, 0).abs()
+    ddev = dev.where(dev < 0, 0).abs()
+    sudev = udev.rolling(per // 2).sum()
+    sddev = ddev.rolling(per // 2).sum()
+    data['TII'] = (100 * sudev) / (sudev + sddev)
+    data['TII_Signal1'] = data['TII'].ewm(span=eper, adjust=False).mean()
+    data['TII_Signal2'] = data['TII'].ewm(span=eper2, adjust=False).mean()
+
+    # === CONDITIONS ===
+    strong_bullish_candle = (
+        (data['body'] > 0) &
+        (data['body'] > 0.6 * data['range']) &
+        (data['upper_wick'] < 0.3 * data['body']) &
+        (data['lower_wick'] < 0.3 * data['body'])
+    )
+    rsi_rising = data['RSI'] > data['RSI'].shift(1)
+    volume_rising = data['VO'] > data['VO'].shift(1)
+    cond_bull = data['Close'].shift(1) > data['Open'].shift(1)
+    tafil = (
+        (data['TII'] > data['TII_Signal1'] + 4) &
+        (data['TII_Signal1'] > data['TII_Signal2'] + 4) &
+        (data['TII'] != 100) &
+        (data['TII'] != 0)
+    )
+    tii_filter = (
+        (data['TII'] > data['TII_Signal1']) &
+        (data['TII'] > 2) &
+        (data['RSI'] > 50)
+    )
+
+    hammer_candle = (
+        (abs(data['body']) <= 0.3 * data['range']) &
+        (data['lower_wick'] >= 2 * abs(data['body'])) &
+        (data['upper_wick'] <= abs(data['body']))
+    )
+
+    # === BRANCHES WITH STOCHASTIC CONFIRMATION ===
+    branch1 = tii_filter & stoch_buy
+    branch2 = strong_bullish_candle & (data['RSI'] > 50) & volume_rising & (data['Close'] > data['Open']) & tafil & stoch_buy
+    branch3 = (data['Close'] > data['BB_upper']) & (data['RSI'] > 50) & (data['VO'] > 0) & (data['VO'] < 30) & volume_rising & (data['Close'] > data['Open']) & cond_bull & tafil & stoch_buy
+    branch4 = (
+        (data['Close'].shift(1) < data['Open'].shift(1)) &
+        (data['Close'] > data['Open']) &
+        (data['Open'].shift(1) < data['EMA'].shift(1)) &
+        stoch_buy
+    )
+
+    # === FINAL SIGNAL ===
+    data['st_sig'] = np.where(branch1 | branch2 | branch3 | branch4, 1, 0)
+    data['signal_reason'] = np.select(
+        [branch1, branch2, branch3, branch4],
+        [
+            'Branch1_TII_Filter_StochConfirm',
+            'Branch2_StrongBullish_RSI_TII_StochConfirm',
+            'Branch3_BBUpperBreakout_TII_StochConfirm',
+            'Branch4_BullishHammerBelowEMA_StochConfirm'
+        ],
+        default=''
+    )
+
+    return data[['st_sig', 'signal_reason']]
+
 
 
 def super_trend111(data, period=3, mul=1):
