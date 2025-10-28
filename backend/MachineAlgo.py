@@ -278,222 +278,10 @@ def volume_oscillator(df, fast=14, slow=28):
 
 
 
-def super_trend_opti(symbol,data):
-    parts = symbol.split()
-    ticker = parts[0]  # Extract ticker
-    expiry = f"{parts[1]} {parts[2]} {parts[3]}"  # Extract expiry date
-    opttype = parts[4]  # Extract option type (CE/PE)
-    strike = float(parts[5])  # Extract strike price and convert to float
-    import joblib
-
-    # Indicators
-    data['EMA'] = ta.ema(data['Close'], length=5)
-    data['EMA20'] = ta.ema(data['Close'], length=20)
-    data['EMA3'] = ta.ema(data['Close'], length=3)
-    data['EMA50'] = ta.ema(data['Close'], length=50)
-    data['box_high'] = data['High'].rolling(5).max()
-    data['box_low'] = data['Low'].rolling(5).min()
-    data['ADX'] = ta.adx(data['High'], data['Low'], data['Close'], length=14)['ADX_14']
-    data['RSI'] = ta.rsi(data['Close'], length=14)
-    data['VO'] = volume_oscillator(data, fast=10, slow=20)
-
-    bb = ta.bbands(data['Close'], length=20, std=1)
-    
-    data['BB_upper'] = bb['BBU_20_2.0_2.0']
-    data['BB_lower'] = bb['BBL_20_2.0_2.0']
-    data['BB_width'] = data['BB_upper'] - data['BB_lower']
-
-    # Candle anatomy
-    data['body'] = data['Close'] - data['Open']
-    data['range'] = data['High'] - data['Low']
-    data['upper_wick'] = data['High'] - data[['Close', 'Open']].max(axis=1)
-    data['lower_wick'] = data[['Close', 'Open']].min(axis=1) - data['Low']
-
-    # TII calc
-    src = data['Close']
-    per = 34
-    eper = 5
-    eper2 = 21
-    av = src.rolling(per).mean()
-    dev = src - av
-    udev = dev.where(dev > 0, 0).abs()
-    ddev = dev.where(dev < 0, 0).abs()
-    sudev = udev.rolling(per // 2).sum()
-    sddev = ddev.rolling(per // 2).sum()
-    data['TII'] = (100 * sudev) / (sudev + sddev)
-    data['TII_Signal1'] = data['TII'].ewm(span=eper, adjust=False).mean()
-    data['TII_Signal2'] = data['TII'].ewm(span=eper2, adjust=False).mean()
-
-    # Conditions
-    strong_bullish_candle = (
-        (data['body'] > 0) &
-        (data['body'] > 0.6 * data['range']) &
-        (data['upper_wick'] < 0.3 * data['body']) &
-        (data['lower_wick'] < 0.3 * data['body'])
-    )
-    rsi_rising = data['RSI'] > data['RSI'].shift(1)
-    volume_rising = data['VO'] > data['VO'].shift(1)
-    cond_bull = data['Close'].shift(1) > data['Open'].shift(1)
-    tafil = (
-        (data['TII'] > data['TII_Signal1'] + 4) &
-        (data['TII_Signal1'] > data['TII_Signal2'] + 4) &
-        (data['TII'] != 100) &
-        (data['TII'] != 0)
-    )
-    tii_filter = (
-        (data['TII'] > data['TII_Signal1']) &
-        (data['TII'] > 2) &
-        (data['RSI'] > 50)
-    )
-
-    # Hammer detection (small body, long lower wick)
-    hammer_candle = (
-        (abs(data['body']) <= 0.3 * data['range']) &
-        (data['lower_wick'] >= 2 * abs(data['body'])) &
-        (data['upper_wick'] <= abs(data['body']))
-    )
-
-    branch1 = tii_filter
-    branch2 = strong_bullish_candle & (data['RSI'] > 50) & volume_rising & (data['Close'] > data['Open']) & tafil
-    branch3 = (data['Close'] > data['BB_upper']) & (data['RSI'] > 50) & (data['VO'] > 0) & (data['VO'] < 30) & volume_rising & (data['Close'] > data['Open']) & cond_bull & tafil
-
-    # Branch 4 - Prev bearish, current bullish hammer, prev close below EMA
-    branch4 = (
-        (data['Close'].shift(1) < data['Open'].shift(1)) &  # prev bearish
-        (data['Close'] > data['Open'])                     # current bullish
-         &                                     # hammer pattern
-        (data['Open'].shift(1) < data['EMA'].shift(1))      # prev close below EMA
-    )
-
-
-    data['st_sig'] = np.where(branch1 | branch2 | branch3 | branch4, 1, 0)
-    data['signal_reason'] = np.select(
-        [branch1, branch2, branch3, branch4],
-        [
-            'Branch1_StrongBullish_RSIUp_TII',
-            'Branch2_StrongBullish_RSI>50_TII',
-            'Branch3_BBUpperBreakout_TII',
-            'Branch4_BullishHammerAfterBearishBelowEMA'
-        ],
-        default=''
-    )
-
-    # Load saved model
-    model = joblib.load("trade_filter_model.pkl")
-    features = ['RSI', 'ADX', 'VO', 'TII', 'TII_Signal1', 'TII_Signal2',
-                'BB_width', 'EMA', 'EMA20', 'EMA50', 'upper_wick', 'lower_wick', 'body']
-
-    # Fill NaNs before prediction
-    data[features] = data[features].fillna(0)
-
-    # Apply AI filter
-    #data['ai_prediction'] = model.predict(data[features]) & (data['ai_prediction'] == 1)
-    data['st_sig'] = np.where((data['st_sig'] == 1) , 1, 0)
-
-    inserted_at = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
-    data['inserted_at'] = inserted_at
-
-    # === Fetch last row of option data and merge ===
-    last_row_main = data.tail(1).copy()
-
-    if opttype == 'CE':
-        ce_data = fetch_option_data(symbol)
-        if ce_data is not None and not ce_data.empty:
-            last_row_ce = ce_data.tail(1).copy()
-            last_row_ce['inserted_at'] = inserted_at
-            last_row_ce = last_row_ce.where(pd.notnull(last_row_ce), None)
-            last_row_ce_prefixed = last_row_ce.add_prefix("CE_")
-
-            # Concatenate last row of main + last row CE side by side
-            merged_row = pd.concat([last_row_main.reset_index(drop=True),
-                                    last_row_ce_prefixed.reset_index(drop=True)], axis=1)
-
-            # Insert into DB
-            db['All_NIFTY_CE'].insert_many(merged_row.to_dict('records'))
-
-    elif opttype == 'PE':
-        pe_data = fetch_option_data(symbol)
-        if pe_data is not None and not pe_data.empty:
-            last_row_pe = pe_data.tail(1).copy()
-            last_row_pe['inserted_at'] = inserted_at
-            last_row_pe = last_row_pe.where(pd.notnull(last_row_pe), None)
-            last_row_pe_prefixed = last_row_pe.add_prefix("PE_")
-
-            merged_row = pd.concat([last_row_main.reset_index(drop=True),
-                                    last_row_pe_prefixed.reset_index(drop=True)], axis=1)
-
-            db['All_NIFTY_PE'].insert_many(merged_row.to_dict('records'))
-
-    return data[['st_sig', 'signal_reason']]
-
-
-
-def super_trendstoch(symbol, data):
-    import pandas_ta as ta
-    import numpy as np
-    import pandas as pd
-
-    # Ensure columns exist
-    required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-    for col in required_cols:
-        if col not in data.columns:
-            raise ValueError(f"Missing column: {col}")
-
-    # Ensure datetime index
-    if not isinstance(data.index, pd.DatetimeIndex):
-        data.index = pd.to_datetime(data.index)
-
-    # === INDICATORS ===
-    # Use D=3 (so %D is a 3-period SMA of %K)
-    stoch = ta.stoch(data['High'], data['Low'], data['Close'], k=14, d=3, smooth_k=3)
-    data['Stoch_K'] = stoch['STOCHk_14_3_3']
-    data['Stoch_D'] = stoch['STOCHd_14_3_3']
-
-    # RSI
-    data['RSI'] = ta.rsi(data['Close'], length=14)
-
-    # Volume MA
-    data['Vol_MA'] = data['Volume'].rolling(20).mean()
-
-    # Candle color
-    data['Green'] = data['Close'] > data['Open']
-
-    # === BUY SETUP ===
-    stoch_buy = (
-        (data['Stoch_K'] < 30) &
-        (data['Stoch_D'] < 30) &
-        (data['Stoch_K'] > data['Stoch_D']) &
-        (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1))
-    )
-
-    # Confirmations
-    rsi_ok = (data['RSI'] > 35) & (data['RSI'] < 70)
-    volume_ok = data['Volume'] >= data['Vol_MA'] * 0.9
-    candle_ok = data['Green']
-
-    # Final buy signal
-    final_signal = stoch_buy  & volume_ok & candle_ok #& rsi_ok
-
-    # Output
-    data['st_sig'] = np.where(final_signal, 1, 0)
-    data['signal_reason'] = np.where(
-        final_signal,
-        'STOCH_BUY: %K crossed above %D below 20 (Bullish crossover with RSI & Volume confirm)',
-        ''
-    )
-    data['confidence'] = np.where(final_signal, 85, 0)
-
-    data.bfill(inplace=True)
-    data.ffill(inplace=True)
-
-    return data
-
-
 def super_trend(symbol, data):
     import pandas_ta as ta
     import numpy as np
     import pandas as pd
-    from joblib import load
 
     # === SYMBOL PARSING ===
     parts = symbol.split()
@@ -502,199 +290,219 @@ def super_trend(symbol, data):
     opttype = parts[4]
     strike = float(parts[5])
 
-    # === INDICATORS ===
-    data['EMA'] = ta.ema(data['Close'], length=5)
+    # === CORE INDICATORS ===
+    data['EMA5'] = ta.ema(data['Close'], length=5)
     data['EMA20'] = ta.ema(data['Close'], length=20)
-    data['EMA3'] = ta.ema(data['Close'], length=3)
     data['EMA50'] = ta.ema(data['Close'], length=50)
-    data['box_high'] = data['High'].rolling(5).max()
-    data['box_low'] = data['Low'].rolling(5).min()
+
+    # === MOMENTUM INDICATORS ===
     data['ADX'] = ta.adx(data['High'], data['Low'], data['Close'], length=14)['ADX_14']
     data['RSI'] = ta.rsi(data['Close'], length=14)
     data['VO'] = volume_oscillator(data, fast=10, slow=20)
 
-    bb = ta.bbands(data['Close'], length=20, std=1)
-    data['BB_upper'] = bb['BBU_20_2.0_2.0']
-    data['BB_lower'] = bb['BBL_20_2.0_2.0']
-    data['BB_width'] = data['BB_upper'] - data['BB_lower']
+    # === BOLLINGER BANDS ===
+    bb = ta.bbands(data['Close'], length=20, std=2)
+    print(data.columns)
+    data['BB_upper'] = bb['BBU_20_2.0']
+    data['BB_lower'] = bb['BBL_20_2.0']
+    data['BB_middle'] = bb['BBM_20_2.0']
+    data['BB_width'] = (data['BB_upper']-data['BB_lower']) / data['BB_middle'] * 100
 
-    # === STOCHASTIC INDICATOR ===
+    # === STOCHASTIC WITH YOUR OBSERVATION ===
     stoch = ta.stoch(data['High'], data['Low'], data['Close'], k=14, d=3, smooth_k=3)
     data['Stoch_K'] = stoch['STOCHk_14_3_3']
     data['Stoch_D'] = stoch['STOCHd_14_3_3']
 
-    # === STOCHASTIC BUY CONDITION ===
-    stoch_buy = (
-        (data['Stoch_K'] < 20) &
-        (data['Stoch_D'] < 20) &
-        (data['Stoch_K'] > data['Stoch_D']) &
-        (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1)) &
-        (data['Stoch_K'] > 20) &  # crossing above 20
-        ((data['Stoch_K'] - data['Stoch_K'].shift(1)) > 5)  # rate of change
+    # PATTERN 1: Deep oversold bounce (Your observation)
+    stoch_deep_oversold_bounce = (
+        # Was deeply oversold (both K and D below 20)
+            (data['Stoch_K'].shift(1) < 20) &
+            (data['Stoch_D'].shift(1) < 20) &
+
+            (data['Stoch_K']-data['Stoch_K'].shift(1) > 5) &
+
+
+            # Now showing signs of reversal
+            (
+                # Either K crossing above D (bullish crossover)
+                    ((data['Stoch_K'] > data['Stoch_D']) &
+                     (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1))) |
+
+                    # Or K starting to rise strongly
+                    ((data['Stoch_K'] > data['Stoch_K'].shift(1)+3) &
+                     (data['Stoch_K'] > 15))  # Moving up from oversold
+            )
     )
 
-    # === CANDLE ANATOMY ===
-    data['body'] = data['Close'] - data['Open']
-    data['range'] = data['High'] - data['Low']
-    data['upper_wick'] = data['High'] - data[['Close', 'Open']].max(axis=1)
-    data['lower_wick'] = data[['Close', 'Open']].min(axis=1) - data['Low']
+    # PATTERN 2: Oversold recovery momentum
+    stoch_oversold_recovery = (
+        # Recently was below 20
+            (data['Stoch_K'].rolling(3).min() < 20) &
 
-    # === TII CALCULATION ===
+            # Now breaking above 20 with momentum
+            (data['Stoch_K'] > 20) &
+            (data['Stoch_K'] > data['Stoch_K'].shift(1)) &
+            (data['Stoch_K'] > data['Stoch_D']) &
+
+            # Strong upward momentum
+            (data['Stoch_K']-data['Stoch_K'].shift(2) > 10)  # 10 point rise in 2 candles
+    )
+
+    # PATTERN 3: Early oversold signal (catching the bounce early)
+    stoch_early_bounce = (
+        # Just hit oversold
+            (data['Stoch_K'] < 20) &
+            (data['Stoch_K'].shift(1) >= 20) &  # Just entered oversold
+
+            # But showing divergence or support
+            ((data['Close'] > data['Close'].shift(1)) |  # Price rising while stoch oversold
+             (data['RSI'] > data['RSI'].shift(1)))  # RSI divergence
+    )
+
+    # Combine stochastic patterns
+    stoch_buy_signal = (
+            stoch_deep_oversold_bounce |
+            stoch_oversold_recovery |
+            stoch_early_bounce
+    )
+
+    # === IMPROVED TII CALCULATION ===
     src = data['Close']
     per = 34
-    eper = 5
-    eper2 = 21
+
     av = src.rolling(per).mean()
-    dev = src - av
-    udev = dev.where(dev > 0, 0).abs()
-    ddev = dev.where(dev < 0, 0).abs()
-    sudev = udev.rolling(per // 2).sum()
-    sddev = ddev.rolling(per // 2).sum()
-    data['TII'] = (100 * sudev) / (sudev + sddev)
-    data['TII_Signal1'] = data['TII'].ewm(span=eper, adjust=False).mean()
-    data['TII_Signal2'] = data['TII'].ewm(span=eper2, adjust=False).mean()
+    dev = (src-av).abs()
 
-    # === CONDITIONS ===
-    strong_bullish_candle = (
-        (data['body'] > 0) &
-        (data['body'] > 0.6 * data['range']) &
-        (data['upper_wick'] < 0.3 * data['body']) &
-        (data['lower_wick'] < 0.3 * data['body'])
-    )
-    rsi_rising = data['RSI'] > data['RSI'].shift(1)
-    volume_rising = data['VO'] > data['VO'].shift(1)
-    cond_bull = data['Close'].shift(1) > data['Open'].shift(1)
-    tafil = (
-        (data['TII'] > data['TII_Signal1'] + 4) &
-        (data['TII_Signal1'] > data['TII_Signal2'] + 4) &
-        (data['TII'] != 100) &
-        (data['TII'] != 0)
-    )
-    tii_filter = (
-        (data['TII'] > data['TII_Signal1']) &
-        (data['TII'] > 2) &
-        (data['RSI'] > 50)
+    bull_dev = np.where(src > av, dev, 0)
+    bear_dev = np.where(src < av, dev, 0)
+
+    sum_bull = pd.Series(bull_dev).rolling(per // 2).sum()
+    sum_bear = pd.Series(bear_dev).rolling(per // 2).sum()
+
+    data['TII'] = np.where(
+        (sum_bull+sum_bear) > 0,
+        (100 * sum_bull) / (sum_bull+sum_bear),
+        50
     )
 
-    hammer_candle = (
-        (abs(data['body']) <= 0.3 * data['range']) &
-        (data['lower_wick'] >= 2 * abs(data['body'])) &
-        (data['upper_wick'] <= abs(data['body']))
+    data['TII_Signal'] = data['TII'].ewm(span=5, adjust=False).mean()
+    data['TII_Slow'] = data['TII'].ewm(span=21, adjust=False).mean()
+
+    # === VOLUME ANALYSIS ===
+    data['Volume_MA'] = data['Volume'].rolling(20).mean()
+    volume_surge = data['Volume'] > (1.5 * data['Volume_MA'])
+    volume_positive = data['Volume'] > data['Volume_MA']
+
+    # === TREND FILTERS ===
+    uptrend = (
+            (data['EMA5'] > data['EMA20']) &
+            (data['EMA20'] > data['EMA50']) &
+            (data['ADX'] > 25)
     )
 
-    # === BRANCHES WITH STOCHASTIC CONFIRMATION ===
-    branch1 = tii_filter & stoch_buy
-    branch2 = strong_bullish_candle & (data['RSI'] > 50) & volume_rising & (data['Close'] > data['Open']) & tafil & stoch_buy
-    branch3 = (data['Close'] > data['BB_upper']) & (data['RSI'] > 50) & (data['VO'] > 0) & (data['VO'] < 30) & volume_rising & (data['Close'] > data['Open']) & cond_bull & tafil & stoch_buy
+    short_term_bullish = data['Close'] > data['EMA5']
+
+    momentum_positive = (
+            (data['RSI'] > 45) &  # Slightly lowered for catching oversold bounces
+            (data['RSI'] < 70)
+    )
+
+    # === TII FILTERS ===
+    tii_bullish = (
+            (data['TII'] > data['TII_Signal']) &
+            (data['TII'] > 5) &  # Lowered threshold for oversold conditions
+            (data['TII'] < 20)
+    )
+
+    tii_strong = (
+            (data['TII'] > data['TII_Signal']+5) &
+            (data['TII_Signal'] > data['TII_Slow']) &
+            (data['TII'].diff() > 0)
+    )
+
+    # === BRANCH 1: OVERSOLD BOUNCE (Focus on your stochastic observation) ===
+    branch1 = (
+            stoch_buy_signal &  # Your key observation
+            (
+                    tii_bullish |  # Either TII confirms
+                    (data['RSI'] > data['RSI'].shift(1)) |  # Or RSI rising
+                    short_term_bullish  # Or price above short MA
+            ) &
+            volume_positive  # Some volume support
+    )
+
+    # === BRANCH 2: MOMENTUM CONTINUATION ===
+    branch2 = (
+            tii_strong &
+            momentum_positive &
+            stoch_buy_signal &  # Still need stochastic confirmation
+            (data['Close'] > data['EMA20']) &
+            uptrend
+    )
+
+    # === BRANCH 3: BREAKOUT WITH OVERSOLD RECOVERY ===
+    branch3 = (
+            (data['Close'] > data['BB_upper']) &
+            (data['Close'].shift(1) <= data['BB_upper'].shift(1)) &
+            (stoch_oversold_recovery | stoch_deep_oversold_bounce) &  # Recent oversold bounce
+            volume_surge &
+            (data['BB_width'] > 2)
+    )
+
+    # === BRANCH 4: SUPPORT BOUNCE ===
     branch4 = (
-        (data['Close'].shift(1) < data['Open'].shift(1)) &
-        (data['Close'] > data['Open']) &
-        (data['Open'].shift(1) < data['EMA'].shift(1)) &
-        stoch_buy
+        # Price bouncing from support
+            ((data['Low'] <= data['EMA20']) | (data['Low'] <= data['BB_lower'])) &
+            (data['Close'] > data['Open']) &  # Bullish candle
+            (data['Close'] > data['EMA20']) &  # Closed above support
+
+            # With oversold stochastic bounce
+            stoch_buy_signal &
+            (data['RSI'] > 30)  # Not extremely oversold
     )
 
-    # === FINAL SIGNAL ===
-    data['st_sig'] = np.where(branch1 | branch2 | branch3 | branch4, 1, 0)
-    data['signal_reason'] = np.select(
-        [branch1, branch2, branch3, branch4],
-        [
-            'Branch1_TII_Filter_StochConfirm',
-            'Branch2_StrongBullish_RSI_TII_StochConfirm',
-            'Branch3_BBUpperBreakout_TII_StochConfirm',
-            'Branch4_BullishHammerBelowEMA_StochConfirm'
-        ],
-        default=''
-    )
-
-    return data[['st_sig', 'signal_reason']]
-
-
-
-def super_trend111(data, period=3, mul=1):
-    import pandas_ta as ta
-    import numpy as np
-
-    # Indicator parameters
-    fast, slow, signal = 5, 9, 9
-    ema_period = 5
-    box_window = 5
-
-    # === Indicators ===
-    macd = ta.macd(data['Close'], fast=fast, slow=slow, signal=signal)
-    data['macd'] = macd['MACD_5_9_9']
-    data['macd_signal'] = macd['MACDs_5_9_9']
-    data['macd_rising'] = (data['macd'] - data['macd_signal']) > 0.4
-
-    data['EMA'] = ta.ema(data['Close'], length=ema_period)
-    data['EMA20'] = ta.ema(data['Close'], length=20)
-    data['EMA3'] = ta.ema(data['Close'], length=3)
-    data['EMA50'] = ta.ema(data['Close'], length=50)
-    data['box_high'] = data['High'].rolling(window=box_window).max()
-    data['box_low'] = data['Low'].rolling(window=box_window).min()
-    Ema20_below=data["Close"] <data["EMA20"] 
-    # Calculate EMA20 slope and angle
-    data['EMA20_slope'] = data['EMA20'] - data['EMA20'].shift(1)
-    data['EMA20_angle'] = np.rad2deg(np.arctan(data['EMA20_slope']))
-
-    data['RSI'] = ta.rsi(data["Close"], length=14)
-    # Calculate EMA20 slope and angle
-    data['EMA20_slope'] = data['EMA20']-data['EMA20'].shift(1)
-    data['EMA20_angle'] = np.rad2deg(np.arctan(data['EMA20_slope']))
-    
-    data.index = pd.to_datetime(data.index)
-
-    data['price_diff_3'] = data['Close'].diff(3)
-    data['price_diff']=data['Close'].shift(1).diff(1)
-    data['time_diff_sec'] = data.index.to_series().diff(3).dt.total_seconds().replace(0, np.nan)
-    data['rate_per_minute_3'] = data['price_diff_3'] / 3.0
-    data['rate_per_minute'] = abs((data['price_diff'] / 3.0) / 2)
-
-    # Calculate volume difference
-    data['volume_diff'] = data['Volume'].diff(3)
-
-    # Calculate rate per minute for volume
-    data['rate_per_minute_volume'] = data['volume_diff'] / 3.0
-    threshold = 1e-4
-
-    def classify(rate):
-
-        if pd.isna(rate) or abs(rate) < threshold:
-
-            return 'no_move'
-        elif rate > 0:
-            return 'up'
-        else:
-            return 'down'
-
-    data['price_movement'] = data['rate_per_minute_3'].apply(lambda r: classify(r))
-    data['volume_movement'] = data['rate_per_minute_volume'].apply(lambda r: classify(r))
-    # === Bullish Reversal Condition ===
-    cond_bearish_candle = data['Close'].shift(1) < data['Open'].shift(1)
-    cond_bullish_candle = data['Close'] > data['Open']
-    cond_below_ema = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Close'] < data['EMA'])
-    cond_bearish_ema_below = (data['Close'].shift(1) < data['EMA'].shift(1)) & (data['Open'].shift(1) < data['EMA'].shift(1))
-    cond_bearish_ema_above = data['Close'].shift(1) > data['EMA'].shift(1)
-    cond_buy = (data['Close'] > data['Close'].shift(1)) & (data['Close'] > data['EMA'])
-    cond_distance_from_ema = (data['EMA'] - data['Close']) > 1.5
-    ema3_rising = data['EMA3'] > data['EMA3'].shift(1)
-    RSIs = data['RSI'] > 40
-    rate_pr=data['rate_per_minute_3']>data['rate_per_minute']
-    Ema20below=data['Close']> data['EMA50']
-    volume_move=data['volume_movement'] == "up"
-    # Final SuperTrend-like Buy Signal
+    # === FINAL SIGNAL GENERATION ===
     data['st_sig'] = np.where(
-        (
-            cond_bearish_candle & cond_bullish_candle & cond_below_ema & cond_distance_from_ema  
-        ) | (
-            cond_bearish_candle & cond_bullish_candle & cond_bearish_ema_below & cond_buy
-
-          
-        ),
+        branch1 | branch2 | branch3 | branch4,
         1,
         0
     )
 
-    return data[['st_sig']]
+    # === SIGNAL DETAILS ===
+    # Identify which stochastic pattern triggered
+    data['stoch_pattern'] = np.select(
+        [stoch_deep_oversold_bounce, stoch_oversold_recovery, stoch_early_bounce],
+        ['Deep_Oversold_Bounce', 'Recovery_Momentum', 'Early_Bounce'],
+        default='None'
+    )
+
+    data['signal_reason'] = np.select(
+        [branch1, branch2, branch3, branch4],
+        [
+            f'Oversold_Bounce_{data["stoch_pattern"]}',
+            'Momentum_Continuation',
+            'Breakout_After_Oversold',
+            'Support_Bounce'
+        ],
+        default=''
+    )
+
+    # Signal strength based on how oversold we were
+    data['bounce_strength'] = np.where(
+        data['st_sig'] == 1,
+        np.select(
+            [
+                data['Stoch_K'].shift(1) < 10,  # Extremely oversold
+                data['Stoch_K'].shift(1) < 15,  # Very oversold
+                data['Stoch_K'].shift(1) < 20,  # Oversold
+            ],
+            ['Strong', 'Medium', 'Normal'],
+            default='Weak'
+        ),
+        ''
+    )
+
+    return data
 
 
 
