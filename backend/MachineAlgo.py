@@ -303,23 +303,24 @@ def super_trend(symbol, data):
     # === BOLLINGER BANDS ===
     bb = ta.bbands(data['Close'], length=20, std=2)
     print(data.columns)
-    data['BB_upper'] = bb['BBU_20_2.0_2.0']
-    data['BB_lower'] = bb['BBL_20_2.0_2.0']
-    data['BB_middle'] = bb['BBM_20_2.0_2.0']
+    data['BB_upper'] = bb['BBU_20_2.0']
+    data['BB_lower'] = bb['BBL_20_2.0']
+    data['BB_middle'] = bb['BBM_20_2.0']
     data['BB_width'] = (data['BB_upper']-data['BB_lower']) / data['BB_middle'] * 100
 
     # === STOCHASTIC WITH YOUR OBSERVATION ===
-    stoch = ta.stoch(data['High'], data['Low'], data['Close'], k=14, d=3, smooth_k=3)
-    data['Stoch_K'] = stoch['STOCHk_14_3_3']
-    data['Stoch_D'] = stoch['STOCHd_14_3_3']
+    stoch = ta.stoch(data['High'], data['Low'], data['Close'], k=10, d=3, smooth_k=3)
+    data['Stoch_K'] = stoch['STOCHk_10_3_3']
+    data['Stoch_D'] = stoch['STOCHd_10_3_3']
 
     # PATTERN 1: Deep oversold bounce (Your observation)
     stoch_deep_oversold_bounce = (
         # Was deeply oversold (both K and D below 20)
-            (data['Stoch_K'].shift(1) < 20) &
-            (data['Stoch_D'].shift(1) < 20) &
+            (data['Stoch_K'].shift(1) < 25) &
+            (data['Stoch_D'].shift(1) < 25) &
 
-            (data['Stoch_K']-data['Stoch_K'].shift(1) > 5) &
+            (data['Stoch_K']-data['Stoch_K'].shift(1) > 3) &
+            #(data['Volume'] > data['Volume'].rolling(5).mean() * 1.5) &
 
 
             # Now showing signs of reversal
@@ -336,27 +337,42 @@ def super_trend(symbol, data):
 
     # PATTERN 2: Oversold recovery momentum
     stoch_oversold_recovery = (
-        # Recently was below 20
-            (data['Stoch_K'].rolling(3).min() < 20) &
+            (data['Stoch_K'].shift(1) < 40) &
+            (data['Stoch_D'].shift(1) < 40) &
 
-            # Now breaking above 20 with momentum
+            # 2️⃣ Now both cross above 30
             (data['Stoch_K'] > 20) &
-            (data['Stoch_K'] > data['Stoch_K'].shift(1)) &
-            (data['Stoch_K'] > data['Stoch_D']) &
+            (data['Stoch_D'] > 20) &
 
-            # Strong upward momentum
-            (data['Stoch_K']-data['Stoch_K'].shift(2) > 10)  # 10 point rise in 2 candles
+            # 3️⃣ Bullish crossover confirmation — K crosses above D
+            (data['Stoch_K'] > data['Stoch_D']) &
+            (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1)) &
+
+            # 4️⃣ Momentum confirmation — K rising strongly
+            ((data['Stoch_K']-data['Stoch_K'].shift(1)) > 5)
     )
 
     # PATTERN 3: Early oversold signal (catching the bounce early)
     stoch_early_bounce = (
         # Just hit oversold
             (data['Stoch_K'] < 20) &
-            (data['Stoch_K'].shift(1) >= 20) &  # Just entered oversold
+            (data['Stoch_K'].shift(1) >= 5) &
 
-            # But showing divergence or support
-            ((data['Close'] > data['Close'].shift(1)) |  # Price rising while stoch oversold
-             (data['RSI'] > data['RSI'].shift(1)))  # RSI divergence
+            # 2️⃣ %D is also in oversold (avoid early noise)
+            (data['Stoch_D'] < 25) &
+
+            # 3️⃣ RSI confirmation: momentum turning up
+            (data['RSI'] > data['RSI'].shift(1)) &
+
+            # 4️⃣ Price confirmation: candle closes higher than it opened
+            (data['Close'] > data['Open']) &
+
+            # 5️⃣ Optional: Volume must support the move (higher than avg of last 5)
+            #(data['Volume'] > data['Volume'].rolling(5).mean() * 1.2) &
+
+            # 6️⃣ Stochastic rising: K increasing faster than D
+            ((data['Stoch_K']-data['Stoch_K'].shift(1)) > 3) &
+            ((data['Stoch_K'] > data['Stoch_D']))
     )
 
     # Combine stochastic patterns
@@ -436,17 +452,17 @@ def super_trend(symbol, data):
             tii_strong &
             momentum_positive &
             stoch_buy_signal &  # Still need stochastic confirmation
-            (data['Close'] > data['EMA20']) &
+            (data['Close'] > data['EMA5']) &
             uptrend
     )
 
     # === BRANCH 3: BREAKOUT WITH OVERSOLD RECOVERY ===
     branch3 = (
-            (data['Close'] > data['BB_upper']) &
-            (data['Close'].shift(1) <= data['BB_upper'].shift(1)) &
-            (stoch_oversold_recovery | stoch_deep_oversold_bounce) &  # Recent oversold bounce
-            volume_surge &
-            (data['BB_width'] > 2)
+            #(data['Close'] > data['BB_upper']) &
+            #(data['Close'].shift(1) <= data['BB_upper'].shift(1)) &
+            (stoch_oversold_recovery) #&  # Recent oversold bounce
+            #volume_surge &
+            #(data['BB_width'] > 2)
     )
 
     # === BRANCH 4: SUPPORT BOUNCE ===
