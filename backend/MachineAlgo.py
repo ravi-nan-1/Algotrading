@@ -303,9 +303,9 @@ def super_trend(symbol, data):
     # === BOLLINGER BANDS ===
     bb = ta.bbands(data['Close'], length=20, std=2)
     print(data.columns)
-    data['BB_upper'] = bb['BBU_20_2.0']
-    data['BB_lower'] = bb['BBL_20_2.0']
-    data['BB_middle'] = bb['BBM_20_2.0']
+    data['BB_upper'] = bb['BBU_20_2.0_2.0']
+    data['BB_lower'] = bb['BBL_20_2.0_2.0']
+    data['BB_middle'] = bb['BBM_20_2.0_2.0']
     data['BB_width'] = (data['BB_upper']-data['BB_lower']) / data['BB_middle'] * 100
 
     # === STOCHASTIC WITH YOUR OBSERVATION ===
