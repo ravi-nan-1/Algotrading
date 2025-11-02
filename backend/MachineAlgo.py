@@ -275,6 +275,125 @@ def volume_oscillator(df, fast=14, slow=28):
     return vo
 
 
+def detect_trendline_touches_for_strategy(df,swing_period: int = 8,min_hl_points: int = 2,lookback_candles: int = 50,tolerance: float = 0.007,extend_back: bool = True,invalidate_on_ll: bool = True):
+
+
+    if len(df) > lookback_candles:
+        start_idx = len(df)-lookback_candles
+        df_recent = df.iloc[start_idx:].copy()
+        offset = start_idx
+    else:
+        df_recent = df.copy()
+        offset = 0
+
+    # Find swing lows
+    swing_lows = []
+    for i in range(swing_period, len(df_recent)):
+        if i+swing_period > len(df_recent):
+            current_low = df_recent['Low'].iloc[i]
+            left_lows = df_recent['Low'].iloc[max(0, i-swing_period):i]
+
+            if len(left_lows) > 0 and current_low <= left_lows.min():
+                swing_lows.append((i+offset, current_low))
+        else:
+            current_low = df_recent['Low'].iloc[i]
+            left_lows = df_recent['Low'].iloc[i-swing_period:i]
+            right_lows = df_recent['Low'].iloc[i+1:min(len(df_recent), i+swing_period+1)]
+
+            if current_low <= left_lows.min() and current_low <= right_lows.min():
+                swing_lows.append((i+offset, current_low))
+
+    if len(swing_lows) < 2:
+        return []
+
+    # Filter for Higher Lows & detect Lower Lows
+    higher_lows = [swing_lows[0]]
+    lower_low_detected = False
+    lower_low_index = None
+
+    for i in range(1, len(swing_lows)):
+        idx, low = swing_lows[i]
+        prev_idx, prev_low = higher_lows[-1]
+
+        if low >= prev_low * 0.998:
+            higher_lows.append((idx, low))
+        else:
+            # LOWER LOW - uptrend broken, reset
+            if invalidate_on_ll:
+                lower_low_detected = True
+                lower_low_index = idx
+                # print(f"🔴 LOWER LOW at index {idx}: {low:.2f} < {prev_low:.2f} - Uptrend invalidated")
+                higher_lows = [(idx, low)]
+
+    if len(higher_lows) < min_hl_points:
+        return []
+
+    recent_hl = higher_lows[-min_hl_points:]
+    idx1, price1 = recent_hl[0]
+    idx2, price2 = recent_hl[-1]
+
+    slope = (price2-price1) / (idx2-idx1)
+
+    if slope < -0.0001:
+        return []
+
+    intercept = price1-slope * idx1
+
+    # print(f"✓ Trendline: slope={slope:.6f}, intercept={intercept:.2f}")
+
+    # Check for trendline break - STOP looking for touches after break
+    trend_broken_index = None
+    if invalidate_on_ll:
+        for i in range(idx2+1, len(df)):
+            line_value = slope * i+intercept
+            current_close = df['Close'].iloc[i]
+
+            break_threshold = line_value * (tolerance * 3)
+            if current_close < line_value-break_threshold:
+                trend_broken_index = i
+                # print(f"🔴 Trendline broken at index {i}: Close {current_close:.2f} < Line {line_value:.2f}")
+                end_index = i  # Stop here
+                break
+        else:
+            end_index = len(df)
+    else:
+        end_index = len(df)
+
+    # Detect touches only up to break point
+    if extend_back:
+        search_start = max(0, len(df)-lookback_candles)
+        if lower_low_detected and lower_low_index is not None:
+            search_start = max(search_start, lower_low_index)
+    else:
+        search_start = idx1
+
+    touch_indices = []
+
+    for i in range(search_start, end_index):
+        line_value = slope * i+intercept
+        threshold = line_value * tolerance
+
+        current_low = df['Low'].iloc[i]
+        current_high = df['High'].iloc[i]
+        current_close = df['Close'].iloc[i]
+
+        is_anchor_point = any(i == hl_idx for hl_idx, _ in recent_hl)
+
+        if i > 0 and not is_anchor_point:
+            prev_close = df['Close'].iloc[i-1]
+
+            touch_from_above = (prev_close > line_value and
+                                current_low <= line_value+threshold)
+            crosses_line = (current_low <= line_value+threshold and
+                            current_high >= line_value-threshold)
+            close_near_line = abs(current_close-line_value) <= threshold
+            low_touches = abs(current_low-line_value) <= threshold
+
+            if touch_from_above or crosses_line or close_near_line or low_touches:
+                if current_close > line_value-(threshold * 2):
+                    touch_indices.append(i)
+
+    return touch_indices
 
 
 
@@ -282,6 +401,7 @@ def super_trend(symbol, data):
     import pandas_ta as ta
     import numpy as np
     import pandas as pd
+    from datetime import time
 
     # === SYMBOL PARSING ===
     parts = symbol.split()
@@ -290,8 +410,24 @@ def super_trend(symbol, data):
     opttype = parts[4]
     strike = float(parts[5])
 
+    # === CONVERT INDEX TO DATETIME IF NOT ALREADY ===
+    if not isinstance(data.index, pd.DatetimeIndex):
+        data.index = pd.to_datetime(data.index)
+
+    # === TIME FILTER FOR BRANCH 4 ===
+    # Extract time from index
+    data['time'] = data.index.time
+
+    # Define time window: 9:30 AM to 10:30 AM
+    start_time = time(9, 30)
+    end_time = time(10, 30)
+
+    # Create time filter
+    time_filter_branch4 = (data['time'] >= start_time) & (data['time'] <= end_time)
+
     # === CORE INDICATORS ===
     data['EMA5'] = ta.ema(data['Close'], length=5)
+    data['EMA9'] = ta.ema(data['Close'], length=9)
     data['EMA20'] = ta.ema(data['Close'], length=20)
     data['EMA50'] = ta.ema(data['Close'], length=50)
 
@@ -302,36 +438,28 @@ def super_trend(symbol, data):
 
     # === BOLLINGER BANDS ===
     bb = ta.bbands(data['Close'], length=20, std=2)
-    print(data.columns)
     data['BB_upper'] = bb['BBU_20_2.0_2.0']
     data['BB_lower'] = bb['BBL_20_2.0_2.0']
     data['BB_middle'] = bb['BBM_20_2.0_2.0']
     data['BB_width'] = (data['BB_upper']-data['BB_lower']) / data['BB_middle'] * 100
 
-    # === STOCHASTIC WITH YOUR OBSERVATION ===
+    # === STOCHASTIC ===
     stoch = ta.stoch(data['High'], data['Low'], data['Close'], k=10, d=3, smooth_k=3)
     data['Stoch_K'] = stoch['STOCHk_10_3_3']
     data['Stoch_D'] = stoch['STOCHd_10_3_3']
 
-    # PATTERN 1: Deep oversold bounce (Your observation)
+    # === STOCHASTIC PATTERNS ===
+
+    # PATTERN 1: Deep oversold bounce
     stoch_deep_oversold_bounce = (
-        # Was deeply oversold (both K and D below 20)
             (data['Stoch_K'].shift(1) < 25) &
             (data['Stoch_D'].shift(1) < 25) &
-
             (data['Stoch_K']-data['Stoch_K'].shift(1) > 3) &
-            #(data['Volume'] > data['Volume'].rolling(5).mean() * 1.5) &
-
-
-            # Now showing signs of reversal
             (
-                # Either K crossing above D (bullish crossover)
                     ((data['Stoch_K'] > data['Stoch_D']) &
                      (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1))) |
-
-                    # Or K starting to rise strongly
                     ((data['Stoch_K'] > data['Stoch_K'].shift(1)+3) &
-                     (data['Stoch_K'] > 15))  # Moving up from oversold
+                     (data['Stoch_K'] > 15))
             )
     )
 
@@ -339,70 +467,54 @@ def super_trend(symbol, data):
     stoch_oversold_recovery = (
             (data['Stoch_K'].shift(1) < 40) &
             (data['Stoch_D'].shift(1) < 40) &
-
-            # 2️⃣ Now both cross above 30
             (data['Stoch_K'] > 20) &
             (data['Stoch_D'] > 20) &
-
-            # 3️⃣ Bullish crossover confirmation — K crosses above D
             (data['Stoch_K'] > data['Stoch_D']) &
             (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1)) &
-
-            # 4️⃣ Momentum confirmation — K rising strongly
             ((data['Stoch_K']-data['Stoch_K'].shift(1)) > 5)
     )
 
-    # PATTERN 3: Early oversold signal (catching the bounce early)
+    # PATTERN 3: Early oversold signal
     stoch_early_bounce = (
-        # Just hit oversold
             (data['Stoch_K'] < 20) &
-            (data['Stoch_K'].shift(1) >= 5) &
-
-            # 2️⃣ %D is also in oversold (avoid early noise)
+            (data['Stoch_K'].shift(1) >= 8) &
             (data['Stoch_D'] < 25) &
-
-            # 3️⃣ RSI confirmation: momentum turning up
             (data['RSI'] > data['RSI'].shift(1)) &
-
-            # 4️⃣ Price confirmation: candle closes higher than it opened
             (data['Close'] > data['Open']) &
-
-            # 5️⃣ Optional: Volume must support the move (higher than avg of last 5)
-            #(data['Volume'] > data['Volume'].rolling(5).mean() * 1.2) &
-
-            # 6️⃣ Stochastic rising: K increasing faster than D
             ((data['Stoch_K']-data['Stoch_K'].shift(1)) > 3) &
-            ((data['Stoch_K'] > data['Stoch_D']))
+            (data['Stoch_K'] > data['Stoch_D'])
     )
 
-    # Combine stochastic patterns
+    # Combine first 3 patterns for branches 1-3
     stoch_buy_signal = (
             stoch_deep_oversold_bounce |
             stoch_oversold_recovery |
             stoch_early_bounce
     )
 
-    # === IMPROVED TII CALCULATION ===
-    src = data['Close']
-    per = 34
-
-    av = src.rolling(per).mean()
-    dev = (src-av).abs()
-
-    bull_dev = np.where(src > av, dev, 0)
-    bear_dev = np.where(src < av, dev, 0)
-
-    sum_bull = pd.Series(bull_dev).rolling(per // 2).sum()
-    sum_bear = pd.Series(bear_dev).rolling(per // 2).sum()
-
-    data['TII'] = np.where(
-        (sum_bull+sum_bear) > 0,
-        (100 * sum_bull) / (sum_bull+sum_bear),
-        50
+    # === BRANCH 4 PATTERN (NO TRENDLINE REQUIRED + TIME RESTRICTED) ===
+    # Step 1: %K crossed over %D in oversold zone (below 30)
+    k_crossover_d_in_oversold = (
+            (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1)) &
+            (data['Stoch_K'] > data['Stoch_D']) &
+            (data['Stoch_K'].shift(1) < 30) &
+            (data['Stoch_D'].shift(1) < 30)
     )
 
-    data['TII_Signal'] = data['TII'].ewm(span=5, adjust=False).mean()
-    data['TII_Slow'] = data['TII'].ewm(span=21, adjust=False).mean()
+    # Step 2: Track if crossover happened recently (within last 10 candles)
+    data['recent_crossover'] = k_crossover_d_in_oversold.astype(int)
+    data['recent_crossover'] = data['recent_crossover'].rolling(window=10, min_periods=1).max()
+
+    # Step 3: Signal when %K crosses above 30 AFTER the crossover
+    # ⭐ ONLY BETWEEN 9:30 AM - 10:30 AM ⭐
+    stoch_branch4_signal = (
+            (data['recent_crossover'] == 1) &
+            (data['Stoch_K'].shift(1) < 30) &
+            (data['Stoch_K'] >= 30) &
+            (data['Stoch_K'] > data['Stoch_D']) &
+            (data['RSI'] > 30) &
+            time_filter_branch4
+    )
 
     # === VOLUME ANALYSIS ===
     data['Volume_MA'] = data['Volume'].rolling(20).mean()
@@ -419,98 +531,79 @@ def super_trend(symbol, data):
     short_term_bullish = data['Close'] > data['EMA5']
 
     momentum_positive = (
-            (data['RSI'] > 45) &  # Slightly lowered for catching oversold bounces
+            (data['RSI'] > 45) &
             (data['RSI'] < 70)
     )
 
-    # === TII FILTERS ===
-    tii_bullish = (
-            (data['TII'] > data['TII_Signal']) &
-            (data['TII'] > 5) &  # Lowered threshold for oversold conditions
-            (data['TII'] < 20)
+    # === STRATEGY BRANCHES ===
+
+    # Branch 1-3: Require trendline touch (work all day)
+    branch1 = stoch_buy_signal & short_term_bullish
+    branch2 = stoch_buy_signal & momentum_positive
+    branch3 = stoch_oversold_recovery
+    branch4 = stoch_buy_signal & (data['RSI'] > 30)
+    # Branch 4: NO trendline required - ONLY 9:30-10:30 AM
+    branch5 = stoch_branch4_signal
+
+    # === TRENDLINE DETECTION ===
+    data['touches'] = 0
+
+    # Get touches (for branches 1-3 only)
+    touch_indices = detect_trendline_touches_for_strategy(
+        data,
+        swing_period=8,
+        min_hl_points=2,
+        lookback_candles=100,
+        tolerance=0.007,
+        extend_back=True,
+        invalidate_on_ll=True
     )
 
-    tii_strong = (
-            (data['TII'] > data['TII_Signal']+5) &
-            (data['TII_Signal'] > data['TII_Slow']) &
-            (data['TII'].diff() > 0)
-    )
+    # Mark touches
+    for touch_idx in touch_indices:
+        if touch_idx < len(data):
+            data.iloc[touch_idx, data.columns.get_loc('touches')] = 1
 
-    # === BRANCH 1: OVERSOLD BOUNCE (Focus on your stochastic observation) ===
-    branch1 = (
-            stoch_buy_signal &  # Your key observation
-            (
-                    tii_bullish |  # Either TII confirms
-                    (data['RSI'] > data['RSI'].shift(1)) |  # Or RSI rising
-                    short_term_bullish  # Or price above short MA
-            ) &
-            volume_positive  # Some volume support
-    )
+    # === BUY SIGNALS ===
+    signal_with_trendline = (branch1 | branch2 | branch3 | branch4) & (data['touches'] == 1)
+    signal_without_trendline = branch5
 
-    # === BRANCH 2: MOMENTUM CONTINUATION ===
-    branch2 = (
-            tii_strong &
-            momentum_positive &
-            stoch_buy_signal &  # Still need stochastic confirmation
-            (data['Close'] > data['EMA5']) &
-            uptrend
-    )
-
-    # === BRANCH 3: BREAKOUT WITH OVERSOLD RECOVERY ===
-    branch3 = (
-            #(data['Close'] > data['BB_upper']) &
-            #(data['Close'].shift(1) <= data['BB_upper'].shift(1)) &
-            (stoch_oversold_recovery) #&  # Recent oversold bounce
-            #volume_surge &
-            #(data['BB_width'] > 2)
-    )
-
-    # === BRANCH 4: SUPPORT BOUNCE ===
-    branch4 = (
-        # Price bouncing from support
-            ((data['Low'] <= data['EMA20']) | (data['Low'] <= data['BB_lower'])) &
-            (data['Close'] > data['Open']) &  # Bullish candle
-            (data['Close'] > data['EMA20']) &  # Closed above support
-
-            # With oversold stochastic bounce
-            stoch_buy_signal &
-            (data['RSI'] > 30)  # Not extremely oversold
-    )
-
-    # === FINAL SIGNAL GENERATION ===
     data['st_sig'] = np.where(
-        branch1 | branch2 | branch3 | branch4,
+        signal_with_trendline | signal_without_trendline,
         1,
         0
     )
 
     # === SIGNAL DETAILS ===
-    # Identify which stochastic pattern triggered
     data['stoch_pattern'] = np.select(
         [stoch_deep_oversold_bounce, stoch_oversold_recovery, stoch_early_bounce],
         ['Deep_Oversold_Bounce', 'Recovery_Momentum', 'Early_Bounce'],
         default='None'
     )
 
-    data['signal_reason'] = np.select(
-        [branch1, branch2, branch3, branch4],
-        [
-            f'Oversold_Bounce_{data["stoch_pattern"]}',
-            'Momentum_Continuation',
-            'Breakout_After_Oversold',
-            'Support_Bounce'
-        ],
-        default=''
-    )
+    # Determine which branch triggered
+    data['signal_reason'] = ''
 
-    # Signal strength based on how oversold we were
+    # Branch 1 (with trendline)
+    data.loc[
+        branch1 & (data['touches'] == 1), 'signal_reason'] = f"Oversold_Bounce_{data['stoch_pattern']}_TRENDLINE_TOUCH"
+
+    # Branch 2 (with trendline)
+    data.loc[branch2 & (data['touches'] == 1), 'signal_reason'] = 'Momentum_Continuation_TRENDLINE_TOUCH'
+
+    # Branch 3 (with trendline)
+    data.loc[branch3 & (data['touches'] == 1), 'signal_reason'] = 'Breakout_After_Oversold_TRENDLINE_TOUCH'
+
+    # Branch 4 (NO trendline - TIME RESTRICTED 9:30-10:30 AM)
+    data.loc[branch4, 'signal_reason'] = 'Stoch_K_Cross_30_After_Crossover_MORNING_ONLY'
+
     data['bounce_strength'] = np.where(
         data['st_sig'] == 1,
         np.select(
             [
-                data['Stoch_K'].shift(1) < 10,  # Extremely oversold
-                data['Stoch_K'].shift(1) < 15,  # Very oversold
-                data['Stoch_K'].shift(1) < 20,  # Oversold
+                data['Stoch_K'].shift(1) < 10,
+                data['Stoch_K'].shift(1) < 15,
+                data['Stoch_K'].shift(1) < 20,
             ],
             ['Strong', 'Medium', 'Normal'],
             default='Weak'
@@ -519,6 +612,7 @@ def super_trend(symbol, data):
     )
 
     return data
+
 
 
 
