@@ -428,8 +428,8 @@ def super_trend(symbol, data):
     # === CORE INDICATORS ===
     data['EMA5'] = ta.ema(data['Close'], length=5)
     data['EMA9'] = ta.ema(data['Close'], length=9)
-    data['EMA20'] = ta.ema(data['Close'], length=20)
-    data['EMA50'] = ta.ema(data['Close'], length=50)
+    data['EMA20'] =pd.to_numeric(ta.ema(data['Close'], length=20)) 
+    data['EMA50'] =pd.to_numeric(ta.ema(data['Close'], length=50)) 
 
     # === MOMENTUM INDICATORS ===
     data['ADX'] = ta.adx(data['High'], data['Low'], data['Close'], length=14)['ADX_14']
