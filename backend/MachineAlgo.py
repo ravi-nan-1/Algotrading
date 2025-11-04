@@ -275,9 +275,28 @@ def volume_oscillator(df, fast=14, slow=28):
     return vo
 
 
-def detect_trendline_touches_for_strategy(df,swing_period: int = 8,min_hl_points: int = 2,lookback_candles: int = 50,tolerance: float = 0.007,extend_back: bool = True,invalidate_on_ll: bool = True):
+def detect_trendline_touches_for_strategy(df: pd.DataFrame,
+                                          swing_period: int = 8,
+                                          min_hl_points: int = 2,
+                                          lookback_candles: int = 50,
+                                          tolerance: float = 0.007,
+                                          extend_back: bool = True):
+    """
+    Trendline touch detector that extends line BACKWARDS to find ALL touches
 
+    Args:
+        df: DataFrame with OHLC data
+        swing_period: Candles to look left/right (8 = 24 minutes for 3m)
+        min_hl_points: Minimum Higher Lows to connect (2-3)
+        lookback_candles: Analyze last N candles (50 = 2.5 hours for 3m)
+        tolerance: Touch tolerance (0.007 = 0.7%)
+        extend_back: Extend trendline backwards to find earlier touches
 
+    Returns:
+        List of indices where touches occur
+    """
+
+    # Only analyze recent candles
     if len(df) > lookback_candles:
         start_idx = len(df)-lookback_candles
         df_recent = df.iloc[start_idx:].copy()
@@ -289,6 +308,7 @@ def detect_trendline_touches_for_strategy(df,swing_period: int = 8,min_hl_points
     # Find swing lows
     swing_lows = []
     for i in range(swing_period, len(df_recent)):
+        # Allow recent candles without full right-side confirmation
         if i+swing_period > len(df_recent):
             current_low = df_recent['Low'].iloc[i]
             left_lows = df_recent['Low'].iloc[max(0, i-swing_period):i]
@@ -304,72 +324,58 @@ def detect_trendline_touches_for_strategy(df,swing_period: int = 8,min_hl_points
                 swing_lows.append((i+offset, current_low))
 
     if len(swing_lows) < 2:
+        # print(f"⚠️ Only found {len(swing_lows)} swing lows. Need at least 2.")
         return []
 
-    # Filter for Higher Lows & detect Lower Lows
-    higher_lows = [swing_lows[0]]
-    lower_low_detected = False
-    lower_low_index = None
+    # print(f"✓ Found {len(swing_lows)} swing lows")
 
+    # Filter for Higher Lows
+    higher_lows = [swing_lows[0]]
     for i in range(1, len(swing_lows)):
         idx, low = swing_lows[i]
         prev_idx, prev_low = higher_lows[-1]
 
+        # Accept if higher or nearly equal (0.2% tolerance)
         if low >= prev_low * 0.998:
             higher_lows.append((idx, low))
-        else:
-            # LOWER LOW - uptrend broken, reset
-            if invalidate_on_ll:
-                lower_low_detected = True
-                lower_low_index = idx
-                # print(f"🔴 LOWER LOW at index {idx}: {low:.2f} < {prev_low:.2f} - Uptrend invalidated")
-                higher_lows = [(idx, low)]
 
     if len(higher_lows) < min_hl_points:
+        # print(f"⚠️ Only found {len(higher_lows)} Higher Lows. Need at least {min_hl_points}.")
         return []
 
+    # print(f"✓ Found {len(higher_lows)} Higher Lows")
+    # print(f"   Points: {[(idx, round(price, 2)) for idx, price in higher_lows]}")
+
+    # Take most recent Higher Lows for trendline
     recent_hl = higher_lows[-min_hl_points:]
     idx1, price1 = recent_hl[0]
     idx2, price2 = recent_hl[-1]
 
+    # Calculate trendline
     slope = (price2-price1) / (idx2-idx1)
 
+    # Accept flat or upward lines
     if slope < -0.0001:
+        # print(f"⚠️ Negative slope: {slope:.6f}. Not an uptrend.")
         return []
 
     intercept = price1-slope * idx1
 
-    # print(f"✓ Trendline: slope={slope:.6f}, intercept={intercept:.2f}")
 
-    # Check for trendline break - STOP looking for touches after break
-    trend_broken_index = None
-    if invalidate_on_ll:
-        for i in range(idx2+1, len(df)):
-            line_value = slope * i+intercept
-            current_close = df['Close'].iloc[i]
+    print(f"✓ Trendline: slope={slope:.6f}, intercept={intercept:.2f}")
+    print(f"   Line connects indices {idx1} to {idx2}")
 
-            break_threshold = line_value * (tolerance * 3)
-            if current_close < line_value-break_threshold:
-                trend_broken_index = i
-                # print(f"🔴 Trendline broken at index {i}: Close {current_close:.2f} < Line {line_value:.2f}")
-                end_index = i  # Stop here
-                break
-        else:
-            end_index = len(df)
-    else:
-        end_index = len(df)
-
-    # Detect touches only up to break point
+    # Extend trendline backwards
     if extend_back:
         search_start = max(0, len(df)-lookback_candles)
-        if lower_low_detected and lower_low_index is not None:
-            search_start = max(search_start, lower_low_index)
+        # print(f"   Extending line backwards from index {idx1} to index {search_start}")
     else:
         search_start = idx1
 
+    # Detect touches from the START of lookback period to END of data
     touch_indices = []
 
-    for i in range(search_start, end_index):
+    for i in range(search_start, len(df)):
         line_value = slope * i+intercept
         threshold = line_value * tolerance
 
@@ -377,21 +383,41 @@ def detect_trendline_touches_for_strategy(df,swing_period: int = 8,min_hl_points
         current_high = df['High'].iloc[i]
         current_close = df['Close'].iloc[i]
 
+        # Skip anchor points
         is_anchor_point = any(i == hl_idx for hl_idx, _ in recent_hl)
 
         if i > 0 and not is_anchor_point:
             prev_close = df['Close'].iloc[i-1]
 
+            # Detection methods
             touch_from_above = (prev_close > line_value and
                                 current_low <= line_value+threshold)
+
             crosses_line = (current_low <= line_value+threshold and
                             current_high >= line_value-threshold)
+
             close_near_line = abs(current_close-line_value) <= threshold
+
             low_touches = abs(current_low-line_value) <= threshold
 
+            # Detect touch
             if touch_from_above or crosses_line or close_near_line or low_touches:
+                # Additional validation: don't add if price breaks significantly below
                 if current_close > line_value-(threshold * 2):
                     touch_indices.append(i)
+                    # touch_type = 'from_above' if touch_from_above else ('cross' if crosses_line else ('close' if close_near_line else 'low_bounce'))
+
+                    # Only print recent touches to avoid spam
+                    # if i >= len(df) - 20:
+                    #     print(f"   Touch at index {i}: Low={current_low:.2f}, Close={current_close:.2f}, Line={line_value:.2f} ({touch_type})")
+
+    # print(f"✓ Found {len(touch_indices)} total touches (from index {search_start} to {len(df)-1})")
+
+    # Show distribution of touches
+    # if len(touch_indices) > 0:
+    #     print(f"   First touch at index: {touch_indices[0]}")
+    #     print(f"   Last touch at index: {touch_indices[-1]}")
+    #     print(f"   Touch indices: {touch_indices}")
 
     return touch_indices
 
@@ -401,7 +427,6 @@ def super_trend(symbol, data):
     import pandas_ta as ta
     import numpy as np
     import pandas as pd
-    from datetime import time
 
     # === SYMBOL PARSING ===
     parts = symbol.split()
@@ -409,21 +434,6 @@ def super_trend(symbol, data):
     expiry = f"{parts[1]} {parts[2]} {parts[3]}"
     opttype = parts[4]
     strike = float(parts[5])
-
-    # === CONVERT INDEX TO DATETIME IF NOT ALREADY ===
-    if not isinstance(data.index, pd.DatetimeIndex):
-        data.index = pd.to_datetime(data.index)
-
-    # === TIME FILTER FOR BRANCH 4 ===
-    # Extract time from index
-    data['time'] = data.index.time
-
-    # Define time window: 9:30 AM to 10:30 AM
-    start_time = time(9, 30)
-    end_time = time(10, 30)
-
-    # Create time filter
-    time_filter_branch4 = (data['time'] >= start_time) & (data['time'] <= end_time)
 
     # === CORE INDICATORS ===
     data['EMA5'] = ta.ema(data['Close'], length=5)
@@ -450,7 +460,6 @@ def super_trend(symbol, data):
 
     # === STOCHASTIC PATTERNS ===
 
-    # PATTERN 1: Deep oversold bounce
     stoch_deep_oversold_bounce = (
             (data['Stoch_K'].shift(1) < 25) &
             (data['Stoch_D'].shift(1) < 25) &
@@ -463,7 +472,6 @@ def super_trend(symbol, data):
             )
     )
 
-    # PATTERN 2: Oversold recovery momentum
     stoch_oversold_recovery = (
             (data['Stoch_K'].shift(1) < 40) &
             (data['Stoch_D'].shift(1) < 40) &
@@ -474,7 +482,6 @@ def super_trend(symbol, data):
             ((data['Stoch_K']-data['Stoch_K'].shift(1)) > 5)
     )
 
-    # PATTERN 3: Early oversold signal
     stoch_early_bounce = (
             (data['Stoch_K'] < 20) &
             (data['Stoch_K'].shift(1) >= 8) &
@@ -485,35 +492,10 @@ def super_trend(symbol, data):
             (data['Stoch_K'] > data['Stoch_D'])
     )
 
-    # Combine first 3 patterns for branches 1-3
     stoch_buy_signal = (
             stoch_deep_oversold_bounce |
             stoch_oversold_recovery |
             stoch_early_bounce
-    )
-
-    # === BRANCH 4 PATTERN (NO TRENDLINE REQUIRED + TIME RESTRICTED) ===
-    # Step 1: %K crossed over %D in oversold zone (below 30)
-    k_crossover_d_in_oversold = (
-            (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1)) &
-            (data['Stoch_K'] > data['Stoch_D']) &
-            (data['Stoch_K'].shift(1) < 30) &
-            (data['Stoch_D'].shift(1) < 30)
-    )
-
-    # Step 2: Track if crossover happened recently (within last 10 candles)
-    data['recent_crossover'] = k_crossover_d_in_oversold.astype(int)
-    data['recent_crossover'] = data['recent_crossover'].rolling(window=10, min_periods=1).max()
-
-    # Step 3: Signal when %K crosses above 30 AFTER the crossover
-    # ⭐ ONLY BETWEEN 9:30 AM - 10:30 AM ⭐
-    stoch_branch4_signal = (
-            (data['recent_crossover'] == 1) &
-            (data['Stoch_K'].shift(1) < 30) &
-            (data['Stoch_K'] >= 30) &
-            (data['Stoch_K'] > data['Stoch_D']) &
-            (data['RSI'] > 30) &
-            time_filter_branch4
     )
 
     # === VOLUME ANALYSIS ===
@@ -536,40 +518,41 @@ def super_trend(symbol, data):
     )
 
     # === STRATEGY BRANCHES ===
-
-    # Branch 1-3: Require trendline touch (work all day)
     branch1 = stoch_buy_signal & short_term_bullish
-    branch2 = stoch_buy_signal & momentum_positive
+    branch2 = momentum_positive & stoch_buy_signal
     branch3 = stoch_oversold_recovery
     branch4 = stoch_buy_signal & (data['RSI'] > 30)
-    # Branch 4: NO trendline required - ONLY 9:30-10:30 AM
-    branch5 = stoch_branch4_signal
 
-    # === TRENDLINE DETECTION ===
+    recent_extreme_oversold = data['EMA5'] > data['EMA9']
+    precondition = recent_extreme_oversold
+
+    # === TRENDLINE TOUCH DETECTION ===
     data['touches'] = 0
 
-    # Get touches (for branches 1-3 only)
+    # print("\n" + "="*80)
+    # print("TRENDLINE DETECTION (Extended Backwards)")
+    # print("="*80)
+
+    # Detect touches with backward extension
     touch_indices = detect_trendline_touches_for_strategy(
         data,
-        swing_period=8,
-        min_hl_points=2,
-        lookback_candles=100,
-        tolerance=0.007,
-        extend_back=True,
-        invalidate_on_ll=True
+        swing_period=8,  # 8 candles = 24 minutes
+        min_hl_points=2,  # Minimum 2 Higher Lows
+        lookback_candles=100,  # Analyze last 100 candles (5 hours)
+        tolerance=0.007,  # 0.7% tolerance
+        extend_back=True  # EXTEND BACKWARDS to find all touches
     )
 
-    # Mark touches
+    # Mark all touches
     for touch_idx in touch_indices:
         if touch_idx < len(data):
             data.iloc[touch_idx, data.columns.get_loc('touches')] = 1
 
-    # === BUY SIGNALS ===
-    signal_with_trendline = (branch1 | branch2 | branch3 | branch4) & (data['touches'] == 1)
-    signal_without_trendline = branch5
+    # === COMBINE SIGNALS ===
+    original_signal = branch1 | branch2 | branch3 | branch4
 
     data['st_sig'] = np.where(
-        signal_with_trendline | signal_without_trendline,
+        original_signal & (data['touches'] == 1),
         1,
         0
     )
@@ -581,21 +564,22 @@ def super_trend(symbol, data):
         default='None'
     )
 
-    # Determine which branch triggered
-    data['signal_reason'] = ''
+    data['signal_reason'] = np.select(
+        [branch1, branch2, branch3, branch4],
+        [
+            f'Oversold_Bounce_{data["stoch_pattern"]}',
+            'Momentum_Continuation',
+            'Breakout_After_Oversold',
+            'Support_Bounce'
+        ],
+        default=''
+    )
 
-    # Branch 1 (with trendline)
-    data.loc[
-        branch1 & (data['touches'] == 1), 'signal_reason'] = f"Oversold_Bounce_{data['stoch_pattern']}_TRENDLINE_TOUCH"
-
-    # Branch 2 (with trendline)
-    data.loc[branch2 & (data['touches'] == 1), 'signal_reason'] = 'Momentum_Continuation_TRENDLINE_TOUCH'
-
-    # Branch 3 (with trendline)
-    data.loc[branch3 & (data['touches'] == 1), 'signal_reason'] = 'Breakout_After_Oversold_TRENDLINE_TOUCH'
-
-    # Branch 4 (NO trendline - TIME RESTRICTED 9:30-10:30 AM)
-    data.loc[branch4, 'signal_reason'] = 'Stoch_K_Cross_30_After_Crossover_MORNING_ONLY'
+    data['signal_reason'] = np.where(
+        data['st_sig'] == 1,
+        data['signal_reason']+'_TRENDLINE_TOUCH',
+        data['signal_reason']
+    )
 
     data['bounce_strength'] = np.where(
         data['st_sig'] == 1,
@@ -611,7 +595,27 @@ def super_trend(symbol, data):
         ''
     )
 
+    # Print detailed summary (keep only this if you want)
+    # print("\n" + "="*80)
+    # print("SUMMARY")
+    # print("="*80)
+    # print(f"Total data points: {len(data)}")
+    # print(f"Total touches detected: {data['touches'].sum()}")
+    # print(f"Strategy signals: {original_signal.sum()}")
+    # print(f"Confirmed signals (strategy + touch): {data['st_sig'].sum()}")
+
+    # Show where touches occurred
+    # if data['touches'].sum() > 0:
+    #     touch_dates = data[data['touches'] == 1].index.tolist()
+    #     print(f"\nTouch dates:")
+    #     for dt in touch_dates[:10]:  # Show first 10
+    #         print(f"  {dt}")
+    #     if len(touch_dates) > 10:
+    #         print(f"  ... and {len(touch_dates) - 10} more")
+
     return data
+
+
 
 
 
