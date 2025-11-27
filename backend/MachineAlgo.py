@@ -421,9 +421,210 @@ def detect_trendline_touches_for_strategy(df: pd.DataFrame,
 
     return touch_indices
 
-
-
 def super_trend(symbol, data):
+    import pandas_ta as ta
+    import numpy as np
+    import pandas as pd
+
+    # === SYMBOL PARSING ===
+    parts = symbol.split()
+    ticker = parts[0]
+    expiry = f"{parts[1]} {parts[2]} {parts[3]}"
+    opttype = parts[4]
+    strike = float(parts[5])
+
+    # === CORE INDICATORS ===
+    data['EMA5'] = ta.ema(data['Close'], length=5)
+    data['EMA9'] = ta.ema(data['Close'], length=9)
+    data['EMA15'] = ta.ema(data['Close'], length=15)
+    data['EMA20'] = ta.ema(data['Close'], length=20)
+    data['EMA50'] = ta.ema(data['Close'], length=50)
+
+    # === MOMENTUM INDICATORS ===
+    data['ADX'] = ta.adx(data['High'], data['Low'], data['Close'], length=14)['ADX_14']
+    data['RSI'] = ta.rsi(data['Close'], length=14)
+    data['VO'] = volume_oscillator(data, fast=10, slow=20)
+
+    # === BOLLINGER BANDS ===
+    bb = ta.bbands(data['Close'], length=20, std=2)
+    data['BB_upper'] = bb['BBU_20_2.0']
+    data['BB_lower'] = bb['BBL_20_2.0']
+    data['BB_middle'] = bb['BBM_20_2.0']
+    data['BB_width'] = (data['BB_upper'] - data['BB_lower']) / data['BB_middle'] * 100
+
+    # === STOCHASTIC ===
+    stoch = ta.stoch(data['High'], data['Low'], data['Close'], k=10, d=3, smooth_k=3)
+    data['Stoch_K'] = stoch['STOCHk_10_3_3']
+    data['Stoch_D'] = stoch['STOCHd_10_3_3']
+
+    # === STOCH PATTERNS ===
+    stoch_deep_oversold_bounce = (
+        (data['Stoch_K'].shift(1) < 25) &
+        (data['Stoch_D'].shift(1) < 25) &
+        (data['Stoch_K'] - data['Stoch_K'].shift(1) > 3) &
+        (
+            ((data['Stoch_K'] > data['Stoch_D']) &
+             (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1)))
+            |
+            ((data['Stoch_K'] > data['Stoch_K'].shift(1) + 3) &
+             (data['Stoch_K'] > 15))
+        )
+    )
+
+    stoch_oversold_recovery = (
+        (data['Stoch_K'].shift(1) < 40) &
+        (data['Stoch_D'].shift(1) < 40) &
+        (data['Stoch_K'] > 20) &
+        (data['Stoch_D'] > 20) &
+        (data['Stoch_K'] > data['Stoch_D']) &
+        (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1)) &
+        ((data['Stoch_K'] - data['Stoch_K'].shift(1)) > 5)
+    )
+
+    stoch_early_bounce = (
+        (data['Stoch_K'] < 20) &
+        (data['Stoch_K'].shift(1) >= 8) &
+        (data['Stoch_D'] < 25) &
+        (data['RSI'] > data['RSI'].shift(1)) &
+        (data['Close'] > data['Open']) &
+        ((data['Stoch_K'] - data['Stoch_K'].shift(1)) > 3) &
+        (data['Stoch_K'] > data['Stoch_D'])
+    )
+
+    stoch_buy_signal = (
+        stoch_deep_oversold_bounce |
+        stoch_oversold_recovery |
+        stoch_early_bounce
+    )
+
+    # === VOLUME ===
+    data['Volume_MA'] = data['Volume'].rolling(20).mean()
+
+    # === STRATEGY BRANCHES 1–4 ===
+    short_term_bullish = data['Close'] > data['EMA5']
+    momentum_positive = (data['RSI'] > 45) & (data['RSI'] < 70)
+
+    branch1 = stoch_buy_signal & short_term_bullish
+    branch2 = momentum_positive & stoch_buy_signal
+    branch3 = stoch_oversold_recovery
+    branch4 = stoch_buy_signal & (data['RSI'] > 30)
+
+    # === TRENDLINE TOUCH DETECTION ===
+    data['touches'] = 0
+    touch_indices = detect_trendline_touches_for_strategy(
+        data,
+        swing_period=8,
+        min_hl_points=2,
+        lookback_candles=100,
+        tolerance=0.007,
+        extend_back=True
+    )
+
+    for ti in touch_indices:
+        if ti < len(data):
+            data.loc[data.index[ti], "touches"] = 1
+
+    # ===========================================================
+    # === BRANCH 5 : EMA 9/15 + SAR Momentum Entry            ===
+    # ===========================================================
+    data['SAR'] = ta.psar(data['High'], data['Low'], data['Close'])['PSARl_0.02_0.2']
+
+    ema_bull = (data['EMA9'] > data['EMA15']) & (data['Close'] > data['EMA9'])
+    ema_cross = (data['EMA9'].shift(1) <= data['EMA15'].shift(1)) & (data['EMA9'] > data['EMA15'])
+    sar_bull = data['Close'] > data['SAR']
+
+    branch5 = ema_bull & ema_cross & sar_bull & stoch_buy_signal  & (data['Stoch_K']>data['Stoch_D'])
+    data['ema_sar_branch'] = np.where(branch5, 1, 0)
+
+    # ===========================================================
+    # === BRANCH 6 : Bollinger LOWER BAND Reversal (Stoch < 20)
+    # ===========================================================
+    bb_cross_up = (
+        (data['Close'].shift(1) < data['BB_lower'].shift(1)) &
+        (data['Close'] > data['BB_lower'])
+    )
+
+    stoch_oversold = data['Stoch_K'] < 20
+
+    branch6 = bb_cross_up & stoch_oversold
+    data['bb_reversal_branch'] = np.where(branch6, 1, 0)
+
+    # ===========================================================
+    # === BRANCH 7 REMOVED (VWAP BRANCH REMOVED COMPLETELY)   ===
+    # ===========================================================
+
+    # === COMBINE ALL SIGNALS (without VWAP branch) ===
+    original_signal = (
+        branch1 |
+        branch2 |
+        branch3 |
+        branch4 |
+        data['ema_sar_branch'] |
+        data['bb_reversal_branch']
+    )
+
+    #data['st_sig'] = np.where(original_signal, 1, 0)
+
+    signal_with_touch = (branch1 | branch2 | branch3 | branch4) & (data['touches'] == 1)
+
+    # Branch 5 does NOT require touch
+    signal_without_touch = data['ema_sar_branch'] | data['bb_reversal_branch']
+
+    data['st_sig'] = np.where(
+        signal_with_touch | signal_without_touch,
+        1,
+        0
+    )
+
+    # === SIGNAL REASONS ===
+    data['stoch_pattern'] = np.select(
+        [stoch_deep_oversold_bounce, stoch_oversold_recovery, stoch_early_bounce],
+        ['Deep_Oversold_Bounce', 'Recovery_Momentum', 'Early_Bounce'],
+        default='None'
+    )
+
+    data['signal_reason'] = np.select(
+        [branch1, branch2, branch3, branch4],
+        [
+            'Oversold_Bounce_' + data['stoch_pattern'],
+            'Momentum_Continuation',
+            'Breakout_After_Oversold',
+            'Support_Bounce'
+        ],
+        default=''
+    )
+
+    data['signal_reason'] = np.where(
+        data['ema_sar_branch'] == 1,
+        'EMA9_15_SAR_Momentum',
+        data['signal_reason']
+    )
+
+    data['signal_reason'] = np.where(
+        data['bb_reversal_branch'] == 1,
+        'BB_Lower_Reversal_Stoch20',
+        data['signal_reason']
+    )
+
+    # === BOUNCE STRENGTH (unchanged) ===
+    data['bounce_strength'] = np.where(
+        data['st_sig'] == 1,
+        np.select(
+            [
+                data['Stoch_K'].shift(1) < 10,
+                data['Stoch_K'].shift(1) < 15,
+                data['Stoch_K'].shift(1) < 20
+            ],
+            ['Strong', 'Medium', 'Normal'],
+            default='Weak'
+        ),
+        ''
+    )
+
+    return data
+
+
+def super_trendttest(symbol, data):
     import pandas_ta as ta
     import numpy as np
     import pandas as pd
