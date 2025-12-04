@@ -363,6 +363,137 @@ def detect_trendline_touches_for_strategy(df: pd.DataFrame,
     return touch_indices
 
 
+
+def super_trend(symbol, data):
+
+    # ---------------- CORE INDICATORS ----------------
+    data['EMA5']  = ta.ema(data['Close'], 5)
+    data['EMA9']  = ta.ema(data['Close'], 9)
+    data['EMA15'] = ta.ema(data['Close'], 15)
+    data['EMA20'] = ta.ema(data['Close'], 20)
+    data['EMA50'] = ta.ema(data['Close'], 50)
+
+    data['ADX'] = ta.adx(data['High'], data['Low'], data['Close'], 14)['ADX_14']
+    data['RSI'] = ta.rsi(data['Close'], 14)
+    data['VO']  = volume_oscillator(data, 10, 20)
+
+    # ---------------- BOLLINGER BANDS ----------------
+    bb = ta.bbands(data['Close'], 20, 2)
+    data['BB_upper']  = bb['BBU_20_2_2.0']
+    data['BB_lower']  = bb['BBL_20_2_2.0']
+    data['BB_middle'] = bb['BBM_20_2_2.0']
+
+    # POSITION INSIDE BAND (0 to 1 scale)
+    data['BB_pos'] = (data['Close'] - data['BB_lower']) / (data['BB_upper'] - data['BB_lower'])
+
+    # ---------------- STOCHASTIC ----------------
+    stoch = ta.stoch(data['High'], data['Low'], data['Close'], 10, 3, 3)
+    data['Stoch_K'] = stoch['STOCHk_10_3_3']
+    data['Stoch_D'] = stoch['STOCHd_10_3_3']
+
+    # ---------------- ATR TOLERANCE ----------------
+    data['ATR'] = ta.atr(data['High'], data['Low'], data['Close'], 14)
+    data['ATR_pct'] = data['ATR'] / data['Close'] * 100
+    dyn_tol = max(0.007, (data['ATR_pct'].tail(100).median() / 100) * 0.7)
+
+    # ---------------- TRENDLINE TOUCH ----------------
+    data['touches'] = 0
+    TL = detect_trendline_touches_for_strategy(
+        data, 8, 2, 100, dyn_tol
+    )
+    for i in TL:
+        data.loc[data.index[i], 'touches'] = 1
+
+    # ---------------- VOLUME PROFILE ----------------
+    data['Volume_MA'] = data['Volume'].rolling(20).mean()
+    data['vol_ok_strong'] = data['Volume'] > data['Volume_MA'] * 1.05
+    data['vol_ok_normal'] = data['Volume'] > data['Volume_MA'] * 0.70
+
+    # ---------------- STOCH MOMENTUM ----------------
+    stoch_signal = (
+        ((data['Stoch_K'] < 25) & (data['Stoch_K'] - data['Stoch_K'].shift(1) > 3)) |
+        ((data['Stoch_K'] > data['Stoch_D']) & (data['Stoch_K'] - data['Stoch_K'].shift(1) > 2))
+    )
+
+    # ======================================================================
+    # BRANCH 5 — EMA/SAR MOMENTUM
+    # ======================================================================
+    data['SAR'] = ta.psar(data['High'], data['Low'], data['Close'])['PSARl_0.02_0.2']
+
+    b5 = (
+        (data['EMA9'] > data['EMA15'].shift(1)) &
+        (data['Close'] > data['EMA9']) &
+        (data['Close'] > data['SAR']) &
+        stoch_signal &
+        data['vol_ok_strong']
+    )
+
+    # ======================================================================
+    # BRANCH 6 — BOLLINGER REVERSAL (STRONG FILTER)
+    # ======================================================================
+    bb_cross = (
+        ((data['Close'].shift(1) < data['BB_lower'].shift(1)) &
+         (data['Close'] > data['BB_lower'])) |
+        ((data['Low'] < data['BB_lower']) &
+         (data['Close'] > data['Open']))
+    )
+
+    b6 = (
+        bb_cross &
+        (data['BB_pos'] <= 0.60) &
+        (data['RSI'] <= 55) &
+        (data['Stoch_K'] > data['Stoch_D']) &
+        data['vol_ok_normal']
+    )
+
+    # ======================================================================
+    # BRANCH 7 — PULLBACK REVERSAL
+    # ======================================================================
+    HL = data['Low'] > data['Low'].shift(1)
+
+    b7 = (
+        HL &
+        (data['Close'] > data['EMA5']) &
+        (data['RSI'] > data['RSI'].shift(1)) &
+        (data['Stoch_K'] > data['Stoch_D']) &
+        data['vol_ok_normal']
+    )
+
+    # ======================================================================
+    # BRANCH 1–4 — TRENDLINE +
+    # ======================================================================
+    b14 = (
+        stoch_signal &
+        (data['touches'] == 1) &
+        data['vol_ok_normal']
+    )
+
+    # ======================================================================
+    # COMBINE BASE SIGNALS
+    # ======================================================================
+    raw_sig = (b14 | b5 | b6 | b7).astype(int)
+
+    # ======================================================================
+    # ⭐ A+ FILTER (KEEPS ONLY THE PROFITABLE TRADES FROM YOUR DATA)
+    # ======================================================================
+    cond_high_band = (data['BB_pos'] > 0.5) & (data['RSI'] <= 56)
+    cond_low_band  = (data['BB_pos'] <= 0.5) & (data['ADX'] >= 28)
+
+    profit_filter = cond_high_band | cond_low_band
+
+    # APPLY FILTER HERE
+    raw_sig = raw_sig & profit_filter
+
+    # ======================================================================
+    # COOLDOWN – PREVENT BACK-TO-BACK TRADES
+    # ======================================================================
+    cooldown = 4
+    recent = pd.Series(raw_sig).shift(1).rolling(cooldown).sum().fillna(0)
+
+    data['st_sig'] = ((raw_sig == 1) & (recent == 0)).astype(int)
+
+    return data
+
 # ======================================================================
 # 3. SUPER TREND STRATEGY
 # ======================================================================
