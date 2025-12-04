@@ -381,9 +381,9 @@ def super_trend(symbol, data):
 
     bb = ta.bbands(data['Close'], 20, 2)
     print(bb.columns)
-    data['BB_upper'] = bb['BBU_20_2.0_2.0']
-    data['BB_lower'] = bb['BBL_20_2.0_2.0']
-    data['BB_middle'] = bb['BBM_20_2.0_2.0']
+    data['BB_upper'] = bb['BBU_20_2_2.0']
+    data['BB_lower'] = bb['BBL_20_2_2.0']
+    data['BB_middle'] = bb['BBM_20_2_2.0']
     data['BB_width'] = (data['BB_upper'] - data['BB_lower']) / data['BB_middle'] * 100
 
     stoch = ta.stoch(data['High'], data['Low'], data['Close'], k=10, d=3, smooth_k=3)
