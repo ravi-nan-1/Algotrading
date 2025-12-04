@@ -380,6 +380,7 @@ def super_trend(symbol, data):
     data['VO'] = volume_oscillator(data, 10, 20)
 
     bb = ta.bbands(data['Close'], 20, 2)
+    print(bb.columns)
     data['BB_upper'] = bb['BBU_20_2.0_2.0']
     data['BB_lower'] = bb['BBL_20_2.0_2.0']
     data['BB_middle'] = bb['BBM_20_2.0_2.0']
