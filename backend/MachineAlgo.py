@@ -362,9 +362,449 @@ def detect_trendline_touches_for_strategy(df: pd.DataFrame,
 
     return touch_indices
 
-
-
 def super_trend(symbol, data):
+
+    # ==========================
+    # CORE INDICATORS (UNCHANGED)
+    # ==========================
+    data['EMA9'] = ta.ema(data['Close'], 9)
+    data['EMA20'] = ta.ema(data['Close'], 20)
+    data['EMA50'] = ta.ema(data['Close'], 50)
+
+    data['RSI'] = ta.rsi(data['Close'], 14)
+    num = (data['Close']-data['Open']).rolling(10).mean()
+    den = (data['High']-data['Low']).rolling(10).mean()
+
+    data['RVGI'] = num / den
+    data['RVGI_Signal'] = data['RVGI'].rolling(4).mean()
+    rvgi_strength_ok = (
+            (data['RVGI'] > data['RVGI_Signal']) &
+            (data['RVGI'] > data['RVGI'].shift(1))
+    )
+    stoch = ta.stoch(data['High'], data['Low'], data['Close'], 14, 3, 3)
+    data['Stoch_K'] = stoch['STOCHk_14_3_3']
+    data['Stoch_D'] = stoch['STOCHd_14_3_3']
+
+    adx_df = ta.adx(data['High'], data['Low'], data['Close'], 14)
+    data['ADX'] = adx_df['ADX_14']
+    data['Plus_DI'] = adx_df['DMP_14']
+    data['Minus_DI'] = adx_df['DMN_14']
+
+    bb = ta.bbands(data['Close'], 20, 2)
+    data['BB_lower'] = bb['BBL_20_2.0']
+    data['BB_upper'] = bb['BBU_20_2.0']
+    data['BB_mid'] = bb['BBM_20_2.0']
+
+    data['ATR'] = ta.atr(data['High'], data['Low'], data['Close'], 14)
+    data['momentum']=(data['Close'].shift(1) - data['Close'].shift(2))
+    data['momentum1'] = (data['Close']-data['Close'].shift(1))
+    data['StockKmom'] = (data['Stoch_K'] - data['Stoch_K'].shift(1))
+    data['Volume_MA'] = data['Volume'].rolling(20).mean()
+    data['Volume_Ratio'] = data['Volume'] / data['Volume_MA']
+    data['touches'] = 0
+    data[['High', 'Low', 'Close', 'Volume']] = data[['High', 'Low', 'Close', 'Volume']].astype(float)
+
+    # Typical Price
+    tp = (data['High']+data['Low']+data['Close']) / 3
+
+    # VWAP (session-based cumulative)
+    data['VWAP'] = (tp * data['Volume']).cumsum() / data['Volume'].cumsum()
+    # ==========================
+    # TIME FILTER (UNCHANGED)
+    # ==========================
+    if isinstance(data.index, pd.DatetimeIndex):
+        time_series = data.index.time
+    else:
+        time_series = pd.to_datetime(data.index).time
+
+    data['time_mins'] = [t.hour * 60 + t.minute for t in time_series]
+    TIME_OK = (data['time_mins'] >= 570) & (data['time_mins'] <= 885)
+
+    # =============================================================
+    # SELECT CE OR PE LOGIC BLOCK
+    # =============================================================
+    k_len = 14
+    smooth = 3
+    d_len = 3
+    stoch = ta.stoch(data['High'], data['Low'], data['Close'], k_len, smooth, d_len)
+    data['K'] = stoch[f'STOCHk_{k_len}_{smooth}_{d_len}']
+    data['D'] = stoch[f'STOCHd_{k_len}_{smooth}_{d_len}']
+    opt_type = data["Option_Type"].iloc[0]
+    kd_now = data['K']-data['D']
+    kd_prev = data['K'].shift(1)-data['D'].shift(1)
+    price_factor = 0.25
+
+    price_up = (
+            (data['Close']-data['Close'].shift(1)) >
+            (price_factor * data['ATR'])
+    )
+
+    price_down = (
+            (data['Close'].shift(1)-data['Close']) >
+            (price_factor * data['ATR'])
+    )
+
+
+
+    buy_condition = (
+            (data['Stoch_K'] > data['Stoch_D'].shift(1)) &
+            (kd_now > kd_prev) &
+            (data['K'] > 20) &
+            price_up 
+    )
+
+    ndata = get_cash_market_data_3('3m')
+    nift = stochastic_price_rvgi_regime(ndata)
+
+    data = data.merge(
+        nift[['stoch_rvgi_regime']],
+        left_index=True,
+        right_index=True,
+        how='left'
+    )
+
+    if opt_type == "CE":
+
+        # ============================
+        # CE SETUPS START HERE
+        # ============================
+
+        # ---------- SETUP 1 ----------
+        stoch_oversold = data['Stoch_K'] < 20
+        stoch_turning = data['Stoch_K'] > data['Stoch_K'].shift(1)
+        stoch_cross = data['Stoch_K'] > data['Stoch_D']
+
+        rsi_ok = (data['RSI'] > 30) & (data['RSI'] < 52)
+        rsi_turn = data['RSI'] > data['RSI'].shift(1)
+
+        green = data['Close'] > data['Open']
+        higher_close = data['Close'] > data['Close'].shift(1)
+        momentum_ok = (data['Close'].shift(1) - data['Close'].shift(2)) >1
+
+
+        volume_ok = data['Volume_Ratio'] > 0.75
+        volume_strong = data['Volume_Ratio'] > 1.2
+
+        SETUP_1A = (
+            TIME_OK &
+            stoch_oversold &
+            (stoch_turning & stoch_cross) &
+            rsi_ok &
+            rsi_turn &
+            (green | higher_close) &
+            volume_strong
+        )
+
+        SETUP_1B = (
+            TIME_OK &
+            stoch_oversold &
+            (stoch_turning | stoch_cross) &
+            rsi_ok &
+            (green | higher_close) &
+            volume_ok &
+            ~volume_strong
+        )
+
+        # ----------------- CE SETUP 2 -----------------
+        bb_touch = (data['Low'] <= data['BB_lower'] * 1.005) & (data['Close'] > data['BB_lower'])
+        body = data['Close'] - data['Open']
+        candle_range = data['High'] - data['Low']
+        good_candle = (body > 0) & (body > candle_range * 0.3)
+
+        SETUP_2A = (
+            TIME_OK &
+            bb_touch &
+            good_candle &
+            (data['Stoch_K'] < 25) &
+            stoch_turning &
+            volume_strong &
+            momentum_ok
+        )
+
+        SETUP_2B = (
+            TIME_OK &
+            bb_touch &
+            (green | good_candle) &
+            (data['Stoch_K'] < 20) &
+            (stoch_turning | stoch_cross) &
+            volume_ok &
+            ~volume_strong &
+            momentum_ok
+        )
+
+        # ----------------- CE SETUP 3 -----------------
+        near_ema = (data['Low'] <= data['EMA20'] * 1.005) & (data['Close'] > data['EMA20'])
+        ema_up = data['EMA9'] > data['EMA20']
+        di_bull = data['Plus_DI'] > data['Minus_DI']
+        stoch_pullback = (data['Stoch_K'] > 25) & (data['Stoch_K'] < 55)
+
+        SETUP_3A = (
+            TIME_OK &
+            near_ema &
+            (ema_up | di_bull) &
+            stoch_pullback &
+            stoch_cross &
+            green &
+            volume_strong &
+            momentum_ok
+        )
+
+        SETUP_3B = (
+            TIME_OK &
+            near_ema &
+            stoch_pullback &
+            (stoch_cross | stoch_turning) &
+            (green | higher_close) &
+            volume_ok &
+            ~volume_strong &
+            momentum_ok
+        )
+
+        # ----------------- CE SETUP 4 -----------------
+        higher_low = data['Low'] > data['Low'].shift(1)
+        hl_pattern = higher_low & (data['Low'].shift(1) > data['Low'].shift(2))
+        stoch_healthy = (data['Stoch_K'] > 30) & (data['Stoch_K'] < 70)
+        strong_trend = (data['ADX'] > 22) & di_bull
+
+        SETUP_4 = (
+            TIME_OK &
+            hl_pattern &
+            stoch_healthy &
+            stoch_cross &
+            strong_trend &
+            green &
+            volume_ok &
+            momentum_ok
+        )
+
+        # ----------------- CE SETUP 5 -----------------
+        vwap_stretch = data['Low'] < data['VWAP'] * 0.995  # ~0.5% below VWAP
+
+        # 2️⃣ Reclaim VWAP (acceptance)
+        vwap_reclaim = data['Close'] > data['VWAP']
+
+        # 3️⃣ Strong bullish candle
+        strong_reversal = (
+                (data['Close'] > data['Open']) &
+                ((data['Close']-data['Open']) > (data['High']-data['Low']) * 0.5)
+        )
+
+        # 4️⃣ Optional pullback confirmation
+        vwap_pullback_hold = (
+                (data['Low'] <= data['VWAP'] * 1.002) &
+                (data['Close'] > data['VWAP'])
+        )
+
+        # -------- FINAL SETUP --------
+
+        SETUP_5 = (
+                TIME_OK &
+                vwap_stretch &
+                (vwap_reclaim | vwap_pullback_hold) &
+                strong_reversal &
+                momentum_ok
+        )
+
+    else:
+        # =============================================================
+        # PE SETUPS START HERE
+        # =============================================================
+
+        # ---------- SETUP 1 (PE) ----------
+        stoch_oversold = data['Stoch_K'] < 25
+        stoch_turning = data['Stoch_K'] > data['Stoch_K'].shift(1)
+        stoch_cross = data['Stoch_K'] > data['Stoch_D']
+
+        rsi_ok = (data['RSI'] > 30) & (data['RSI'] < 52)
+        rsi_turn = data['RSI'] > data['RSI'].shift(1)
+
+        green = data['Close'] > data['Open']
+        higher_close = data['Close'] > data['Close'].shift(1)
+
+        volume_ok = data['Volume_Ratio'] > 0.75
+        volume_strong = data['Volume_Ratio'] > 1.2
+
+        SETUP_1A = (
+            TIME_OK &
+            stoch_oversold &
+            (stoch_turning & stoch_cross) &
+            rsi_ok &
+            rsi_turn &
+            (green | higher_close) &
+            volume_strong &
+            rvgi_strength_ok
+        )
+
+        SETUP_1B = (
+            TIME_OK &
+            stoch_oversold &
+            (stoch_turning | stoch_cross) &
+            rsi_ok &
+            (green | higher_close) &
+            volume_ok &
+            ~volume_strong &
+            rvgi_strength_ok
+        )
+
+        # ---------- SETUP 2 (PE) ----------
+        bb_touch = (data['Low'] <= data['BB_lower'] * 1.005) & (data['Close'] > data['BB_lower'])
+        body = data['Close'] - data['Open']
+        candle_range = data['High'] - data['Low']
+        good_candle = (body > 0) & (body > candle_range * 0.3)
+
+        SETUP_2A = (
+            TIME_OK &
+            bb_touch &
+            good_candle &
+            (data['Stoch_K'] < 25) &
+            stoch_turning &
+            volume_strong &
+            rvgi_strength_ok
+        )
+
+        SETUP_2B = (
+            TIME_OK &
+            bb_touch &
+            (green | good_candle) &
+            (data['Stoch_K'] < 20) &
+            (stoch_turning | stoch_cross) &
+            volume_ok &
+            ~volume_strong &
+            rvgi_strength_ok
+        )
+
+        # ---------- SETUP 3 (PE) ----------
+        near_ema = (data['Low'] <= data['EMA20'] * 1.005) & (data['Close'] > data['EMA20'])
+        ema_up = data['EMA9'] > data['EMA20']
+        di_bull = data['Plus_DI'] > data['Minus_DI']
+        stoch_pullback = (data['Stoch_K'] > 25) & (data['Stoch_K'] < 55)
+
+        SETUP_3A = (
+            TIME_OK &
+            near_ema &
+            (ema_up | di_bull) &
+            stoch_pullback &
+            stoch_cross &
+            green &
+            volume_strong &
+            rvgi_strength_ok
+        )
+
+        SETUP_3B = (
+            TIME_OK &
+            near_ema &
+            stoch_pullback &
+            (stoch_cross | stoch_turning) &
+            (green | higher_close) &
+            volume_ok &
+            ~volume_strong &
+            rvgi_strength_ok
+        )
+
+        # ---------- SETUP 4 (PE) ----------
+        higher_low = data['Low'] > data['Low'].shift(1)
+        hl_pattern = higher_low & (data['Low'].shift(1) > data['Low'].shift(2))
+        stoch_healthy = (data['Stoch_K'] > 30) & (data['Stoch_K'] < 70)
+        strong_trend = (data['ADX'] > 22) & di_bull
+
+        SETUP_4 = (
+            TIME_OK &
+            hl_pattern &
+            stoch_healthy &
+            stoch_cross &
+            strong_trend &
+            green &
+            volume_ok &
+            rvgi_strength_ok
+        )
+
+        # ---------- SETUP 5 (PE) ----------
+        vwap_stretch = data['Low'] < data['VWAP'] * 0.995  # ~0.5% below VWAP
+
+        # 2️⃣ Reclaim VWAP (acceptance)
+        vwap_reclaim = data['Close'] > data['VWAP']
+
+        # 3️⃣ Strong bullish candle
+        strong_reversal = (
+                (data['Close'] > data['Open']) &
+                ((data['Close']-data['Open']) > (data['High']-data['Low']) * 0.5)
+        )
+
+        # 4️⃣ Optional pullback confirmation
+        vwap_pullback_hold = (
+                (data['Low'] <= data['VWAP'] * 1.002) &
+                (data['Close'] > data['VWAP'])
+        )
+
+        # -------- FINAL SETUP --------
+
+        SETUP_5 = (
+                TIME_OK &
+                vwap_stretch &
+                (vwap_reclaim | vwap_pullback_hold) &
+                strong_reversal &
+                rvgi_strength_ok
+
+        )
+
+    # ============================================================
+    # REST OF LOGIC (UNCHANGED)
+    # ============================================================
+
+    GRADE_A = (SETUP_1A | SETUP_2A | SETUP_3A | SETUP_5).astype(int)
+    GRADE_B = (SETUP_1B | SETUP_2B | SETUP_3B | SETUP_4).astype(int) & ~GRADE_A.astype(bool)
+
+    overbought = (data['Stoch_K'] > 82) | (data['RSI'] > 72)
+    big_red = (data['Open'] - data['Close']) > data['ATR'] * 1.0
+    recent_dist = big_red | big_red.shift(1)
+    extended = (data['Close'] - data['EMA20']) / data['EMA20'] > 0.028
+    small_candle = candle_range < data['ATR'] * 0.4
+
+
+    REJECTION = overbought | recent_dist | extended | small_candle
+
+    GRADE_A = GRADE_A & ~REJECTION
+    GRADE_B = GRADE_B & ~REJECTION
+
+    higher_lows_2bar = data['Low'] > data['Low'].shift(1)
+
+    BEST_GRADE_B = (
+        GRADE_B.astype(bool) &
+        (
+            higher_lows_2bar |
+            (data['Volume_Ratio'] > 1.0) |
+            rsi_turn
+        )
+    )
+
+    raw_sig = (GRADE_A | BEST_GRADE_B).astype(int)
+
+    data['signal_grade'] = ""
+    data.loc[GRADE_A.astype(bool), 'signal_grade'] = "A"
+    data.loc[BEST_GRADE_B, 'signal_grade'] = "B"
+
+    data["signal_reason"] = ""
+    data.loc[(SETUP_1A | SETUP_1B) & raw_sig.astype(bool), "signal_reason"] += "Oversold | "
+    data.loc[(SETUP_2A | SETUP_2B) & raw_sig.astype(bool), "signal_reason"] += "BB Bounce | "
+    data.loc[(SETUP_3A | SETUP_3B) & raw_sig.astype(bool), "signal_reason"] += "EMA Pullback | "
+    data.loc[SETUP_4 & raw_sig.astype(bool), "signal_reason"] += "Momentum | "
+    data.loc[SETUP_5 & raw_sig.astype(bool), "signal_reason"] += "Volume Spike | "
+
+    data["signal_reason"] = data["signal_reason"].str.rstrip(" | ")
+
+    data.loc[data['signal_grade'] == "A", 'signal_reason'] += " [★★★]"
+    data.loc[data['signal_grade'] == "B", 'signal_reason'] += " [★★]"
+
+    cooldown = 5
+    recent = raw_sig.shift(1).rolling(cooldown).sum().fillna(0)
+
+    data['st_sig'] = ((raw_sig == 1) & (recent == 0)).astype(int)
+
+
+    return data
+
+
+def super_trend1we(symbol, data):
 
     # ==========================
     # CORE INDICATORS (UNCHANGED)
@@ -386,9 +826,9 @@ def super_trend(symbol, data):
 
     bb = ta.bbands(data['Close'], 20, 2)
     print(bb.columns)
-    data['BB_lower'] = bb['BBL_20_2_2.0']
-    data['BB_upper'] = bb['BBU_20_2_2.0']
-    data['BB_mid'] = bb['BBM_20_2_2.0']
+    data['BB_lower'] = bb['BBL_20_2.0_2.0']
+    data['BB_upper'] = bb['BBU_20_2.0_2.0']
+    data['BB_mid'] = bb['BBM_20_2.0_2.0']
 
     data['ATR'] = ta.atr(data['High'], data['Low'], data['Close'], 14)
 
