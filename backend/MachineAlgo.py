@@ -419,49 +419,11 @@ def super_trend(symbol, data):
 
     data['time_mins'] = [t.hour * 60 + t.minute for t in time_series]
     TIME_OK = (data['time_mins'] >= 570) & (data['time_mins'] <= 885)
-
+    opt_type = data["Option_Type"].iloc[0]
     # =============================================================
     # SELECT CE OR PE LOGIC BLOCK
     # =============================================================
-    k_len = 14
-    smooth = 3
-    d_len = 3
-    stoch = ta.stoch(data['High'], data['Low'], data['Close'], k_len, smooth, d_len)
-    data['K'] = stoch[f'STOCHk_{k_len}_{smooth}_{d_len}']
-    data['D'] = stoch[f'STOCHd_{k_len}_{smooth}_{d_len}']
-    opt_type = data["Option_Type"].iloc[0]
-    kd_now = data['K']-data['D']
-    kd_prev = data['K'].shift(1)-data['D'].shift(1)
-    price_factor = 0.25
 
-    price_up = (
-            (data['Close']-data['Close'].shift(1)) >
-            (price_factor * data['ATR'])
-    )
-
-    price_down = (
-            (data['Close'].shift(1)-data['Close']) >
-            (price_factor * data['ATR'])
-    )
-
-
-
-    buy_condition = (
-            (data['Stoch_K'] > data['Stoch_D'].shift(1)) &
-            (kd_now > kd_prev) &
-            (data['K'] > 20) &
-            price_up 
-    )
-
-    ndata = get_cash_market_data_3('3m')
-    nift = stochastic_price_rvgi_regime(ndata)
-
-    data = data.merge(
-        nift[['stoch_rvgi_regime']],
-        left_index=True,
-        right_index=True,
-        how='left'
-    )
 
     if opt_type == "CE":
 
@@ -631,8 +593,7 @@ def super_trend(symbol, data):
             rsi_ok &
             rsi_turn &
             (green | higher_close) &
-            volume_strong &
-            rvgi_strength_ok
+            volume_strong
         )
 
         SETUP_1B = (
@@ -642,8 +603,7 @@ def super_trend(symbol, data):
             rsi_ok &
             (green | higher_close) &
             volume_ok &
-            ~volume_strong &
-            rvgi_strength_ok
+            ~volume_strong
         )
 
         # ---------- SETUP 2 (PE) ----------
@@ -658,8 +618,7 @@ def super_trend(symbol, data):
             good_candle &
             (data['Stoch_K'] < 25) &
             stoch_turning &
-            volume_strong &
-            rvgi_strength_ok
+            volume_strong
         )
 
         SETUP_2B = (
@@ -669,8 +628,7 @@ def super_trend(symbol, data):
             (data['Stoch_K'] < 20) &
             (stoch_turning | stoch_cross) &
             volume_ok &
-            ~volume_strong &
-            rvgi_strength_ok
+            ~volume_strong
         )
 
         # ---------- SETUP 3 (PE) ----------
@@ -686,8 +644,7 @@ def super_trend(symbol, data):
             stoch_pullback &
             stoch_cross &
             green &
-            volume_strong &
-            rvgi_strength_ok
+            volume_strong
         )
 
         SETUP_3B = (
@@ -697,8 +654,7 @@ def super_trend(symbol, data):
             (stoch_cross | stoch_turning) &
             (green | higher_close) &
             volume_ok &
-            ~volume_strong &
-            rvgi_strength_ok
+            ~volume_strong
         )
 
         # ---------- SETUP 4 (PE) ----------
@@ -714,8 +670,7 @@ def super_trend(symbol, data):
             stoch_cross &
             strong_trend &
             green &
-            volume_ok &
-            rvgi_strength_ok
+            volume_ok
         )
 
         # ---------- SETUP 5 (PE) ----------
@@ -742,8 +697,7 @@ def super_trend(symbol, data):
                 TIME_OK &
                 vwap_stretch &
                 (vwap_reclaim | vwap_pullback_hold) &
-                strong_reversal &
-                rvgi_strength_ok
+                strong_reversal
 
         )
 
@@ -802,6 +756,7 @@ def super_trend(symbol, data):
 
 
     return data
+
 
 
 def super_trend1we(symbol, data):
