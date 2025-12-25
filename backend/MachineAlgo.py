@@ -469,7 +469,8 @@ def fetch_ohlcv(symbol, timeframe="3m", candles=20):
     ]
 
 
-GROQ_API_KEY = "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"
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 def llm_trade_signal(symbol, ohlcv, timeframe):
     print('call11 fetch_ohlcv')
 
