@@ -28,7 +28,7 @@ import time
 from pymongo import MongoClient
 import sklearn
 import requests
-from groq import Groq
+
 
 ssl_context = ssl.create_default_context(cafile=certifi.where())
 
