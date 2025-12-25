@@ -27,6 +27,8 @@ UTC = pytz.timezone('Asia/Kolkata')
 import time
 from pymongo import MongoClient
 import sklearn
+import requests
+from groq import Groq
 
 ssl_context = ssl.create_default_context(cafile=certifi.where())
 
@@ -281,9 +283,24 @@ def detect_trendline_touches_for_strategy(df: pd.DataFrame,
                                           lookback_candles: int = 50,
                                           tolerance: float = 0.007,
                                           extend_back: bool = True):
+    """
+    Trendline touch detector that extends line BACKWARDS to find ALL touches
 
+    Args:
+        df: DataFrame with OHLC data
+        swing_period: Candles to look left/right (8 = 24 minutes for 3m)
+        min_hl_points: Minimum Higher Lows to connect (2-3)
+        lookback_candles: Analyze last N candles (50 = 2.5 hours for 3m)
+        tolerance: Touch tolerance (0.007 = 0.7%)
+        extend_back: Extend trendline backwards to find earlier touches
+
+    Returns:
+        List of indices where touches occur
+    """
+
+    # Only analyze recent candles
     if len(df) > lookback_candles:
-        start_idx = len(df) - lookback_candles
+        start_idx = len(df)-lookback_candles
         df_recent = df.iloc[start_idx:].copy()
         offset = start_idx
     else:
@@ -293,74 +310,235 @@ def detect_trendline_touches_for_strategy(df: pd.DataFrame,
     # Find swing lows
     swing_lows = []
     for i in range(swing_period, len(df_recent)):
-        if i + swing_period > len(df_recent):
+        # Allow recent candles without full right-side confirmation
+        if i+swing_period > len(df_recent):
             current_low = df_recent['Low'].iloc[i]
-            left_lows = df_recent['Low'].iloc[max(0, i - swing_period):i]
+            left_lows = df_recent['Low'].iloc[max(0, i-swing_period):i]
 
             if len(left_lows) > 0 and current_low <= left_lows.min():
-                swing_lows.append((i + offset, current_low))
+                swing_lows.append((i+offset, current_low))
         else:
             current_low = df_recent['Low'].iloc[i]
-            left_lows = df_recent['Low'].iloc[i - swing_period:i]
-            right_lows = df_recent['Low'].iloc[i + 1:min(len(df_recent), i + swing_period + 1)]
+            left_lows = df_recent['Low'].iloc[i-swing_period:i]
+            right_lows = df_recent['Low'].iloc[i+1:min(len(df_recent), i+swing_period+1)]
 
             if current_low <= left_lows.min() and current_low <= right_lows.min():
-                swing_lows.append((i + offset, current_low))
+                swing_lows.append((i+offset, current_low))
 
     if len(swing_lows) < 2:
+        # print(f"⚠️ Only found {len(swing_lows)} swing lows. Need at least 2.")
         return []
 
-    # Higher Lows
+    # print(f"✓ Found {len(swing_lows)} swing lows")
+
+    # Filter for Higher Lows
     higher_lows = [swing_lows[0]]
     for i in range(1, len(swing_lows)):
         idx, low = swing_lows[i]
         prev_idx, prev_low = higher_lows[-1]
+
+        # Accept if higher or nearly equal (0.2% tolerance)
         if low >= prev_low * 0.998:
             higher_lows.append((idx, low))
 
     if len(higher_lows) < min_hl_points:
+        # print(f"⚠️ Only found {len(higher_lows)} Higher Lows. Need at least {min_hl_points}.")
         return []
 
-    # Trendline
+    # print(f"✓ Found {len(higher_lows)} Higher Lows")
+    # print(f"   Points: {[(idx, round(price, 2)) for idx, price in higher_lows]}")
+
+    # Take most recent Higher Lows for trendline
     recent_hl = higher_lows[-min_hl_points:]
     idx1, price1 = recent_hl[0]
     idx2, price2 = recent_hl[-1]
 
-    slope = (price2 - price1) / (idx2 - idx1)
+    # Calculate trendline
+    slope = (price2-price1) / (idx2-idx1)
+
+    # Accept flat or upward lines
     if slope < -0.0001:
+        # print(f"⚠️ Negative slope: {slope:.6f}. Not an uptrend.")
         return []
 
-    intercept = price1 - slope * idx1
+    intercept = price1-slope * idx1
 
+
+    print(f"✓ Trendline: slope={slope:.6f}, intercept={intercept:.2f}")
+    print(f"   Line connects indices {idx1} to {idx2}")
+
+    # Extend trendline backwards
     if extend_back:
-        search_start = max(0, len(df) - lookback_candles)
+        search_start = max(0, len(df)-lookback_candles)
+        # print(f"   Extending line backwards from index {idx1} to index {search_start}")
     else:
         search_start = idx1
 
+    # Detect touches from the START of lookback period to END of data
     touch_indices = []
+
     for i in range(search_start, len(df)):
-        line_value = slope * i + intercept
+        line_value = slope * i+intercept
         threshold = line_value * tolerance
 
         current_low = df['Low'].iloc[i]
         current_high = df['High'].iloc[i]
         current_close = df['Close'].iloc[i]
 
+        # Skip anchor points
         is_anchor_point = any(i == hl_idx for hl_idx, _ in recent_hl)
 
         if i > 0 and not is_anchor_point:
-            prev_close = df['Close'].iloc[i - 1]
+            prev_close = df['Close'].iloc[i-1]
 
-            touch_from_above = (prev_close > line_value and current_low <= line_value + threshold)
-            crosses_line = (current_low <= line_value + threshold and current_high >= line_value - threshold)
-            close_near = abs(current_close - line_value) <= threshold
-            low_touch = abs(current_low - line_value) <= threshold
+            # Detection methods
+            touch_from_above = (prev_close > line_value and
+                                current_low <= line_value+threshold)
 
-            if touch_from_above or crosses_line or close_near or low_touch:
-                if current_close > line_value - (threshold * 2):
+            crosses_line = (current_low <= line_value+threshold and
+                            current_high >= line_value-threshold)
+
+            close_near_line = abs(current_close-line_value) <= threshold
+
+            low_touches = abs(current_low-line_value) <= threshold
+
+            # Detect touch
+            if touch_from_above or crosses_line or close_near_line or low_touches:
+                # Additional validation: don't add if price breaks significantly below
+                if current_close > line_value-(threshold * 2):
                     touch_indices.append(i)
+                    # touch_type = 'from_above' if touch_from_above else ('cross' if crosses_line else ('close' if close_near_line else 'low_bounce'))
+
+                    # Only print recent touches to avoid spam
+                    # if i >= len(df) - 20:
+                    #     print(f"   Touch at index {i}: Low={current_low:.2f}, Close={current_close:.2f}, Line={line_value:.2f} ({touch_type})")
+
+    # print(f"✓ Found {len(touch_indices)} total touches (from index {search_start} to {len(df)-1})")
+
+    # Show distribution of touches
+    # if len(touch_indices) > 0:
+    #     print(f"   First touch at index: {touch_indices[0]}")
+    #     print(f"   Last touch at index: {touch_indices[-1]}")
+    #     print(f"   Touch indices: {touch_indices}")
 
     return touch_indices
+def fetch_ohlcv(symbol, timeframe="3m", candles=20):
+    print('call11 fetch_ohlcv')
+    scripcode = scripcode_lookup(symbol)
+    print(scripcode)
+    if not scripcode:
+        return None
+
+    df = pd.DataFrame(
+        client.historical_data(
+            Exch='N', ExchangeSegment='D',
+            ScripCode=scripcode,
+            time=timeframe,
+            From=dt.date.today() - dt.timedelta(5),
+            To=dt.date.today()
+        )
+    )
+    print(df)
+    # 🔥 SAFE DATETIME HANDLING
+    datetime_col = None
+    for col in ["Datetime", "DateTime", "Date", "Time"]:
+        if col in df.columns:
+            datetime_col = col
+            break
+
+    if datetime_col:
+        df[datetime_col] = pd.to_datetime(df[datetime_col])
+        df = df.sort_values(datetime_col)
+
+    # Ensure required columns exist
+    required = {"Open", "High", "Low", "Close", "Volume"}
+    if not required.issubset(df.columns):
+        return None
+
+    df = df.tail(candles)
+
+    return [
+        {
+            "o": round(float(r["Open"]), 2),
+            "h": round(float(r["High"]), 2),
+            "l": round(float(r["Low"]), 2),
+            "c": round(float(r["Close"]), 2),
+            "v": int(r["Volume"])
+        }
+        for _, r in df.iterrows()
+    ]
+
+
+GROQ_API_KEY = "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"
+def llm_trade_signal(symbol, ohlcv, timeframe):
+    print('call11 fetch_ohlcv')
+
+    prompt = f"""
+You are a professional discretionary trader.
+
+Analyze OHLCV data for {symbol} on {timeframe}.
+Trade only if quality is high.
+
+OHLCV:
+{json.dumps(ohlcv)}
+
+Respond ONLY with valid JSON. No explanation. No markdown.
+
+Format:
+{{
+  "bias": "Bullish | Bearish | Neutral",
+  "signal": "BUY | SELL | NO TRADE",
+  "entry": number,
+  "stop_loss": number,
+  "target_1": number,
+  "target_2": number,
+  "confidence": number,
+  "reason": "short explanation"
+}}
+"""
+
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "model": "llama-3.3-70b-versatile",
+            "temperature": 0.1,
+            "messages": [{"role": "user", "content": prompt}]
+        },
+        timeout=30
+    )
+
+    # 🔥 HANDLE API FAILURE
+    if response.status_code != 200:
+        return {"error": "Groq API error", "details": response.text}
+
+    data = response.json()
+
+    # 🔥 HANDLE MISSING CHOICES
+    if "choices" not in data:
+        return {"error": "Invalid Groq response", "raw": data}
+
+    content = data["choices"][0]["message"]["content"]
+
+    # 🔥 EXTRACT JSON SAFELY
+    try:
+        start = content.index("{")
+        end = content.rindex("}") + 1
+        json_str = content[start:end]
+        return json.loads(json_str)
+    except Exception as e:
+        return {
+            "error": "LLM did not return valid JSON",
+            "raw_response": content
+        }
+
+
+
+
+
 
 def super_trend(symbol, data):
 
@@ -368,6 +546,7 @@ def super_trend(symbol, data):
     # CORE INDICATORS (UNCHANGED)
     # ==========================
     data['EMA9'] = ta.ema(data['Close'], 9)
+    data['EMA5'] = ta.ema(data['Close'], 5)
     data['EMA20'] = ta.ema(data['Close'], 20)
     data['EMA50'] = ta.ema(data['Close'], 50)
 
@@ -423,7 +602,62 @@ def super_trend(symbol, data):
     # =============================================================
     # SELECT CE OR PE LOGIC BLOCK
     # =============================================================
+    stoch_deep_oversold_bounce = (
+            (data['Stoch_K'].shift(1) < 25) &
+            (data['Stoch_D'].shift(1) < 25) &
+            (data['Stoch_K']-data['Stoch_K'].shift(1) > 3) &
+            (
+                    ((data['Stoch_K'] > data['Stoch_D']) &
+                     (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1))) |
+                    ((data['Stoch_K'] > data['Stoch_K'].shift(1)+3) &
+                     (data['Stoch_K'] > 15))
+            )
+    )
 
+    stoch_oversold_recovery = (
+            (data['Stoch_K'].shift(1) < 40) &
+            (data['Stoch_D'].shift(1) < 40) &
+            (data['Stoch_K'] > 20) &
+            (data['Stoch_D'] > 20) &
+            (data['Stoch_K'] > data['Stoch_D']) &
+            (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1)) &
+            ((data['Stoch_K']-data['Stoch_K'].shift(1)) > 5)
+    )
+
+    stoch_early_bounce = (
+            (data['Stoch_K'] < 20) &
+            (data['Stoch_K'].shift(1) >= 8) &
+            (data['Stoch_D'] < 25) &
+            (data['RSI'] > data['RSI'].shift(1)) &
+            (data['Close'] > data['Open']) &
+            ((data['Stoch_K']-data['Stoch_K'].shift(1)) > 3) &
+            (data['Stoch_K'] > data['Stoch_D'])
+    )
+
+    stoch_buy_signal = (
+            stoch_deep_oversold_bounce |
+            stoch_oversold_recovery |
+            stoch_early_bounce
+    )
+
+    # === VOLUME ANALYSIS ===
+    data['Volume_MA'] = data['Volume'].rolling(20).mean()
+    volume_surge = data['Volume'] > (1.5 * data['Volume_MA'])
+    volume_positive = data['Volume'] > data['Volume_MA']
+
+    # === TREND FILTERS ===
+    uptrend = (
+            (data['EMA5'] > data['EMA20']) &
+            (data['EMA20'] > data['EMA50']) &
+            (data['ADX'] > 25)
+    )
+
+    short_term_bullish = data['Close'] > data['EMA5']
+
+    momentum_positive = (
+            (data['RSI'] > 45) &
+            (data['RSI'] < 70)
+    )
 
     if opt_type == "CE":
 
@@ -447,52 +681,108 @@ def super_trend(symbol, data):
         volume_ok = data['Volume_Ratio'] > 0.75
         volume_strong = data['Volume_Ratio'] > 1.2
 
+        # ---------- STOCHASTIC WAIT + TRIGGER ----------
+
+        stoch_oversold = data['Stoch_K'] < 20
+
+        WAIT_BARS = 5
+        was_oversold = stoch_oversold.rolling(WAIT_BARS).max() == 1
+
+        stoch_k_above_d = data['Stoch_K'] > data['Stoch_D']
+        stoch_cross_20 = (data['Stoch_K'] > 20) & (data['Stoch_K'].shift(1) <= 20)
+
+        # ---------- RSI ----------
+        rsi_ok = (data['RSI'] > 30) & (data['RSI'] < 55)
+        rsi_turn = data['RSI'] > data['RSI'].shift(1)
+
+        # ---------- PRICE ----------
+        green = data['Close'] > data['Open']
+        higher_close = data['Close'] > data['Close'].shift(1)
+
+        # ---------- VOLUME ----------
+        volume_ok = data['Volume_Ratio'] > 0.75
+        volume_strong = data['Volume_Ratio'] > 1.2
+
+        # ---------- SETUPS ----------
         SETUP_1A = (
-            TIME_OK &
-            stoch_oversold &
-            (stoch_turning & stoch_cross) &
-            rsi_ok &
-            rsi_turn &
-            (green | higher_close) &
-            volume_strong
+                TIME_OK &
+                was_oversold &
+                stoch_k_above_d &
+                stoch_cross_20 &
+                rsi_ok &
+                rsi_turn &
+                (green | higher_close) &
+                volume_strong
         )
 
         SETUP_1B = (
-            TIME_OK &
-            stoch_oversold &
-            (stoch_turning | stoch_cross) &
-            rsi_ok &
-            (green | higher_close) &
-            volume_ok &
-            ~volume_strong
+                TIME_OK &
+                was_oversold &
+                stoch_k_above_d &
+                stoch_cross_20 &
+                rsi_ok &
+                (green | higher_close) &
+                volume_ok &
+                ~volume_strong
         )
 
         # ----------------- CE SETUP 2 -----------------
-        bb_touch = (data['Low'] <= data['BB_lower'] * 1.005) & (data['Close'] > data['BB_lower'])
-        body = data['Close'] - data['Open']
-        candle_range = data['High'] - data['Low']
-        good_candle = (body > 0) & (body > candle_range * 0.3)
+        # ---------- BOLLINGER REJECTION ----------
+        bb_touch = (
+                (data['Low'] <= data['BB_lower'] * 1.002) &
+                (data['Close'] > data['BB_lower'])
+        )
 
+        # ---------- STRONG BUYER CANDLE ----------
+        body = data['Close']-data['Open']
+        candle_range = data['High']-data['Low']
+
+        good_candle = (
+                (body > 0) &
+                (body > candle_range * 0.4) &
+                (data['Close'] > data['Close'].shift(1))
+        )
+
+        # ---------- STOCHASTIC WAIT + CONFIRM ----------
+        was_oversold = (data['Stoch_K'] < 20).rolling(5).max() == 1
+
+        stoch_confirm = (
+                (data['Stoch_K'] > data['Stoch_D']) &
+                (data['Stoch_K'] > 20) &
+                (data['Stoch_K'].shift(1) <= 20)
+        )
+
+        # ---------- VOLATILITY EXPANSION (OPTION KEY) ----------
+        bb_width = data['BB_upper']-data['BB_lower']
+        bb_expanding = bb_width > bb_width.shift(1)
+
+        # ---------- VOLUME ----------
+        volume_ok = data['Volume_Ratio'] > 0.75
+        volume_strong = data['Volume_Ratio'] > 1.2
+
+        # ---------- FINAL SETUPS ----------
         SETUP_2A = (
-            TIME_OK &
-            bb_touch &
-            good_candle &
-            (data['Stoch_K'] < 25) &
-            stoch_turning &
-            volume_strong &
-            momentum_ok
+                TIME_OK &
+                bb_touch &
+                good_candle &
+                was_oversold &
+                stoch_confirm &
+                bb_expanding &
+                volume_strong
         )
 
         SETUP_2B = (
-            TIME_OK &
-            bb_touch &
-            (green | good_candle) &
-            (data['Stoch_K'] < 20) &
-            (stoch_turning | stoch_cross) &
-            volume_ok &
-            ~volume_strong &
-            momentum_ok
+                TIME_OK &
+                bb_touch &
+                good_candle &
+                was_oversold &
+                (data['Stoch_K'] > data['Stoch_D']) &
+                bb_expanding &
+                volume_ok &
+                ~volume_strong
         )
+
+
 
         # ----------------- CE SETUP 3 -----------------
         near_ema = (data['Low'] <= data['EMA20'] * 1.005) & (data['Close'] > data['EMA20'])
@@ -523,21 +813,44 @@ def super_trend(symbol, data):
         )
 
         # ----------------- CE SETUP 4 -----------------
+        # ---------- MARKET STRUCTURE ----------
         higher_low = data['Low'] > data['Low'].shift(1)
-        hl_pattern = higher_low & (data['Low'].shift(1) > data['Low'].shift(2))
-        stoch_healthy = (data['Stoch_K'] > 30) & (data['Stoch_K'] < 70)
-        strong_trend = (data['ADX'] > 22) & di_bull
-
-        SETUP_4 = (
-            TIME_OK &
-            hl_pattern &
-            stoch_healthy &
-            stoch_cross &
-            strong_trend &
-            green &
-            volume_ok &
-            momentum_ok
+        hl_pattern = (
+                higher_low &
+                (data['Low'].shift(1) > data['Low'].shift(2))
         )
+
+        # ---------- STOCHASTIC (MOMENTUM START, NOT LATE) ----------
+        was_oversold = (data['Stoch_K'] < 25).rolling(6).max() == 1
+
+        stoch_confirm = (
+                (data['Stoch_K'] > data['Stoch_D']) &
+                (data['Stoch_K'] > 25) &
+                (data['Stoch_K'].shift(1) <= 25)
+        )
+
+        # ---------- TREND + ACCELERATION ----------
+        adx_strong = data['ADX'] > 22
+        adx_rising = data['ADX'] > data['ADX'].shift(1)
+
+        strong_trend = adx_strong & adx_rising & di_bull
+
+        # ---------- VOLATILITY EXPANSION (OPTION KEY) ----------
+        atr_rising = data['ATR'] > data['ATR'].shift(1)
+
+        # ---------- FINAL OPTION SETUP ----------
+        SETUP_4 = (
+                TIME_OK &
+                hl_pattern &
+                was_oversold &
+                stoch_confirm &
+                strong_trend &
+                atr_rising &
+                green &
+                volume_ok
+        )
+
+
 
         # ----------------- CE SETUP 5 -----------------
         vwap_stretch = data['Low'] < data['VWAP'] * 0.995  # ~0.5% below VWAP
@@ -586,50 +899,108 @@ def super_trend(symbol, data):
         volume_ok = data['Volume_Ratio'] > 0.75
         volume_strong = data['Volume_Ratio'] > 1.2
 
+        # ---------- STOCHASTIC WAIT + TRIGGER ----------
+
+        stoch_oversold = data['Stoch_K'] < 20
+
+        WAIT_BARS = 5
+        was_oversold = stoch_oversold.rolling(WAIT_BARS).max() == 1
+
+        stoch_k_above_d = data['Stoch_K'] > data['Stoch_D']
+        stoch_cross_20 = (data['Stoch_K'] > 20) & (data['Stoch_K'].shift(1) <= 20)
+
+        # ---------- RSI ----------
+        rsi_ok = (data['RSI'] > 30) & (data['RSI'] < 55)
+        rsi_turn = data['RSI'] > data['RSI'].shift(1)
+
+        # ---------- PRICE ----------
+        green = data['Close'] > data['Open']
+        higher_close = data['Close'] > data['Close'].shift(1)
+
+        # ---------- VOLUME ----------
+        volume_ok = data['Volume_Ratio'] > 0.75
+        volume_strong = data['Volume_Ratio'] > 1.2
+
+        # ---------- SETUPS ----------
         SETUP_1A = (
-            TIME_OK &
-            stoch_oversold &
-            (stoch_turning & stoch_cross) &
-            rsi_ok &
-            rsi_turn &
-            (green | higher_close) &
-            volume_strong
+                TIME_OK &
+                was_oversold &
+                stoch_k_above_d &
+                stoch_cross_20 &
+                rsi_ok &
+                rsi_turn &
+                (green | higher_close) &
+                volume_strong
         )
 
         SETUP_1B = (
-            TIME_OK &
-            stoch_oversold &
-            (stoch_turning | stoch_cross) &
-            rsi_ok &
-            (green | higher_close) &
-            volume_ok &
-            ~volume_strong
+                TIME_OK &
+                was_oversold &
+                stoch_k_above_d &
+                stoch_cross_20 &
+                rsi_ok &
+                (green | higher_close) &
+                volume_ok &
+                ~volume_strong
         )
 
         # ---------- SETUP 2 (PE) ----------
-        bb_touch = (data['Low'] <= data['BB_lower'] * 1.005) & (data['Close'] > data['BB_lower'])
-        body = data['Close'] - data['Open']
-        candle_range = data['High'] - data['Low']
-        good_candle = (body > 0) & (body > candle_range * 0.3)
+        # ---------- BOLLINGER REJECTION ----------
+        bb_touch = (
+                (data['Low'] <= data['BB_lower'] * 1.002) &
+                (data['Close'] > data['BB_lower'])
+        )
 
+        # ---------- STRONG BUYER CANDLE ----------
+        body = data['Close']-data['Open']
+        candle_range = data['High']-data['Low']
+
+        good_candle = (
+                (body > 0) &
+                (body > candle_range * 0.4) &
+                (data['Close'] > data['Close'].shift(1))
+        )
+
+        # ---------- STOCHASTIC WAIT + CONFIRM ----------
+        was_oversold = (data['Stoch_K'] < 20).rolling(5).max() == 1
+
+        stoch_confirm = (
+                (data['Stoch_K'] > data['Stoch_D']) &
+                (data['Stoch_K'] > 20) &
+                (data['Stoch_K'].shift(1) <= 20)
+        )
+
+        # ---------- VOLATILITY EXPANSION (OPTION KEY) ----------
+        bb_width = data['BB_upper']-data['BB_lower']
+        bb_expanding = bb_width > bb_width.shift(1)
+
+        # ---------- VOLUME ----------
+        volume_ok = data['Volume_Ratio'] > 0.75
+        volume_strong = data['Volume_Ratio'] > 1.2
+
+        # ---------- FINAL SETUPS ----------
         SETUP_2A = (
-            TIME_OK &
-            bb_touch &
-            good_candle &
-            (data['Stoch_K'] < 25) &
-            stoch_turning &
-            volume_strong
+                TIME_OK &
+                bb_touch &
+                good_candle &
+                was_oversold &
+                stoch_confirm &
+                bb_expanding &
+                volume_strong
         )
 
         SETUP_2B = (
-            TIME_OK &
-            bb_touch &
-            (green | good_candle) &
-            (data['Stoch_K'] < 20) &
-            (stoch_turning | stoch_cross) &
-            volume_ok &
-            ~volume_strong
+                TIME_OK &
+                bb_touch &
+                good_candle &
+                was_oversold &
+                (data['Stoch_K'] > data['Stoch_D']) &
+                bb_expanding &
+                volume_ok &
+                ~volume_strong
         )
+
+
 
         # ---------- SETUP 3 (PE) ----------
         near_ema = (data['Low'] <= data['EMA20'] * 1.005) & (data['Close'] > data['EMA20'])
@@ -658,20 +1029,45 @@ def super_trend(symbol, data):
         )
 
         # ---------- SETUP 4 (PE) ----------
+        # ---------- MARKET STRUCTURE ----------
         higher_low = data['Low'] > data['Low'].shift(1)
-        hl_pattern = higher_low & (data['Low'].shift(1) > data['Low'].shift(2))
-        stoch_healthy = (data['Stoch_K'] > 30) & (data['Stoch_K'] < 70)
-        strong_trend = (data['ADX'] > 22) & di_bull
-
-        SETUP_4 = (
-            TIME_OK &
-            hl_pattern &
-            stoch_healthy &
-            stoch_cross &
-            strong_trend &
-            green &
-            volume_ok
+        hl_pattern = (
+                higher_low &
+                (data['Low'].shift(1) > data['Low'].shift(2))
         )
+
+        # ---------- STOCHASTIC (MOMENTUM START, NOT LATE) ----------
+        was_oversold = (data['Stoch_K'] < 25).rolling(6).max() == 1
+
+        stoch_confirm = (
+                (data['Stoch_K'] > data['Stoch_D']) &
+                (data['Stoch_K'] > 25) &
+                (data['Stoch_K'].shift(1) <= 25)
+        )
+
+        # ---------- TREND + ACCELERATION ----------
+        adx_strong = data['ADX'] > 22
+        adx_rising = data['ADX'] > data['ADX'].shift(1)
+
+        strong_trend = adx_strong & adx_rising & di_bull
+
+        # ---------- VOLATILITY EXPANSION (OPTION KEY) ----------
+        atr_rising = data['ATR'] > data['ATR'].shift(1)
+
+        # ---------- FINAL OPTION SETUP ----------
+        SETUP_4 = (
+                TIME_OK &
+                hl_pattern &
+                was_oversold &
+                stoch_confirm &
+                strong_trend &
+                atr_rising &
+                green &
+                volume_ok
+        )
+
+        # ---------- PREVENT MULTIPLE ENTRIES ----------
+
 
         # ---------- SETUP 5 (PE) ----------
         vwap_stretch = data['Low'] < data['VWAP'] * 0.995  # ~0.5% below VWAP
@@ -703,7 +1099,47 @@ def super_trend(symbol, data):
 
     # ============================================================
     # REST OF LOGIC (UNCHANGED)
+    branch1 = stoch_buy_signal & short_term_bullish
+    branch2 = momentum_positive & stoch_buy_signal
+    branch3 = stoch_oversold_recovery
+    branch4 = stoch_buy_signal & (data['RSI'] > 30)
+
+    recent_extreme_oversold = data['EMA5'] > data['EMA9']
+    precondition = recent_extreme_oversold
+
+    # === TRENDLINE TOUCH DETECTION ===
+    data['touches'] = 0
+
+    # print("\n" + "="*80)
+    # print("TRENDLINE DETECTION (Extended Backwards)")
+    # print("="*80)
+
+    # Detect touches with backward extension
+    touch_indices = detect_trendline_touches_for_strategy(
+        data,
+        swing_period=8,  # 8 candles = 24 minutes
+        min_hl_points=2,  # Minimum 2 Higher Lows
+        lookback_candles=100,  # Analyze last 100 candles (5 hours)
+        tolerance=0.007,  # 0.7% tolerance
+        extend_back=True  # EXTEND BACKWARDS to find all touches
+    )
+
+    # Mark all touches
+    for touch_idx in touch_indices:
+        if touch_idx < len(data):
+            data.iloc[touch_idx, data.columns.get_loc('touches')] = 1
+
+    # === COMBINE SIGNALS ===
+    original_signal = (
+            (branch1 | branch2 | branch3 | branch4)
+            & (data['touches'] == 1)
+    )
+
+
+
     # ============================================================
+
+
 
     GRADE_A = (SETUP_1A | SETUP_2A | SETUP_3A | SETUP_5).astype(int)
     GRADE_B = (SETUP_1B | SETUP_2B | SETUP_3B | SETUP_4).astype(int) & ~GRADE_A.astype(bool)
@@ -731,7 +1167,7 @@ def super_trend(symbol, data):
         )
     )
 
-    raw_sig = (GRADE_A | BEST_GRADE_B).astype(int)
+    raw_sig = (GRADE_A | BEST_GRADE_B | original_signal).astype(int)
 
     data['signal_grade'] = ""
     data.loc[GRADE_A.astype(bool), 'signal_grade'] = "A"
@@ -752,10 +1188,34 @@ def super_trend(symbol, data):
     cooldown = 5
     recent = raw_sig.shift(1).rolling(cooldown).sum().fillna(0)
 
+
+
+
     data['st_sig'] = ((raw_sig == 1) & (recent == 0)).astype(int)
 
+    
 
+    # ===== LIVE MODE =====
+    if raw_sig.iloc[-1] == 1:
+        print("RAW SIGNAL TRIGGERED (LIVE)")
+
+        ohlcv = fetch_ohlcv(symbol)
+
+        if not ohlcv:
+            print("Market data not available")
+        else:
+            llm_result = llm_trade_signal(symbol, ohlcv, "3m")
+
+            print("========== LLM RESULT (LIVE) ==========")
+            print(llm_result)
+            df = pd.DataFrame([llm_result])
+            data['confidence']=df['confidence']
+            print(df['confidence'])
+            print("======================================")
+
+    data['st_sig'] = ((raw_sig == 1) & (recent == 0) & (data['confidence']>0.7) ).astype(int)
     return data
+
 
 
 
