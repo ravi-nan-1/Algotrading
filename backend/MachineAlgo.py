@@ -1197,25 +1197,33 @@ def super_trend(symbol, data):
 
     
 
-    # ===== LIVE MODE =====
+    llm_confidence = None  # <-- ADD THIS LINE
+
     if raw_sig.iloc[-1] == 1:
         print("RAW SIGNAL TRIGGERED (LIVE)")
-
+    
         ohlcv = fetch_ohlcv(symbol)
-
+    
         if not ohlcv:
             print("Market data not available")
         else:
             llm_result = llm_trade_signal(symbol, ohlcv, "3m")
-
+    
             print("========== LLM RESULT (LIVE) ==========")
             print(llm_result)
-            df = pd.DataFrame([llm_result])
-            data['confidence']=df['confidence']
-            print(df['confidence'])
             print("======================================")
+    
+            llm_confidence = llm_result.get("confidence", 0)  # <-- CHANGE
+            print("LLM confidence:", llm_confidence)
+    
+    
+    # 🔧 ONLY APPLY CONFIDENCE TO LAST ROW
+    data['st_sig'] = ((raw_sig == 1) & (recent == 0)).astype(int)
+    
+    if llm_confidence is not None:
+        if llm_confidence <= 70:
+            data.iloc[-1, data.columns.get_loc('st_sig')] = 0
 
-    data['st_sig'] = ((raw_sig == 1) & (recent == 0) & (data['confidence']>0.7) ).astype(int)
     return data
 
 
