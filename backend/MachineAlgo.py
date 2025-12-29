@@ -648,11 +648,7 @@ def super_trend(symbol, data):
     volume_positive = data['Volume'] > data['Volume_MA']
 
     # === TREND FILTERS ===
-    uptrend = (
-            (data['EMA5'] > data['EMA20']) &
-            (data['EMA20'] > data['EMA50']) &
-            (data['ADX'] > 25)
-    )
+    
 
     short_term_bullish = data['Close'] > data['EMA5']
 
@@ -1655,13 +1651,7 @@ def super_trendttest(symbol, data):
     volume_surge = data['Volume'] > (1.5 * data['Volume_MA'])
     volume_positive = data['Volume'] > data['Volume_MA']
 
-    # === TREND FILTERS ===
-    uptrend = (
-            (data['EMA5'] > data['EMA20']) &
-            (data['EMA20'] > data['EMA50']) &
-            (data['ADX'] > 25)
-    )
-
+   
     short_term_bullish = data['Close'] > data['EMA5']
 
     momentum_positive = (
