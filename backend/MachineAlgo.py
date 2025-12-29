@@ -424,7 +424,7 @@ def detect_trendline_touches_for_strategy(df: pd.DataFrame,
     return touch_indices
 def fetch_ohlcv(symbol, timeframe="3m", candles=20):
     print('call11 fetch_ohlcv')
-    scriptcode = scripcode_lookup(instrument_df, symbol)
+    scripcode = scripcode_lookup(instrument_df, symbol)
     print(scripcode)
     if not scripcode:
         return None
