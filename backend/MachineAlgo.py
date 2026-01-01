@@ -1190,10 +1190,8 @@ def super_trend(symbol, data):
 
 
     data['st_sig'] = ((raw_sig == 1) & (recent == 0)).astype(int)
-
-    
-
-        if raw_sig.iloc[-1] == 1:
+    if raw_sig.iloc[-1] == 1:
+        
         print("RAW SIGNAL TRIGGERED (LIVE)")
 
         ohlcv = fetch_ohlcv(symbol)
@@ -1216,6 +1214,10 @@ def super_trend(symbol, data):
         llm_confidence = 0.0
     data.loc[data.index[-1], 'confidence'] = llm_confidence
     data['st_sig'] = ((raw_sig == 1) & (recent == 0) & (data['confidence']>=0.7) ).astype(int)
+
+    
+
+      
 
     return data
 
