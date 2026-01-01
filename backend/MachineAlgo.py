@@ -2008,7 +2008,7 @@ import requests
 def send_to_ui(symbol: str, price: float):
     try:
         # First, try to update the ticker
-        res = requests.post("https://algotrading-production-858e.up.railway.app/update-ticker", json={
+        res = requests.post("https://algotrading-1-dluo.onrender.com/update-ticker", json={
             "symbol": symbol,
             "price": price
         })
