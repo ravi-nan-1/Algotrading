@@ -1800,7 +1800,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                 except Exception as e:
                     print(f"⚠️ Skipping {i}: {e}")
                     continue
-                data_fut = get_cash_market_data(i, '3m')
+                #data_fut = get_cash_market_data(i, '3m')
                 data_fut.drop(data_fut.tail(1).index, inplace=True)
                 super_trend(i,data_fut)
 
