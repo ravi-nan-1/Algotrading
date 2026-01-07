@@ -1190,7 +1190,7 @@ def super_trend(symbol, data):
 
 
 
-    #data['st_sig'] = ((raw_sig == 1) & (recent == 0)).astype(int)
+    data['st_sig'] = ((raw_sig == 1) & (recent == 0)).astype(int)
     llm_confidence = 0.0
     llm_signal = None
     
