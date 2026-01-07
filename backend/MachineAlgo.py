@@ -1216,30 +1216,43 @@ def super_trend(symbol, data):
 
 
     #data['st_sig'] = ((raw_sig == 1) & (recent == 0)).astype(int)
-    if raw_sig.iloc[-1] == 1:
-        
+    llm_confidence = 0.0
+    llm_signal = None
+    
+    if data['st_sig'].iloc[-1] == 1:
+    
         print("RAW SIGNAL TRIGGERED (LIVE)")
-
+    
         ohlcv = fetch_ohlcv(symbol)
-
+    
         if not ohlcv:
             print("Market data not available")
-            llm_confidence = 0.0
         else:
             llm_result = llm_trade_signal(symbol, ohlcv, "3m")
-
+    
             print("========== LLM RESULT (LIVE) ==========")
             print(llm_result)
-
-            # ✅ SAFE confidence extraction
-            llm_confidence = float(llm_result.get('confidence', 0.0))
-
+    
+            # ✅ SAFE extraction
+            llm_signal = str(llm_result.get("signal", "")).lower()
+            llm_confidence = float(llm_result.get("confidence", 0.0))
+    
+            print("LLM signal:", llm_signal)
             print("LLM confidence:", llm_confidence)
             print("======================================")
-    else:
-        llm_confidence = 0.0
+    
+    # store values
     data.loc[data.index[-1], 'confidence'] = llm_confidence
-    data['st_sig'] = ((raw_sig == 1) & (recent == 0) & (data['confidence']>=0.7) ).astype(int)
+    data.loc[data.index[-1], 'llm_signal'] = llm_signal
+    
+    # ✅ FINAL SIGNAL — BUY ONLY
+    data['st_sig'] = (
+        (raw_sig == 1) &
+        (recent == 0) &
+        (data['confidence'] >= 0.7) &
+        (data['llm_signal'] == 'buy')
+    ).astype(int)
+
 
     
 
