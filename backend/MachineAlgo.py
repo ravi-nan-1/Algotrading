@@ -103,58 +103,33 @@ def scripcode_lookup(instrument=instrument_df, symbol='TCS'):
 
 
 
-
-
-
-
-
 def get_cash_market_data(symbol, timeframe):
     scriptcode = scripcode_lookup(instrument_df, symbol)
+    sym=symbol
 
-    # ---- Parse symbol ----
     parts = symbol.split()
-    ticker = parts[0]
-    expiry = f"{parts[1]} {parts[2]} {parts[3]}"
-    opttype = parts[4]
-    strike = float(parts[5])
+    ticker = parts[0]  # Extract ticker
+    expiry = f"{parts[1]} {parts[2]} {parts[3]}"  # Extract expiry date
+    opttype = parts[4]  # Extract option type (CE/PE)
+    strike = float(parts[5])  # Extract strike price and convert to float
 
-    # ---- Fetch data ----
-    try:
-        raw_data = client.historical_data(
-            Exch='N',
-            ExchangeSegment='D',
-            ScripCode=scriptcode,
-            time=timeframe,
-            From=dt.date.today() - dt.timedelta(2),
-            To=dt.date.today()
-        )
-    except Exception as e:
-        raise RuntimeError(f"Historical API failed for {symbol}: {e}")
-
-    # ---- Validate API response ----
-    if not raw_data:
-        raise ValueError(f"No historical data received for {symbol}")
-
-    df = pd.DataFrame(raw_data)
-
-    # ---- Validate Datetime column ----
-    if "Datetime" not in df.columns:
-        raise KeyError(f"'Datetime' column missing. Columns received: {df.columns.tolist()}")
-
-    # ---- Convert & index ----
-    df["Datetime"] = pd.to_datetime(df["Datetime"], errors="coerce")
-
-    if df["Datetime"].isna().any():
-        raise ValueError("Invalid Datetime values found after conversion")
+    df = pd.DataFrame(client.historical_data(Exch='N', ExchangeSegment='D', ScripCode=scriptcode, time=timeframe,
+                                             From=dt.date.today()-dt.timedelta(2), To=dt.date.today()))
 
     df.set_index("Datetime", inplace=True)
-    df.sort_index(inplace=True)
-
-    # ---- Add option metadata ----
     df["Option_Type"] = opttype
     df["Strike_Price"] = strike
+    
 
+
+
+    print(df)
     return df
+
+
+
+
+
 
 
 def opt_exp(ticker):
