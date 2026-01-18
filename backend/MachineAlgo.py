@@ -543,25 +543,20 @@ Format:
 
 
 def super_trend(symbol, data):
+    """
+    Option Buying Signal Generator
+    - Both CE and PE look for BULLISH patterns (option price going up)
+    - Simplified and accurate signals
+    - Designed for option premium appreciation
+    """
 
     # ==========================
-    # CORE INDICATORS (UNCHANGED)
+    # CORE INDICATORS
     # ==========================
     data['EMA9'] = ta.ema(data['Close'], 9)
-    data['EMA5'] = ta.ema(data['Close'], 5)
     data['EMA20'] = ta.ema(data['Close'], 20)
-    data['EMA50'] = ta.ema(data['Close'], 50)
-
     data['RSI'] = ta.rsi(data['Close'], 14)
-    num = (data['Close']-data['Open']).rolling(10).mean()
-    den = (data['High']-data['Low']).rolling(10).mean()
 
-    data['RVGI'] = num / den
-    data['RVGI_Signal'] = data['RVGI'].rolling(4).mean()
-    rvgi_strength_ok = (
-            (data['RVGI'] > data['RVGI_Signal']) &
-            (data['RVGI'] > data['RVGI'].shift(1))
-    )
     stoch = ta.stoch(data['High'], data['Low'], data['Close'], 14, 3, 3)
     data['Stoch_K'] = stoch['STOCHk_14_3_3']
     data['Stoch_D'] = stoch['STOCHd_14_3_3']
@@ -572,863 +567,253 @@ def super_trend(symbol, data):
     data['Minus_DI'] = adx_df['DMN_14']
 
     bb = ta.bbands(data['Close'], 20, 2)
-    print(bb.columns)
-    data['BB_lower'] = bb['BBL_20_2_2.0']
-    data['BB_upper'] = bb['BBU_20_2_2.0']
-    data['BB_mid'] = bb['BBM_20_2_2.0']
+    data['BB_lower'] = bb['BBL_20_2.0']
+    data['BB_upper'] = bb['BBU_20_2.0']
 
     data['ATR'] = ta.atr(data['High'], data['Low'], data['Close'], 14)
-    data['momentum']=(data['Close'].shift(1) - data['Close'].shift(2))
-    data['momentum1'] = (data['Close']-data['Close'].shift(1))
-    data['StockKmom'] = (data['Stoch_K'] - data['Stoch_K'].shift(1))
     data['Volume_MA'] = data['Volume'].rolling(20).mean()
     data['Volume_Ratio'] = data['Volume'] / data['Volume_MA']
-    data['touches'] = 0
-    data[['High', 'Low', 'Close', 'Volume']] = data[['High', 'Low', 'Close', 'Volume']].astype(float)
 
-    # Typical Price
-    tp = (data['High']+data['Low']+data['Close']) / 3
-
-    # VWAP (session-based cumulative)
-    data['VWAP'] = (tp * data['Volume']).cumsum() / data['Volume'].cumsum()
     # ==========================
-    # TIME FILTER (UNCHANGED)
+    # TIME FILTER (9:30 AM - 2:45 PM IST)
     # ==========================
     if isinstance(data.index, pd.DatetimeIndex):
         time_series = data.index.time
     else:
         time_series = pd.to_datetime(data.index).time
 
-    data['time_mins'] = [t.hour * 60 + t.minute for t in time_series]
+    data['time_mins'] = [t.hour * 60+t.minute for t in time_series]
     TIME_OK = (data['time_mins'] >= 570) & (data['time_mins'] <= 885)
+
     opt_type = data["Option_Type"].iloc[0]
-    # =============================================================
-    # SELECT CE OR PE LOGIC BLOCK
-    # =============================================================
-    stoch_deep_oversold_bounce = (
-            (data['Stoch_K'].shift(1) < 25) &
-            (data['Stoch_D'].shift(1) < 25) &
-            (data['Stoch_K']-data['Stoch_K'].shift(1) > 3) &
-            (
-                    ((data['Stoch_K'] > data['Stoch_D']) &
-                     (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1))) |
-                    ((data['Stoch_K'] > data['Stoch_K'].shift(1)+3) &
-                     (data['Stoch_K'] > 15))
-            )
-    )
 
-    stoch_oversold_recovery = (
-            (data['Stoch_K'].shift(1) < 40) &
-            (data['Stoch_D'].shift(1) < 40) &
-            (data['Stoch_K'] > 20) &
-            (data['Stoch_D'] > 20) &
+    # ==========================
+    # BULLISH SIGNALS (Same for CE & PE)
+    # ==========================
+
+    # --- Candle Analysis ---
+    body = abs(data['Close']-data['Open'])
+    candle_range = data['High']-data['Low']
+    green_candle = data['Close'] > data['Open']
+    strong_body = body > (candle_range * 0.45)
+    higher_close = data['Close'] > data['Close'].shift(1)
+    higher_low = data['Low'] > data['Low'].shift(1)
+
+    # --- Volume ---
+    volume_ok = data['Volume_Ratio'] > 0.8
+    volume_strong = data['Volume_Ratio'] > 1.3
+
+    # --- Stochastic Conditions (Bullish) ---
+    was_oversold = (data['Stoch_K'] < 25).rolling(5).max() == 1
+    stoch_cross_up = (
             (data['Stoch_K'] > data['Stoch_D']) &
-            (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1)) &
-            ((data['Stoch_K']-data['Stoch_K'].shift(1)) > 5)
+            (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1))
     )
+    stoch_rising = data['Stoch_K'] > data['Stoch_K'].shift(1)
+    stoch_k_above_d = data['Stoch_K'] > data['Stoch_D']
+    stoch_cross_20 = (data['Stoch_K'] > 20) & (data['Stoch_K'].shift(1) <= 20)
+    stoch_in_buy_zone = (data['Stoch_K'] > 20) & (data['Stoch_K'] < 75)
 
-    stoch_early_bounce = (
-            (data['Stoch_K'] < 20) &
-            (data['Stoch_K'].shift(1) >= 8) &
-            (data['Stoch_D'] < 25) &
-            (data['RSI'] > data['RSI'].shift(1)) &
-            (data['Close'] > data['Open']) &
-            ((data['Stoch_K']-data['Stoch_K'].shift(1)) > 3) &
-            (data['Stoch_K'] > data['Stoch_D'])
-    )
+    # --- RSI Conditions (Bullish) ---
+    rsi_ok = (data['RSI'] > 30) & (data['RSI'] < 65)
+    rsi_rising = data['RSI'] > data['RSI'].shift(1)
+    rsi_not_overbought = data['RSI'] < 70
 
-    stoch_buy_signal = (
-            stoch_deep_oversold_bounce |
-            stoch_oversold_recovery |
-            stoch_early_bounce
-    )
+    # --- Trend & Momentum ---
+    di_bullish = data['Plus_DI'] > data['Minus_DI']
+    adx_strong = data['ADX'] > 20
+    ema_bullish = data['EMA9'] > data['EMA20']
+    price_above_ema = data['Close'] > data['EMA20']
 
-    # === VOLUME ANALYSIS ===
-    data['Volume_MA'] = data['Volume'].rolling(20).mean()
-    volume_surge = data['Volume'] > (1.5 * data['Volume_MA'])
-    volume_positive = data['Volume'] > data['Volume_MA']
+    # --- Bollinger Band ---
+    bb_touch_lower = (data['Low'] <= data['BB_lower'] * 1.005) & (data['Close'] > data['BB_lower'])
+    bb_width = data['BB_upper']-data['BB_lower']
+    bb_expanding = bb_width > bb_width.shift(1)
 
-    # === TREND FILTERS ===
-    
+    # --- ATR / Volatility ---
+    atr_ok = data['ATR'] > data['ATR'].rolling(10).mean() * 0.7
 
-    short_term_bullish = data['Close'] > data['EMA5']
-
-    momentum_positive = (
-            (data['RSI'] > 45) &
-            (data['RSI'] < 70)
-    )
-
-    if opt_type == "CE":
-
-        # ============================
-        # CE SETUPS START HERE
-        # ============================
-
-        # ---------- SETUP 1 ----------
-        stoch_oversold = data['Stoch_K'] < 20
-        stoch_turning = data['Stoch_K'] > data['Stoch_K'].shift(1)
-        stoch_cross = data['Stoch_K'] > data['Stoch_D']
-
-        rsi_ok = (data['RSI'] > 30) & (data['RSI'] < 52)
-        rsi_turn = data['RSI'] > data['RSI'].shift(1)
-
-        green = data['Close'] > data['Open']
-        higher_close = data['Close'] > data['Close'].shift(1)
-        momentum_ok = (data['Close'].shift(1) - data['Close'].shift(2)) >1
-
-
-        volume_ok = data['Volume_Ratio'] > 0.75
-        volume_strong = data['Volume_Ratio'] > 1.2
-
-        # ---------- STOCHASTIC WAIT + TRIGGER ----------
-
-        stoch_oversold = data['Stoch_K'] < 20
-
-        WAIT_BARS = 5
-        was_oversold = stoch_oversold.rolling(WAIT_BARS).max() == 1
-
-        stoch_k_above_d = data['Stoch_K'] > data['Stoch_D']
-        stoch_cross_20 = (data['Stoch_K'] > 20) & (data['Stoch_K'].shift(1) <= 20)
-
-        # ---------- RSI ----------
-        rsi_ok = (data['RSI'] > 30) & (data['RSI'] < 55)
-        rsi_turn = data['RSI'] > data['RSI'].shift(1)
-
-        # ---------- PRICE ----------
-        green = data['Close'] > data['Open']
-        higher_close = data['Close'] > data['Close'].shift(1)
-
-        # ---------- VOLUME ----------
-        volume_ok = data['Volume_Ratio'] > 0.75
-        volume_strong = data['Volume_Ratio'] > 1.2
-
-        # ---------- SETUPS ----------
-        SETUP_1A = (
-                TIME_OK &
-                was_oversold &
-                stoch_k_above_d &
-                stoch_cross_20 &
-                rsi_ok &
-                rsi_turn &
-                (green | higher_close) &
-                volume_strong
-        )
-
-        SETUP_1B = (
-                TIME_OK &
-                was_oversold &
-                stoch_k_above_d &
-                stoch_cross_20 &
-                rsi_ok &
-                (green | higher_close) &
-                volume_ok &
-                ~volume_strong
-        )
-
-        # ----------------- CE SETUP 2 -----------------
-        # ---------- BOLLINGER REJECTION ----------
-        bb_touch = (
-                (data['Low'] <= data['BB_lower'] * 1.002) &
-                (data['Close'] > data['BB_lower'])
-        )
-
-        # ---------- STRONG BUYER CANDLE ----------
-        body = data['Close']-data['Open']
-        candle_range = data['High']-data['Low']
-
-        good_candle = (
-                (body > 0) &
-                (body > candle_range * 0.4) &
-                (data['Close'] > data['Close'].shift(1))
-        )
-
-        # ---------- STOCHASTIC WAIT + CONFIRM ----------
-        was_oversold = (data['Stoch_K'] < 20).rolling(5).max() == 1
-
-        stoch_confirm = (
-                (data['Stoch_K'] > data['Stoch_D']) &
-                (data['Stoch_K'] > 20) &
-                (data['Stoch_K'].shift(1) <= 20)
-        )
-
-        # ---------- VOLATILITY EXPANSION (OPTION KEY) ----------
-        bb_width = data['BB_upper']-data['BB_lower']
-        bb_expanding = bb_width > bb_width.shift(1)
-
-        # ---------- VOLUME ----------
-        volume_ok = data['Volume_Ratio'] > 0.75
-        volume_strong = data['Volume_Ratio'] > 1.2
-
-        # ---------- FINAL SETUPS ----------
-        SETUP_2A = (
-                TIME_OK &
-                bb_touch &
-                good_candle &
-                was_oversold &
-                stoch_confirm &
-                bb_expanding &
-                volume_strong
-        )
-
-        SETUP_2B = (
-                TIME_OK &
-                bb_touch &
-                good_candle &
-                was_oversold &
-                (data['Stoch_K'] > data['Stoch_D']) &
-                bb_expanding &
-                volume_ok &
-                ~volume_strong
-        )
-
-
-
-        # ----------------- CE SETUP 3 -----------------
-        near_ema = (data['Low'] <= data['EMA20'] * 1.005) & (data['Close'] > data['EMA20'])
-        ema_up = data['EMA9'] > data['EMA20']
-        di_bull = data['Plus_DI'] > data['Minus_DI']
-        stoch_pullback = (data['Stoch_K'] > 25) & (data['Stoch_K'] < 55)
-
-        SETUP_3A = (
+    # ==========================
+    # SETUP 1: OVERSOLD RECOVERY (Grade A)
+    # Best signal - catching the bounce from oversold
+    # ==========================
+    SETUP_1 = (
             TIME_OK &
-            near_ema &
-            (ema_up | di_bull) &
-            stoch_pullback &
-            stoch_cross &
-            green &
-            volume_strong &
-            momentum_ok
-        )
+            was_oversold &
+            stoch_k_above_d &
+            (stoch_cross_up | stoch_cross_20) &
+            rsi_ok &
+            rsi_rising &
+            (green_candle | higher_close)
 
-        SETUP_3B = (
-            TIME_OK &
-            near_ema &
-            stoch_pullback &
-            (stoch_cross | stoch_turning) &
-            (green | higher_close) &
-            volume_ok &
-            ~volume_strong &
-            momentum_ok
-        )
-
-        # ----------------- CE SETUP 4 -----------------
-        # ---------- MARKET STRUCTURE ----------
-        higher_low = data['Low'] > data['Low'].shift(1)
-        hl_pattern = (
-                higher_low &
-                (data['Low'].shift(1) > data['Low'].shift(2))
-        )
-
-        # ---------- STOCHASTIC (MOMENTUM START, NOT LATE) ----------
-        was_oversold = (data['Stoch_K'] < 25).rolling(6).max() == 1
-
-        stoch_confirm = (
-                (data['Stoch_K'] > data['Stoch_D']) &
-                (data['Stoch_K'] > 25) &
-                (data['Stoch_K'].shift(1) <= 25)
-        )
-
-        # ---------- TREND + ACCELERATION ----------
-        adx_strong = data['ADX'] > 22
-        adx_rising = data['ADX'] > data['ADX'].shift(1)
-
-        strong_trend = adx_strong & adx_rising & di_bull
-
-        # ---------- VOLATILITY EXPANSION (OPTION KEY) ----------
-        atr_rising = data['ATR'] > data['ATR'].shift(1)
-
-        # ---------- FINAL OPTION SETUP ----------
-        SETUP_4 = (
-                TIME_OK &
-                hl_pattern &
-                was_oversold &
-                stoch_confirm &
-                strong_trend &
-                atr_rising &
-                green &
-                volume_ok
-        )
-
-
-
-        # ----------------- CE SETUP 5 -----------------
-        vwap_stretch = data['Low'] < data['VWAP'] * 0.995  # ~0.5% below VWAP
-
-        # 2️⃣ Reclaim VWAP (acceptance)
-        vwap_reclaim = data['Close'] > data['VWAP']
-
-        # 3️⃣ Strong bullish candle
-        strong_reversal = (
-                (data['Close'] > data['Open']) &
-                ((data['Close']-data['Open']) > (data['High']-data['Low']) * 0.5)
-        )
-
-        # 4️⃣ Optional pullback confirmation
-        vwap_pullback_hold = (
-                (data['Low'] <= data['VWAP'] * 1.002) &
-                (data['Close'] > data['VWAP'])
-        )
-
-        # -------- FINAL SETUP --------
-
-        SETUP_5 = (
-                TIME_OK &
-                vwap_stretch &
-                (vwap_reclaim | vwap_pullback_hold) &
-                strong_reversal &
-                momentum_ok
-        )
-
-    else:
-        # =============================================================
-        # PE SETUPS START HERE
-        # =============================================================
-
-        # ---------- SETUP 1 (PE) ----------
-        stoch_oversold = data['Stoch_K'] < 25
-        stoch_turning = data['Stoch_K'] > data['Stoch_K'].shift(1)
-        stoch_cross = data['Stoch_K'] > data['Stoch_D']
-
-        rsi_ok = (data['RSI'] > 30) & (data['RSI'] < 52)
-        rsi_turn = data['RSI'] > data['RSI'].shift(1)
-
-        green = data['Close'] > data['Open']
-        higher_close = data['Close'] > data['Close'].shift(1)
-
-        volume_ok = data['Volume_Ratio'] > 0.75
-        volume_strong = data['Volume_Ratio'] > 1.2
-
-        # ---------- STOCHASTIC WAIT + TRIGGER ----------
-
-        stoch_oversold = data['Stoch_K'] < 20
-
-        WAIT_BARS = 5
-        was_oversold = stoch_oversold.rolling(WAIT_BARS).max() == 1
-
-        stoch_k_above_d = data['Stoch_K'] > data['Stoch_D']
-        stoch_cross_20 = (data['Stoch_K'] > 20) & (data['Stoch_K'].shift(1) <= 20)
-
-        # ---------- RSI ----------
-        rsi_ok = (data['RSI'] > 30) & (data['RSI'] < 55)
-        rsi_turn = data['RSI'] > data['RSI'].shift(1)
-
-        # ---------- PRICE ----------
-        green = data['Close'] > data['Open']
-        higher_close = data['Close'] > data['Close'].shift(1)
-
-        # ---------- VOLUME ----------
-        volume_ok = data['Volume_Ratio'] > 0.75
-        volume_strong = data['Volume_Ratio'] > 1.2
-
-        # ---------- SETUPS ----------
-        SETUP_1A = (
-                TIME_OK &
-                was_oversold &
-                stoch_k_above_d &
-                stoch_cross_20 &
-                rsi_ok &
-                rsi_turn &
-                (green | higher_close) &
-                volume_strong
-        )
-
-        SETUP_1B = (
-                TIME_OK &
-                was_oversold &
-                stoch_k_above_d &
-                stoch_cross_20 &
-                rsi_ok &
-                (green | higher_close) &
-                volume_ok &
-                ~volume_strong
-        )
-
-        # ---------- SETUP 2 (PE) ----------
-        # ---------- BOLLINGER REJECTION ----------
-        bb_touch = (
-                (data['Low'] <= data['BB_lower'] * 1.002) &
-                (data['Close'] > data['BB_lower'])
-        )
-
-        # ---------- STRONG BUYER CANDLE ----------
-        body = data['Close']-data['Open']
-        candle_range = data['High']-data['Low']
-
-        good_candle = (
-                (body > 0) &
-                (body > candle_range * 0.4) &
-                (data['Close'] > data['Close'].shift(1))
-        )
-
-        # ---------- STOCHASTIC WAIT + CONFIRM ----------
-        was_oversold = (data['Stoch_K'] < 20).rolling(5).max() == 1
-
-        stoch_confirm = (
-                (data['Stoch_K'] > data['Stoch_D']) &
-                (data['Stoch_K'] > 20) &
-                (data['Stoch_K'].shift(1) <= 20)
-        )
-
-        # ---------- VOLATILITY EXPANSION (OPTION KEY) ----------
-        bb_width = data['BB_upper']-data['BB_lower']
-        bb_expanding = bb_width > bb_width.shift(1)
-
-        # ---------- VOLUME ----------
-        volume_ok = data['Volume_Ratio'] > 0.75
-        volume_strong = data['Volume_Ratio'] > 1.2
-
-        # ---------- FINAL SETUPS ----------
-        SETUP_2A = (
-                TIME_OK &
-                bb_touch &
-                good_candle &
-                was_oversold &
-                stoch_confirm &
-                bb_expanding &
-                volume_strong
-        )
-
-        SETUP_2B = (
-                TIME_OK &
-                bb_touch &
-                good_candle &
-                was_oversold &
-                (data['Stoch_K'] > data['Stoch_D']) &
-                bb_expanding &
-                volume_ok &
-                ~volume_strong
-        )
-
-
-
-        # ---------- SETUP 3 (PE) ----------
-        near_ema = (data['Low'] <= data['EMA20'] * 1.005) & (data['Close'] > data['EMA20'])
-        ema_up = data['EMA9'] > data['EMA20']
-        di_bull = data['Plus_DI'] > data['Minus_DI']
-        stoch_pullback = (data['Stoch_K'] > 25) & (data['Stoch_K'] < 55)
-
-        SETUP_3A = (
-            TIME_OK &
-            near_ema &
-            (ema_up | di_bull) &
-            stoch_pullback &
-            stoch_cross &
-            green &
-            volume_strong
-        )
-
-        SETUP_3B = (
-            TIME_OK &
-            near_ema &
-            stoch_pullback &
-            (stoch_cross | stoch_turning) &
-            (green | higher_close) &
-            volume_ok &
-            ~volume_strong
-        )
-
-        # ---------- SETUP 4 (PE) ----------
-        # ---------- MARKET STRUCTURE ----------
-        higher_low = data['Low'] > data['Low'].shift(1)
-        hl_pattern = (
-                higher_low &
-                (data['Low'].shift(1) > data['Low'].shift(2))
-        )
-
-        # ---------- STOCHASTIC (MOMENTUM START, NOT LATE) ----------
-        was_oversold = (data['Stoch_K'] < 25).rolling(6).max() == 1
-
-        stoch_confirm = (
-                (data['Stoch_K'] > data['Stoch_D']) &
-                (data['Stoch_K'] > 25) &
-                (data['Stoch_K'].shift(1) <= 25)
-        )
-
-        # ---------- TREND + ACCELERATION ----------
-        adx_strong = data['ADX'] > 22
-        adx_rising = data['ADX'] > data['ADX'].shift(1)
-
-        strong_trend = adx_strong & adx_rising & di_bull
-
-        # ---------- VOLATILITY EXPANSION (OPTION KEY) ----------
-        atr_rising = data['ATR'] > data['ATR'].shift(1)
-
-        # ---------- FINAL OPTION SETUP ----------
-        SETUP_4 = (
-                TIME_OK &
-                hl_pattern &
-                was_oversold &
-                stoch_confirm &
-                strong_trend &
-                atr_rising &
-                green &
-                volume_ok
-        )
-
-        # ---------- PREVENT MULTIPLE ENTRIES ----------
-
-
-        # ---------- SETUP 5 (PE) ----------
-        vwap_stretch = data['Low'] < data['VWAP'] * 0.995  # ~0.5% below VWAP
-
-        # 2️⃣ Reclaim VWAP (acceptance)
-        vwap_reclaim = data['Close'] > data['VWAP']
-
-        # 3️⃣ Strong bullish candle
-        strong_reversal = (
-                (data['Close'] > data['Open']) &
-                ((data['Close']-data['Open']) > (data['High']-data['Low']) * 0.5)
-        )
-
-        # 4️⃣ Optional pullback confirmation
-        vwap_pullback_hold = (
-                (data['Low'] <= data['VWAP'] * 1.002) &
-                (data['Close'] > data['VWAP'])
-        )
-
-        # -------- FINAL SETUP --------
-
-        SETUP_5 = (
-                TIME_OK &
-                vwap_stretch &
-                (vwap_reclaim | vwap_pullback_hold) &
-                strong_reversal
-
-        )
-
-    # ============================================================
-    # REST OF LOGIC (UNCHANGED)
-    branch1 = stoch_buy_signal & short_term_bullish
-    branch2 = momentum_positive & stoch_buy_signal
-    branch3 = stoch_oversold_recovery
-    branch4 = stoch_buy_signal & (data['RSI'] > 30)
-
-    recent_extreme_oversold = data['EMA5'] > data['EMA9']
-    precondition = recent_extreme_oversold
-
-    # === TRENDLINE TOUCH DETECTION ===
-    data['touches'] = 0
-
-    # print("\n" + "="*80)
-    # print("TRENDLINE DETECTION (Extended Backwards)")
-    # print("="*80)
-
-    # Detect touches with backward extension
-    touch_indices = detect_trendline_touches_for_strategy(
-        data,
-        swing_period=8,  # 8 candles = 24 minutes
-        min_hl_points=2,  # Minimum 2 Higher Lows
-        lookback_candles=100,  # Analyze last 100 candles (5 hours)
-        tolerance=0.007,  # 0.7% tolerance
-        extend_back=True  # EXTEND BACKWARDS to find all touches
     )
 
-    # Mark all touches
-    for touch_idx in touch_indices:
-        if touch_idx < len(data):
-            data.iloc[touch_idx, data.columns.get_loc('touches')] = 1
+    # ==========================
+    # SETUP 2: BB LOWER BOUNCE (Grade A)
+    # Bounce from Bollinger Band support
+    # ==========================
+    SETUP_2 = (
+            TIME_OK &
+            bb_touch_lower &
+            green_candle &
+            strong_body &
+            was_oversold &
+            stoch_rising &
+            rsi_rising
 
-    # === COMBINE SIGNALS ===
-    original_signal = (
-            (branch1 | branch2 | branch3 | branch4)
-            & (data['touches'] == 1)
     )
 
+    # ==========================
+    # SETUP 3: MOMENTUM CONTINUATION (Grade A)
+    # Pullback in uptrend
+    # ==========================
+    SETUP_3 = (
+            TIME_OK &
+            ema_bullish &
+            price_above_ema &
+            di_bullish &
+            adx_strong &
+            stoch_in_buy_zone &
+            stoch_rising &
+            stoch_k_above_d &
+            green_candle &
+            higher_low
+    )
 
+    # ==========================
+    # SETUP 4: EARLY BOUNCE (Grade B)
+    # Quick reversal signal
+    # ==========================
+    SETUP_4 = (
+            TIME_OK &
+            (data['Stoch_K'] < 30) &
+            stoch_rising &
+            (data['Stoch_K']-data['Stoch_K'].shift(1) > 3) &
+            rsi_rising &
+            green_candle &
+            higher_close
+    )
 
-    # ============================================================
+    # ==========================
+    # SETUP 5: HIGHER LOW BREAKOUT (Grade B)
+    # Structure-based entry
+    # ==========================
+    SETUP_5 = (
+            TIME_OK &
+            higher_low &
+            (data['Low'].shift(1) > data['Low'].shift(2)) &  # 2 consecutive higher lows
+            stoch_k_above_d &
+            stoch_rising &
+            adx_strong &
+            green_candle
+    )
 
+    # ==========================
+    # REJECTION FILTERS
+    # ==========================
 
-
-    GRADE_A = (SETUP_1A | SETUP_2A | SETUP_3A | SETUP_5).astype(int)
-    GRADE_B = (SETUP_1B | SETUP_2B | SETUP_3B | SETUP_4).astype(int) & ~GRADE_A.astype(bool)
-
+    # Overbought - don't buy at top
     overbought = (data['Stoch_K'] > 82) | (data['RSI'] > 72)
-    big_red = (data['Open'] - data['Close']) > data['ATR'] * 1.0
-    recent_dist = big_red | big_red.shift(1)
-    extended = (data['Close'] - data['EMA20']) / data['EMA20'] > 0.028
-    small_candle = candle_range < data['ATR'] * 0.4
 
+    # Extended from EMA - don't chase
+    extended = (data['Close']-data['EMA20']) / data['EMA20'] > 0.03
 
-    REJECTION = overbought | recent_dist | extended | small_candle
+    # Big red candle recently - wait for dust to settle
+    big_red = (data['Open']-data['Close']) > data['ATR'] * 0.9
+    recent_red = big_red | big_red.shift(1)
 
-    GRADE_A = GRADE_A & ~REJECTION
-    GRADE_B = GRADE_B & ~REJECTION
+    # Weak/small candle - no conviction
+    weak_candle = candle_range < data['ATR'] * 0.35
 
-    higher_lows_2bar = data['Low'] > data['Low'].shift(1)
+    # Stochastic falling while overbought
+    stoch_falling_high = (data['Stoch_K'] > 70) & (data['Stoch_K'] < data['Stoch_K'].shift(1))
 
-    BEST_GRADE_B = (
-        GRADE_B.astype(bool) &
-        (
-            higher_lows_2bar |
-            (data['Volume_Ratio'] > 1.0) |
-            rsi_turn
-        )
+    # Final rejection
+    REJECTION = overbought | extended | recent_red | weak_candle | stoch_falling_high
+
+    # ==========================
+    # SIGNAL GRADING
+    # ==========================
+
+    # Grade A: High probability setups
+    GRADE_A = (SETUP_1 | SETUP_2 | SETUP_3)
+
+    # Grade B: Good setups with extra confirmation
+    GRADE_B = (SETUP_4 | SETUP_5)
+
+    # Extra filter for Grade B - need at least one confirmation
+    GRADE_B_CONFIRMED = (
+            GRADE_B &
+            (volume_strong | bb_expanding | di_bullish)
     )
 
-    raw_sig = (GRADE_A | BEST_GRADE_B | original_signal).astype(int)
+    # ==========================
+    # FINAL SIGNAL OUTPUT
+    # ==========================
 
+    raw_sig = (GRADE_A | GRADE_B_CONFIRMED).astype(int)
+
+    # Assign grades
     data['signal_grade'] = ""
-    data.loc[GRADE_A.astype(bool), 'signal_grade'] = "A"
-    data.loc[BEST_GRADE_B, 'signal_grade'] = "B"
+    data.loc[GRADE_A, 'signal_grade'] = "A"
+    data.loc[GRADE_B_CONFIRMED & ~GRADE_A, 'signal_grade'] = "B"
 
+    # Signal reasons
     data["signal_reason"] = ""
-    data.loc[(SETUP_1A | SETUP_1B) & raw_sig.astype(bool), "signal_reason"] += "Oversold | "
-    data.loc[(SETUP_2A | SETUP_2B) & raw_sig.astype(bool), "signal_reason"] += "BB Bounce | "
-    data.loc[(SETUP_3A | SETUP_3B) & raw_sig.astype(bool), "signal_reason"] += "EMA Pullback | "
-    data.loc[SETUP_4 & raw_sig.astype(bool), "signal_reason"] += "Momentum | "
-    data.loc[SETUP_5 & raw_sig.astype(bool), "signal_reason"] += "Volume Spike | "
+    data.loc[SETUP_1 & raw_sig, "signal_reason"] = "Oversold Recovery"
+    data.loc[SETUP_2 & raw_sig & (data["signal_reason"] == ""), "signal_reason"] = "BB Bounce"
+    data.loc[SETUP_3 & raw_sig & (data["signal_reason"] == ""), "signal_reason"] = "Momentum Entry"
+    data.loc[SETUP_4 & raw_sig & (data["signal_reason"] == ""), "signal_reason"] = "Early Bounce"
+    data.loc[SETUP_5 & raw_sig & (data["signal_reason"] == ""), "signal_reason"] = "HL Breakout"
 
-    data["signal_reason"] = data["signal_reason"].str.rstrip(" | ")
-
+    # Add grade stars
     data.loc[data['signal_grade'] == "A", 'signal_reason'] += " [★★★]"
     data.loc[data['signal_grade'] == "B", 'signal_reason'] += " [★★]"
 
+    # ==========================
+    # COOLDOWN (Prevent Overtrading)
+    # ==========================
     cooldown = 5
     recent = raw_sig.shift(1).rolling(cooldown).sum().fillna(0)
+    data['st_sig1'] = ((raw_sig == 1) & (recent == 0)).astype(int)
 
-
-
-
-    data['st_sig'] = ((raw_sig == 1) & (recent == 0)).astype(int)
     llm_confidence = 0.0
     llm_signal = None
-    
-    if data['st_sig'].iloc[-1] == 1:
-    
+
+    if data['st_sig1'].iloc[-1] == 1:
+        print(data['st_sig1'].iloc[-1])
+
         print("RAW SIGNAL TRIGGERED (LIVE)")
-    
+
         ohlcv = fetch_ohlcv(symbol)
-    
+
         if not ohlcv:
             print("Market data not available")
         else:
             llm_result = llm_trade_signal(symbol, ohlcv, "3m")
-    
+
             print("========== LLM RESULT (LIVE) ==========")
             print(llm_result)
-    
+
             # ✅ SAFE extraction
             llm_signal = str(llm_result.get("signal", "")).lower()
             llm_confidence = float(llm_result.get("confidence", 0.0))
-    
+
             print("LLM signal:", llm_signal)
             print("LLM confidence:", llm_confidence)
             print("======================================")
-    
+
     # store values
     data.loc[data.index[-1], 'confidence'] = llm_confidence
     data.loc[data.index[-1], 'llm_signal'] = llm_signal
-    
+
     # ✅ FINAL SIGNAL — BUY ONLY
     data['st_sig'] = (
-        (raw_sig == 1) &
-        (recent == 0) &
-        (data['confidence'] >= 0.7) &
-        (data['llm_signal'] == 'buy')
+            (raw_sig == 1) &
+            (recent == 0) &
+            (data['confidence'] >= 0.7) &
+            (data['llm_signal'] == 'buy')
     ).astype(int)
-
-
-    
-
-      
-
-    return data
-
-
-
-
-
-
-
-# ======================================================================
-# 3. SUPER TREND STRATEGY
-# ======================================================================
-
-
-def super_trendttest(symbol, data):
-    import pandas_ta as ta
-    import numpy as np
-    import pandas as pd
-
-    # === SYMBOL PARSING ===
-    parts = symbol.split()
-    ticker = parts[0]
-    expiry = f"{parts[1]} {parts[2]} {parts[3]}"
-    opttype = parts[4]
-    strike = float(parts[5])
-
-    # === CORE INDICATORS ===
-    data['EMA5'] = ta.ema(data['Close'], length=5)
-    data['EMA9'] = ta.ema(data['Close'], length=9)
-    data['EMA20'] =pd.to_numeric(ta.ema(data['Close'], length=20)) 
-    data['EMA50'] =pd.to_numeric(ta.ema(data['Close'], length=50)) 
-
-    # === MOMENTUM INDICATORS ===
-    data['ADX'] = ta.adx(data['High'], data['Low'], data['Close'], length=14)['ADX_14']
-    data['RSI'] = ta.rsi(data['Close'], length=14)
-    data['VO'] = volume_oscillator(data, fast=10, slow=20)
-
-    # === BOLLINGER BANDS ===
-    bb = ta.bbands(data['Close'], length=20, std=2)
-    data['BB_upper'] = bb['BBU_20_2.0_2.0']
-    data['BB_lower'] = bb['BBL_20_2.0_2.0']
-    data['BB_middle'] = bb['BBM_20_2.0_2.0']
-    data['BB_width'] = (data['BB_upper']-data['BB_lower']) / data['BB_middle'] * 100
-
-    # === STOCHASTIC ===
-    stoch = ta.stoch(data['High'], data['Low'], data['Close'], k=10, d=3, smooth_k=3)
-    data['Stoch_K'] = stoch['STOCHk_10_3_3']
-    data['Stoch_D'] = stoch['STOCHd_10_3_3']
-
-    # === STOCHASTIC PATTERNS ===
-
-    stoch_deep_oversold_bounce = (
-            (data['Stoch_K'].shift(1) < 25) &
-            (data['Stoch_D'].shift(1) < 25) &
-            (data['Stoch_K']-data['Stoch_K'].shift(1) > 3) &
-            (
-                    ((data['Stoch_K'] > data['Stoch_D']) &
-                     (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1))) |
-                    ((data['Stoch_K'] > data['Stoch_K'].shift(1)+3) &
-                     (data['Stoch_K'] > 15))
-            )
-    )
-
-    stoch_oversold_recovery = (
-            (data['Stoch_K'].shift(1) < 40) &
-            (data['Stoch_D'].shift(1) < 40) &
-            (data['Stoch_K'] > 20) &
-            (data['Stoch_D'] > 20) &
-            (data['Stoch_K'] > data['Stoch_D']) &
-            (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1)) &
-            ((data['Stoch_K']-data['Stoch_K'].shift(1)) > 5)
-    )
-
-    stoch_early_bounce = (
-            (data['Stoch_K'] < 20) &
-            (data['Stoch_K'].shift(1) >= 8) &
-            (data['Stoch_D'] < 25) &
-            (data['RSI'] > data['RSI'].shift(1)) &
-            (data['Close'] > data['Open']) &
-            ((data['Stoch_K']-data['Stoch_K'].shift(1)) > 3) &
-            (data['Stoch_K'] > data['Stoch_D'])
-    )
-
-    stoch_buy_signal = (
-            stoch_deep_oversold_bounce |
-            stoch_oversold_recovery |
-            stoch_early_bounce
-    )
-
-    # === VOLUME ANALYSIS ===
-    data['Volume_MA'] = data['Volume'].rolling(20).mean()
-    volume_surge = data['Volume'] > (1.5 * data['Volume_MA'])
-    volume_positive = data['Volume'] > data['Volume_MA']
-
-   
-    short_term_bullish = data['Close'] > data['EMA5']
-
-    momentum_positive = (
-            (data['RSI'] > 45) &
-            (data['RSI'] < 70)
-    )
-
-    # === STRATEGY BRANCHES ===
-    branch1 = stoch_buy_signal & short_term_bullish
-    branch2 = momentum_positive & stoch_buy_signal
-    branch3 = stoch_oversold_recovery
-    branch4 = stoch_buy_signal & (data['RSI'] > 30)
-
-    recent_extreme_oversold = data['EMA5'] > data['EMA9']
-    precondition = recent_extreme_oversold
-
-    # === TRENDLINE TOUCH DETECTION ===
-    data['touches'] = 0
-
-    # print("\n" + "="*80)
-    # print("TRENDLINE DETECTION (Extended Backwards)")
-    # print("="*80)
-
-    # Detect touches with backward extension
-    touch_indices = detect_trendline_touches_for_strategy(
-        data,
-        swing_period=8,  # 8 candles = 24 minutes
-        min_hl_points=2,  # Minimum 2 Higher Lows
-        lookback_candles=100,  # Analyze last 100 candles (5 hours)
-        tolerance=0.007,  # 0.7% tolerance
-        extend_back=True  # EXTEND BACKWARDS to find all touches
-    )
-
-    # Mark all touches
-    for touch_idx in touch_indices:
-        if touch_idx < len(data):
-            data.iloc[touch_idx, data.columns.get_loc('touches')] = 1
-
-    # === COMBINE SIGNALS ===
-    original_signal = branch1 | branch2 | branch3 | branch4
-
-    data['st_sig'] = np.where(
-        original_signal & (data['touches'] == 1),
-        1,
-        0
-    )
-
-    # === SIGNAL DETAILS ===
-    data['stoch_pattern'] = np.select(
-        [stoch_deep_oversold_bounce, stoch_oversold_recovery, stoch_early_bounce],
-        ['Deep_Oversold_Bounce', 'Recovery_Momentum', 'Early_Bounce'],
-        default='None'
-    )
-
-    data['signal_reason'] = np.select(
-        [branch1, branch2, branch3, branch4],
-        [
-            f'Oversold_Bounce_{data["stoch_pattern"]}',
-            'Momentum_Continuation',
-            'Breakout_After_Oversold',
-            'Support_Bounce'
-        ],
-        default=''
-    )
-
-    data['signal_reason'] = np.where(
-        data['st_sig'] == 1,
-        data['signal_reason']+'_TRENDLINE_TOUCH',
-        data['signal_reason']
-    )
-
-    data['bounce_strength'] = np.where(
-        data['st_sig'] == 1,
-        np.select(
-            [
-                data['Stoch_K'].shift(1) < 10,
-                data['Stoch_K'].shift(1) < 15,
-                data['Stoch_K'].shift(1) < 20,
-            ],
-            ['Strong', 'Medium', 'Normal'],
-            default='Weak'
-        ),
-        ''
-    )
-
-    # Print detailed summary (keep only this if you want)
-    # print("\n" + "="*80)
-    # print("SUMMARY")
-    # print("="*80)
-    # print(f"Total data points: {len(data)}")
-    # print(f"Total touches detected: {data['touches'].sum()}")
-    # print(f"Strategy signals: {original_signal.sum()}")
-    # print(f"Confirmed signals (strategy + touch): {data['st_sig'].sum()}")
-
-    # Show where touches occurred
-    # if data['touches'].sum() > 0:
-    #     touch_dates = data[data['touches'] == 1].index.tolist()
-    #     print(f"\nTouch dates:")
-    #     for dt in touch_dates[:10]:  # Show first 10
-    #         print(f"  {dt}")
-    #     if len(touch_dates) > 10:
-    #         print(f"  ... and {len(touch_dates) - 10} more")
 
     return data
 
