@@ -568,8 +568,8 @@ def super_trend(symbol, data):
     data['Minus_DI'] = adx_df['DMN_14']
 
     bb = ta.bbands(data['Close'], 20, 2)
-    data['BB_lower'] = bb['BBL_20_2.0']
-    data['BB_upper'] = bb['BBU_20_2.0']
+    data['BB_lower'] = bb['BBL_20_2_2.0']
+    data['BB_upper'] = bb['BBU_20_2_2.0']
 
     data['ATR'] = ta.atr(data['High'], data['Low'], data['Close'], 14)
     data['Volume_MA'] = data['Volume'].rolling(20).mean()
