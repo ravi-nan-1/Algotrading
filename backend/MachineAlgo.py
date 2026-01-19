@@ -114,7 +114,7 @@ def get_cash_market_data(symbol, timeframe):
     strike = float(parts[5])  # Extract strike price and convert to float
 
     df = pd.DataFrame(client.historical_data(Exch='N', ExchangeSegment='D', ScripCode=scriptcode, time=timeframe,
-                                             From=dt.date.today()-dt.timedelta(2), To=dt.date.today()))
+                                             From=dt.date.today()-dt.timedelta(3), To=dt.date.today()))
 
     df.set_index("Datetime", inplace=True)
     df["Option_Type"] = opttype
@@ -423,7 +423,7 @@ def detect_trendline_touches_for_strategy(df: pd.DataFrame,
     #     print(f"   Touch indices: {touch_indices}")
 
     return touch_indices
-def fetch_ohlcv(symbol, timeframe="3m", candles=20):
+def fetch_ohlcv(symbol, timeframe="3m", candles=30):
     print('call11 fetch_ohlcv')
     scripcode = scripcode_lookup(instrument_df, symbol)
     print(scripcode)
