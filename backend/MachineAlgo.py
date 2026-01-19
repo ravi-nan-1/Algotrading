@@ -558,7 +558,7 @@ def super_trend(symbol, data):
     data['RSI'] = ta.rsi(data['Close'], 14)
 
     stoch = ta.stoch(data['High'], data['Low'], data['Close'], 14, 3, 3)
-    print(stoch.columns)
+    
     data['Stoch_K'] = stoch['STOCHk_14_3_3']
     data['Stoch_D'] = stoch['STOCHd_14_3_3']
 
