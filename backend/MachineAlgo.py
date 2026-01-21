@@ -775,7 +775,7 @@ def super_trend(symbol, data):
     # ==========================
     # COOLDOWN (Prevent Overtrading)
     # ==========================
-    cooldown = 5
+    cooldown = 25
     recent = raw_sig.shift(1).rolling(cooldown).sum().fillna(0)
     data['st_sig1'] = ((raw_sig == 1) & (recent == 0)).astype(int)
 
