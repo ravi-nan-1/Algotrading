@@ -1177,7 +1177,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                 # Checking For SuperTrend Long
                 # Checking For SuperTrend Long
                 trail_sl=0
-                if data_list[i]['st_sig'][-1] == 1:
+                if data_list[i]['st_sig'].iloc[-1] == 1:
 
 
                     all_trade_files()
@@ -1251,7 +1251,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                     # Checking SuperTrend Signal Change
                     # Stop loss condition
-                    if data_list[i]['st_sig'][-1] == -1:
+                    if data_list[i]['st_sig'].iloc[-1] == -1:
                         print(f"Long Entry Stop Loss Hit for {i}. Closing position.")
 
                         # Fetch the Buy Price and Quantity
@@ -1440,7 +1440,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         continue
 
                 # Checking For Short Position
-                if data_list[i]['st_sig'][-1] == -1:
+                if data_list[i]['st_sig'].iloc[-1] == -1:
 
                     all_trade_files()
                     open_trades_df = pd.read_excel('All_Trades.xlsx')
@@ -1509,7 +1509,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                     # Checking SuperTrend Signal Change
                     # Stop loss condition
-                    if data_list[i]['st_sig'][-1] == 1:
+                    if data_list[i]['st_sig'].iloc[-1] == 1:
                         print(f"Short Entry Stop Loss Hit for {i}. Closing position.")
 
                         # Fetch the Buy Price and Quantity
