@@ -544,280 +544,210 @@ Format:
 
 def super_trend(symbol, data):
     """
-    Option Buying Signal Generator
-    - Both CE and PE look for BULLISH patterns (option price going up)
-    - Simplified and accurate signals
-    - Designed for option premium appreciation
+    PURE STOCHASTIC OVERSOLD V-CATCH - RELAXED VERSION
+    ==================================================
+    More trades allowed: shorter cooldown, looser filters, more room to run
+
+    Changes from original:
+    - Cooldown: 8 → 4 candles
+    - K vs Price trap/divergence: much less strict
+    - Room to run: K < 70 instead of 60, K < 65 instead of 50
+    - Still uses 9 & 15 EMA as support/resistance filter
     """
+    import numpy as np
+    import pandas as pd
 
-    # ==========================
-    # CORE INDICATORS
-    # ==========================
-    data['EMA9'] = ta.ema(data['Close'], 9)
-    data['EMA20'] = ta.ema(data['Close'], 20)
-    data['RSI'] = ta.rsi(data['Close'], 14)
-
+    # ===========================================================
+    # STOCHASTIC + EMAs
+    # ===========================================================
     stoch = ta.stoch(data['High'], data['Low'], data['Close'], 14, 3, 3)
-    print("stoch value:", stoch)
-    print("data length:", len(data))
     data['Stoch_K'] = stoch['STOCHk_14_3_3']
     data['Stoch_D'] = stoch['STOCHd_14_3_3']
 
-    adx_df = ta.adx(data['High'], data['Low'], data['Close'], 14)
-    data['ADX'] = adx_df['ADX_14']
-    data['Plus_DI'] = adx_df['DMP_14']
-    data['Minus_DI'] = adx_df['DMN_14']
+    data['EMA9'] = ta.ema(data['Close'], length=9)
+    data['EMA15'] = ta.ema(data['Close'], length=15)
 
-    bb = ta.bbands(data['Close'], 20, 2)
-    data['BB_lower'] = bb['BBL_20_2_2.0']
-    data['BB_upper'] = bb['BBU_20_2_2.0']
+    above_support = data['Close'] > data['EMA15']
+    uptrend_ema = data['EMA9'] > data['EMA15']
 
-    data['ATR'] = ta.atr(data['High'], data['Low'], data['Close'], 14)
-    data['Volume_MA'] = data['Volume'].rolling(20).mean()
-    data['Volume_Ratio'] = data['Volume'] / data['Volume_MA']
+    # ===========================================================
+    # K MOVEMENT ANALYSIS
+    # ===========================================================
+    K = data['Stoch_K']
+    D = data['Stoch_D']
 
-    # ==========================
-    # TIME FILTER (9:30 AM - 2:45 PM IST)
-    # ==========================
+    k_vel = K-K.shift(1)
+    k_vel_prev = K.shift(1)-K.shift(2)
+    k_vel_prev2 = K.shift(2)-K.shift(3)
+
+    k_accel = k_vel-k_vel_prev
+
+    # ===========================================================
+    # PRICE vs K COMPARISON (relaxed trap detection)
+    # ===========================================================
+    price_shift = data['Close'].shift(1)
+    price_pct = ((data['Close']-price_shift) / price_shift * 100).fillna(0)
+
+    # Relaxed: needs MUCH bigger difference to call it a trap
+    trap = abs(k_vel) > (abs(price_pct) * 8)
+
+    # Relaxed: price must move >1.5% AND K almost flat
+    divergence = (abs(price_pct) > 1.5) & (abs(k_vel) < 1.5)
+
+    # Allow faster K moves
+    k_too_fast = abs(k_vel) > 22
+
+    # ===========================================================
+    # OVERSOLD ZONE DETECTION
+    # ===========================================================
+    was_deep_oversold = pd.Series(False, index=data.index)
+    for i in range(1, 7):
+        was_deep_oversold |= (K.shift(i) < 20)
+
+    was_oversold = pd.Series(False, index=data.index)
+    for i in range(1, 9):
+        was_oversold |= (K.shift(i) < 25)
+
+    k_now_above_20 = K > 20
+    k_below_70 = K < 70  # ← relaxed from 60
+    k_below_65 = K < 65  # ← relaxed from 50
+
+    # ===========================================================
+    # V-SHAPE DETECTION (unchanged - core strength)
+    # ===========================================================
+    classic_v = (
+            (k_vel_prev2 < -1) &
+            (k_vel > 1.5) &
+            (k_accel > 1.5)
+    )
+
+    sharp_v = (
+            (k_vel_prev < -0.5) &
+            (k_vel > 2.5)
+    )
+
+    rounded_v = (
+            (k_vel_prev2 < -1) &
+            (abs(k_vel_prev) < 1.5) &
+            (k_vel > 0.8) &
+            (k_accel > 0.5)
+    )
+
+    k_v_shape = classic_v | sharp_v | rounded_v
+
+    # ===========================================================
+    # K MOMENTUM QUALITY
+    # ===========================================================
+    k_rising_strong = k_vel > 1.5
+    k_rising = k_vel > 0.3
+    k_sustained_rise = (k_vel > 0) & (k_vel_prev > 0)
+    k_cross_d = (K > D) & (K.shift(1) <= D.shift(1))
+    k_above_d = K > D
+    kd_gap_widening = (K-D) > (K.shift(1)-D.shift(1))
+
+    k_low_8 = K.rolling(8).min()
+    k_bounce_size = K-k_low_8
+    decent_bounce = k_bounce_size > 5
+
+    # ===========================================================
+    # CANDLE CONFIRMATION
+    # ===========================================================
+    green = data['Close'] > data['Open']
+    higher_close = data['Close'] > data['Close'].shift(1)
+    recent_green = green | green.shift(1)
+
+    # ===========================================================
+    # TIME FILTER (market hours)
+    # ===========================================================
     if isinstance(data.index, pd.DatetimeIndex):
         time_series = data.index.time
     else:
         time_series = pd.to_datetime(data.index).time
 
     data['time_mins'] = [t.hour * 60+t.minute for t in time_series]
-    TIME_OK = (data['time_mins'] >= 570) & (data['time_mins'] <= 885)
+    TIME_OK = (data['time_mins'] >= 575) & (data['time_mins'] <= 910)
 
-    opt_type = data["Option_Type"].iloc[0]
-
-    # ==========================
-    # BULLISH SIGNALS (Same for CE & PE)
-    # ==========================
-
-    # --- Candle Analysis ---
-    body = abs(data['Close']-data['Open'])
-    candle_range = data['High']-data['Low']
-    green_candle = data['Close'] > data['Open']
-    strong_body = body > (candle_range * 0.45)
-    higher_close = data['Close'] > data['Close'].shift(1)
-    higher_low = data['Low'] > data['Low'].shift(1)
-
-    # --- Volume ---
-    volume_ok = data['Volume_Ratio'] > 0.8
-    volume_strong = data['Volume_Ratio'] > 1.3
-
-    # --- Stochastic Conditions (Bullish) ---
-    was_oversold = (data['Stoch_K'] < 25).rolling(5).max() == 1
-    stoch_cross_up = (
-            (data['Stoch_K'] > data['Stoch_D']) &
-            (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1))
-    )
-    stoch_rising = data['Stoch_K'] > data['Stoch_K'].shift(1)
-    stoch_k_above_d = data['Stoch_K'] > data['Stoch_D']
-    stoch_cross_20 = (data['Stoch_K'] > 20) & (data['Stoch_K'].shift(1) <= 20)
-    stoch_in_buy_zone = (data['Stoch_K'] > 20) & (data['Stoch_K'] < 75)
-
-    # --- RSI Conditions (Bullish) ---
-    rsi_ok = (data['RSI'] > 30) & (data['RSI'] < 65)
-    rsi_rising = data['RSI'] > data['RSI'].shift(1)
-    rsi_not_overbought = data['RSI'] < 70
-
-    # --- Trend & Momentum ---
-    di_bullish = data['Plus_DI'] > data['Minus_DI']
-    adx_strong = data['ADX'] > 20
-    ema_bullish = data['EMA9'] > data['EMA20']
-    price_above_ema = data['Close'] > data['EMA20']
-
-    # --- Bollinger Band ---
-    bb_touch_lower = (data['Low'] <= data['BB_lower'] * 1.005) & (data['Close'] > data['BB_lower'])
-    bb_width = data['BB_upper']-data['BB_lower']
-    bb_expanding = bb_width > bb_width.shift(1)
-
-    # --- ATR / Volatility ---
-    atr_ok = data['ATR'] > data['ATR'].rolling(10).mean() * 0.7
-
-    # ==========================
-    # SETUP 1: OVERSOLD RECOVERY (Grade A)
-    # Best signal - catching the bounce from oversold
-    # ==========================
+    # ===========================================================
+    # SETUPS - now with relaxed thresholds + EMA filter
+    # ===========================================================
     SETUP_1 = (
             TIME_OK &
-            was_oversold &
-            stoch_k_above_d &
-            (stoch_cross_up | stoch_cross_20) &
-            rsi_ok &
-            rsi_rising &
-            (green_candle | higher_close)
-
+            was_deep_oversold &
+            k_v_shape &
+            k_now_above_20 &
+            k_below_70 &  # ← relaxed
+            recent_green &
+            above_support &
+            uptrend_ema
     )
 
-    # ==========================
-    # SETUP 2: BB LOWER BOUNCE (Grade A)
-    # Bounce from Bollinger Band support
-    # ==========================
     SETUP_2 = (
             TIME_OK &
-            bb_touch_lower &
-            green_candle &
-            strong_body &
             was_oversold &
-            stoch_rising &
-            rsi_rising
-
+            k_cross_d &
+            k_rising &
+            k_below_65 &  # ← relaxed
+            recent_green &
+            above_support &
+            uptrend_ema
     )
 
-    # ==========================
-    # SETUP 3: MOMENTUM CONTINUATION (Grade A)
-    # Pullback in uptrend
-    # ==========================
     SETUP_3 = (
             TIME_OK &
-            ema_bullish &
-            price_above_ema &
-            di_bullish &
-            adx_strong &
-            stoch_in_buy_zone &
-            stoch_rising &
-            stoch_k_above_d &
-            green_candle &
-            higher_low
+            was_oversold &
+            k_sustained_rise &
+            decent_bounce &
+            k_above_d &
+            k_below_70 &  # ← relaxed
+            (green | higher_close) &
+            above_support &
+            uptrend_ema
     )
 
-    # ==========================
-    # SETUP 4: EARLY BOUNCE (Grade B)
-    # Quick reversal signal
-    # ==========================
-    SETUP_4 = (
-            TIME_OK &
-            (data['Stoch_K'] < 30) &
-            stoch_rising &
-            (data['Stoch_K']-data['Stoch_K'].shift(1) > 3) &
-            rsi_rising &
-            green_candle &
-            higher_close
-    )
+    # ===========================================================
+    # REJECTIONS - relaxed version
+    # ===========================================================
+    k_too_high = K > 75  # raised from 70
+    k_falling = k_vel < -1.2  # slightly softer
+    bounce_exhausted = k_bounce_size > 35  # raised from 30
 
-    # ==========================
-    # SETUP 5: HIGHER LOW BREAKOUT (Grade B)
-    # Structure-based entry
-    # ==========================
-    SETUP_5 = (
-            TIME_OK &
-            higher_low &
-            (data['Low'].shift(1) > data['Low'].shift(2)) &  # 2 consecutive higher lows
-            stoch_k_above_d &
-            stoch_rising &
-            adx_strong &
-            green_candle
-    )
+    REJECTION = k_too_high | k_falling | bounce_exhausted | trap | divergence | k_too_fast
 
-    # ==========================
-    # REJECTION FILTERS
-    # ==========================
+    # ===========================================================
+    # FINAL SIGNAL
+    # ===========================================================
+    raw_sig = ((SETUP_1 | SETUP_2 | SETUP_3) & ~REJECTION).astype(int)
 
-    # Overbought - don't buy at top
-    overbought = (data['Stoch_K'] > 82) | (data['RSI'] > 72)
-
-    # Extended from EMA - don't chase
-    extended = (data['Close']-data['EMA20']) / data['EMA20'] > 0.03
-
-    # Big red candle recently - wait for dust to settle
-    big_red = (data['Open']-data['Close']) > data['ATR'] * 0.9
-    recent_red = big_red | big_red.shift(1)
-
-    # Weak/small candle - no conviction
-    weak_candle = candle_range < data['ATR'] * 0.35
-
-    # Stochastic falling while overbought
-    stoch_falling_high = (data['Stoch_K'] > 70) & (data['Stoch_K'] < data['Stoch_K'].shift(1))
-
-    # Final rejection
-    REJECTION = overbought | extended | recent_red | weak_candle | stoch_falling_high
-
-    # ==========================
-    # SIGNAL GRADING
-    # ==========================
-
-    # Grade A: High probability setups
-    GRADE_A = (SETUP_1 | SETUP_2 | SETUP_3)
-
-    # Grade B: Good setups with extra confirmation
-    GRADE_B = (SETUP_4 | SETUP_5)
-
-    # Extra filter for Grade B - need at least one confirmation
-    GRADE_B_CONFIRMED = (
-            GRADE_B &
-            (volume_strong | bb_expanding | di_bullish)
-    )
-
-    # ==========================
-    # FINAL SIGNAL OUTPUT
-    # ==========================
-
-    raw_sig = (GRADE_A | GRADE_B_CONFIRMED).astype(int)
-
-    # Assign grades
+    # Grading
     data['signal_grade'] = ""
-    data.loc[GRADE_A, 'signal_grade'] = "A"
-    data.loc[GRADE_B_CONFIRMED & ~GRADE_A, 'signal_grade'] = "B"
+    confluence = SETUP_1.astype(int)+SETUP_2.astype(int)+SETUP_3.astype(int)
+    data.loc[(raw_sig == 1) & (confluence >= 2), 'signal_grade'] = "A+"
+    data.loc[(raw_sig == 1) & (confluence == 1), 'signal_grade'] = "A"
 
-    # Signal reasons
+    # Reasons + debug info
     data["signal_reason"] = ""
-    data.loc[SETUP_1 & raw_sig, "signal_reason"] = "Oversold Recovery"
-    data.loc[SETUP_2 & raw_sig & (data["signal_reason"] == ""), "signal_reason"] = "BB Bounce"
-    data.loc[SETUP_3 & raw_sig & (data["signal_reason"] == ""), "signal_reason"] = "Momentum Entry"
-    data.loc[SETUP_4 & raw_sig & (data["signal_reason"] == ""), "signal_reason"] = "Early Bounce"
-    data.loc[SETUP_5 & raw_sig & (data["signal_reason"] == ""), "signal_reason"] = "HL Breakout"
+    data.loc[SETUP_1 & (raw_sig == 1), "signal_reason"] = "Oversold V-Launch"
+    data.loc[SETUP_2 & (raw_sig == 1) & (data["signal_reason"] == ""), "signal_reason"] = "Oversold K Cross D"
+    data.loc[SETUP_3 & (raw_sig == 1) & (data["signal_reason"] == ""), "signal_reason"] = "Sustained Recovery"
 
-    # Add grade stars
+    data.loc[data['signal_grade'] == "A+", 'signal_reason'] += " [★★★★]"
     data.loc[data['signal_grade'] == "A", 'signal_reason'] += " [★★★]"
-    data.loc[data['signal_grade'] == "B", 'signal_reason'] += " [★★]"
 
-    # ==========================
-    # COOLDOWN (Prevent Overtrading)
-    # ==========================
-    cooldown = 25
+    data.loc[raw_sig == 1, 'signal_reason'] += (
+            "  K="+K.round(1).astype(str)+
+            " D="+D.round(1).astype(str)+
+            " vel="+k_vel.round(1).astype(str)
+    )
+
+    # ===========================================================
+    # COOLDOWN - RELAXED to 4 candles
+    # ===========================================================
+    cooldown = 4
     recent = raw_sig.shift(1).rolling(cooldown).sum().fillna(0)
-    data['st_sig1'] = ((raw_sig == 1) & (recent == 0)).astype(int)
-
-    llm_confidence = 0.0
-    llm_signal = None
-
-    if data['st_sig1'].iloc[-1] == 1:
-        print(data['st_sig1'].iloc[-1])
-
-        print("RAW SIGNAL TRIGGERED (LIVE)")
-
-        ohlcv = fetch_ohlcv(symbol)
-
-        if not ohlcv:
-            print("Market data not available")
-        else:
-            llm_result = llm_trade_signal(symbol, ohlcv, "3m")
-
-            print("========== LLM RESULT (LIVE) ==========")
-            print(llm_result)
-
-            # ✅ SAFE extraction
-            llm_signal = str(llm_result.get("signal", "")).lower()
-            llm_confidence = float(llm_result.get("confidence", 0.0))
-
-            print("LLM signal:", llm_signal)
-            print("LLM confidence:", llm_confidence)
-            print("======================================")
-
-    # store values
-    data.loc[data.index[-1], 'confidence'] = llm_confidence
-    data.loc[data.index[-1], 'llm_signal'] = llm_signal
-
-    # ✅ FINAL SIGNAL — BUY ONLY
-    data['st_sig'] = (
-            (raw_sig == 1) &
-            (recent == 0) &
-            (data['confidence'] >= 0.7) &
-            (data['llm_signal'] == 'buy')
-    ).astype(int)
+    data['st_sig'] = ((raw_sig == 1) & (recent == 0)).astype(int)
 
     return data
+
 
 
 
