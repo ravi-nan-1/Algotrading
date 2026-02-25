@@ -472,281 +472,575 @@ def fetch_ohlcv(symbol, timeframe="3m", candles=30):
 
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-def llm_trade_signal(symbol, ohlcv, timeframe):
-    print('call11 fetch_ohlcv')
 
-    prompt = f"""
-You are a professional discretionary trader.
 
-Analyze OHLCV data for {symbol} on {timeframe}.
-Trade only if quality is high.
 
-OHLCV:
-{json.dumps(ohlcv)}
 
-Respond ONLY with valid JSON. No explanation. No markdown.
 
-Format:
+def llm_trade_signal(symbol, ohlcv, timeframe="3m"):
+    """
+    Call Groq LLM to validate a BUY signal.
+
+    Returns:
+        {
+            "signal": "buy" | "sell" | "no trade",
+            "confidence": 0.0 to 1.0,
+            "reason": "explanation",
+            "bias": "Bullish | Bearish | Neutral",
+            "entry": float,
+            "stop_loss": float,
+            "target_1": float,
+            "target_2": float
+        }
+    """
+
+    # ===========================================================
+    #  SAFE DEFAULTS — returned on ANY failure
+    # ===========================================================
+    SAFE_DEFAULT = {
+        "signal": "no trade",
+        "confidence": 0.0,
+        "reason": "LLM call failed",
+        "bias": "Neutral",
+        "entry": 0.0,
+        "stop_loss": 0.0,
+        "target_1": 0.0,
+        "target_2": 0.0
+    }
+
+    try:
+        print(f"🤖 Calling LLM for {symbol}...")
+
+        # ===========================================================
+        #  FORMAT OHLCV DATA
+        # ===========================================================
+        recent_data = ohlcv[-50:] if len(ohlcv) > 50 else ohlcv
+
+        candle_text = ""
+        for candle in recent_data:
+            if isinstance(candle, dict):
+                candle_text += (
+                    f"  Time={candle.get('time', '?')} "
+                    f"O={candle.get('open', '?')} "
+                    f"H={candle.get('high', '?')} "
+                    f"L={candle.get('low', '?')} "
+                    f"C={candle.get('close', '?')} "
+                    f"V={candle.get('volume', '?')}\n"
+                )
+            elif isinstance(candle, (list, tuple)):
+                candle_text += (
+                    f"  {candle[0]} O={candle[1]} H={candle[2]} "
+                    f"L={candle[3]} C={candle[4]} V={candle[5]}\n"
+                )
+
+        if not candle_text.strip():
+            print("⚠️  No candle data to send to LLM")
+            SAFE_DEFAULT["reason"] = "No candle data available"
+            return SAFE_DEFAULT
+
+        # ===========================================================
+        #  PROMPT
+        # ===========================================================
+        prompt = f"""You are an expert intraday stock trader analyzing Indian markets.
+
+SYMBOL: {symbol}
+TIMEFRAME: {timeframe}
+
+RECENT CANDLE DATA (latest at bottom):
+{candle_text}
+
+MY TECHNICAL ANALYSIS has generated a BUY signal based on:
+- Stochastic K crossed above D from oversold zone (<25)
+- Green candle confirmation
+- EMA alignment (5 > 9 > 15) is favorable
+- K has room to run (not overbought)
+
+YOUR TASK:
+1. Analyze price action, momentum, volume and candle structure
+2. Look for WARNING signs:
+   - Bearish divergence
+   - Strong resistance nearby
+   - Exhaustion / climax candles
+   - Fake breakout patterns
+   - Low volume on bounce
+3. If trade is valid, suggest entry, stop loss and targets
+4. Assess overall probability of success
+
+RESPOND ONLY with valid JSON. No markdown. No explanation outside JSON.
+
 {{
-  "bias": "Bullish | Bearish | Neutral",
-  "signal": "BUY | SELL | NO TRADE",
+  "bias": "Bullish" or "Bearish" or "Neutral",
+  "signal": "BUY" or "SELL" or "NO TRADE",
   "entry": number,
   "stop_loss": number,
   "target_1": number,
   "target_2": number,
-  "confidence": number,
-  "reason": "short explanation"
+  "confidence": number between 0.0 and 1.0,
+  "reason": "1-2 sentence explanation"
 }}
+
+CONFIDENCE CALIBRATION:
+- 0.85-1.0: Textbook setup, strong momentum, clean structure
+- 0.70-0.84: Good setup, minor concerns but tradeable
+- 0.50-0.69: Mixed signals, risky
+- 0.30-0.49: Weak, high chance of failure
+- 0.00-0.29: Dangerous, clear reversal signals
 """
 
-    response = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json"
-        },
-        json={
-            "model": "llama-3.3-70b-versatile",
-            "temperature": 0.1,
-            "messages": [{"role": "user", "content": prompt}]
-        },
-        timeout=30
-    )
+        # ===========================================================
+        #  API CALL
+        # ===========================================================
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "temperature": 0.1,
+                "max_tokens": 300,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a trading analyst. Respond ONLY in valid JSON. No markdown."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            },
+            timeout=30
+        )
 
-    # 🔥 HANDLE API FAILURE
-    if response.status_code != 200:
-        return {"error": "Groq API error", "details": response.text}
+        # ===========================================================
+        #  HANDLE API FAILURE
+        # ===========================================================
+        if response.status_code != 200:
+            print(f"❌ Groq API error: {response.status_code}")
+            print(f"   Details: {response.text[:500]}")
+            SAFE_DEFAULT["reason"] = f"API error: {response.status_code}"
+            return SAFE_DEFAULT
 
-    data = response.json()
+        data = response.json()
 
-    # 🔥 HANDLE MISSING CHOICES
-    if "choices" not in data:
-        return {"error": "Invalid Groq response", "raw": data}
+        if "choices" not in data:
+            print(f"❌ Invalid Groq response: {data}")
+            SAFE_DEFAULT["reason"] = "Invalid API response"
+            return SAFE_DEFAULT
 
-    content = data["choices"][0]["message"]["content"]
+        content = data["choices"][0]["message"]["content"]
+        print(f"📝 Raw LLM response: {content}")
 
-    # 🔥 EXTRACT JSON SAFELY
-    try:
+        # ===========================================================
+        #  PARSE JSON
+        # ===========================================================
+        # Remove markdown code blocks
+        if "```json" in content:
+            content = content.split("```json")[1].split("```")[0].strip()
+        elif "```" in content:
+            content = content.split("```")[1].split("```")[0].strip()
+
+        # Extract JSON object
         start = content.index("{")
         end = content.rindex("}") + 1
         json_str = content[start:end]
-        return json.loads(json_str)
-    except Exception as e:
+
+        result = json.loads(json_str)
+
+        # ===========================================================
+        #  VALIDATE & NORMALIZE
+        # ===========================================================
+        # Signal
+        raw_signal = str(result.get("signal", "NO TRADE")).strip().upper()
+        valid_signals = {
+            "BUY": "buy",
+            "SELL": "sell",
+            "NO TRADE": "no trade",
+            "HOLD": "no trade",
+            "NEUTRAL": "no trade"
+        }
+        signal = valid_signals.get(raw_signal, "no trade")
+
+        # Confidence (clamp 0-1)
+        try:
+            confidence = float(result.get("confidence", 0.0))
+            confidence = max(0.0, min(1.0, confidence))
+        except (ValueError, TypeError):
+            confidence = 0.0
+
+        # Other fields
+        reason = str(result.get("reason", "No reason provided"))
+
+        bias = str(result.get("bias", "Neutral")).strip()
+        if bias not in ["Bullish", "Bearish", "Neutral"]:
+            bias = "Neutral"
+
+        def safe_float(val, default=0.0):
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return default
+
+        entry = safe_float(result.get("entry"))
+        stop_loss = safe_float(result.get("stop_loss"))
+        target_1 = safe_float(result.get("target_1"))
+        target_2 = safe_float(result.get("target_2"))
+
         return {
-            "error": "LLM did not return valid JSON",
-            "raw_response": content
+            "signal": signal,
+            "confidence": confidence,
+            "reason": reason,
+            "bias": bias,
+            "entry": entry,
+            "stop_loss": stop_loss,
+            "target_1": target_1,
+            "target_2": target_2
         }
 
+    # ===========================================================
+    #  ERROR HANDLING
+    # ===========================================================
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON parse error: {e}")
+        SAFE_DEFAULT["reason"] = f"JSON parse error: {e}"
+        return SAFE_DEFAULT
+
+    except requests.exceptions.Timeout:
+        print("❌ LLM request timed out (30s)")
+        SAFE_DEFAULT["reason"] = "Request timed out"
+        return SAFE_DEFAULT
+
+    except requests.exceptions.ConnectionError:
+        print("❌ Cannot connect to Groq API")
+        SAFE_DEFAULT["reason"] = "Connection error"
+        return SAFE_DEFAULT
+
+    except Exception as e:
+        print(f"❌ LLM call failed: {e}")
+        SAFE_DEFAULT["reason"] = f"Error: {e}"
+        return SAFE_DEFAULT
 
 
 
 
 
-def super_trend(symbol, data):
+
+
+
+import pandas as pd
+import numpy as np
+import pandas_ta as ta
+
+
+def super_trend(symbol, data, use_llm=True):
     """
-    PURE STOCHASTIC OVERSOLD V-CATCH - RELAXED VERSION
-    ==================================================
-    More trades allowed: shorter cooldown, looser filters, more room to run
+    LONG ONLY: OVERSOLD + K CROSSOVER D STRATEGY
+    ==============================================
 
-    Changes from original:
-    - Cooldown: 8 → 4 candles
-    - K vs Price trap/divergence: much less strict
-    - Room to run: K < 70 instead of 60, K < 65 instead of 50
-    - Still uses 9 & 15 EMA as support/resistance filter
+    PARAMS:
+        symbol   : Stock symbol
+        data     : DataFrame with OHLCV
+        use_llm  : True  → Filter through LLM
+                   False → Raw technical signals only
     """
-    import numpy as np
-    import pandas as pd
 
     # ===========================================================
-    # STOCHASTIC + EMAs
+    # INDICATORS
     # ===========================================================
     stoch = ta.stoch(data['High'], data['Low'], data['Close'], 14, 3, 3)
     data['Stoch_K'] = stoch['STOCHk_14_3_3']
     data['Stoch_D'] = stoch['STOCHd_14_3_3']
 
+    data['EMA5'] = ta.ema(data['Close'], length=5)
     data['EMA9'] = ta.ema(data['Close'], length=9)
     data['EMA15'] = ta.ema(data['Close'], length=15)
 
-    above_support = data['Close'] > data['EMA15']
-    uptrend_ema = data['EMA9'] > data['EMA15']
-
-    # ===========================================================
-    # K MOVEMENT ANALYSIS
-    # ===========================================================
     K = data['Stoch_K']
     D = data['Stoch_D']
+    close = data['Close']
+    low = data['Low']
+    ema5 = data['EMA5']
+    ema9 = data['EMA9']
+    ema15 = data['EMA15']
 
-    k_vel = K-K.shift(1)
-    k_vel_prev = K.shift(1)-K.shift(2)
-    k_vel_prev2 = K.shift(2)-K.shift(3)
-
-    k_accel = k_vel-k_vel_prev
-
-    # ===========================================================
-    # PRICE vs K COMPARISON (relaxed trap detection)
-    # ===========================================================
-    price_shift = data['Close'].shift(1)
-    price_pct = ((data['Close']-price_shift) / price_shift * 100).fillna(0)
-
-    # Relaxed: needs MUCH bigger difference to call it a trap
-    trap = abs(k_vel) > (abs(price_pct) * 8)
-
-    # Relaxed: price must move >1.5% AND K almost flat
-    divergence = (abs(price_pct) > 1.5) & (abs(k_vel) < 1.5)
-
-    # Allow faster K moves
-    k_too_fast = abs(k_vel) > 22
+    k_vel = K - K.shift(1)
 
     # ===========================================================
-    # OVERSOLD ZONE DETECTION
-    # ===========================================================
-    was_deep_oversold = pd.Series(False, index=data.index)
-    for i in range(1, 7):
-        was_deep_oversold |= (K.shift(i) < 20)
-
-    was_oversold = pd.Series(False, index=data.index)
-    for i in range(1, 9):
-        was_oversold |= (K.shift(i) < 25)
-
-    k_now_above_20 = K > 20
-    k_below_70 = K < 70  # ← relaxed from 60
-    k_below_65 = K < 65  # ← relaxed from 50
-
-    # ===========================================================
-    # V-SHAPE DETECTION (unchanged - core strength)
-    # ===========================================================
-    classic_v = (
-            (k_vel_prev2 < -1) &
-            (k_vel > 1.5) &
-            (k_accel > 1.5)
-    )
-
-    sharp_v = (
-            (k_vel_prev < -0.5) &
-            (k_vel > 2.5)
-    )
-
-    rounded_v = (
-            (k_vel_prev2 < -1) &
-            (abs(k_vel_prev) < 1.5) &
-            (k_vel > 0.8) &
-            (k_accel > 0.5)
-    )
-
-    k_v_shape = classic_v | sharp_v | rounded_v
-
-    # ===========================================================
-    # K MOMENTUM QUALITY
-    # ===========================================================
-    k_rising_strong = k_vel > 1.5
-    k_rising = k_vel > 0.3
-    k_sustained_rise = (k_vel > 0) & (k_vel_prev > 0)
-    k_cross_d = (K > D) & (K.shift(1) <= D.shift(1))
-    k_above_d = K > D
-    kd_gap_widening = (K-D) > (K.shift(1)-D.shift(1))
-
-    k_low_8 = K.rolling(8).min()
-    k_bounce_size = K-k_low_8
-    decent_bounce = k_bounce_size > 5
-
-    # ===========================================================
-    # CANDLE CONFIRMATION
-    # ===========================================================
-    green = data['Close'] > data['Open']
-    higher_close = data['Close'] > data['Close'].shift(1)
-    recent_green = green | green.shift(1)
-
-    # ===========================================================
-    # TIME FILTER (market hours)
+    # TIME FILTER
     # ===========================================================
     if isinstance(data.index, pd.DatetimeIndex):
         time_series = data.index.time
     else:
         time_series = pd.to_datetime(data.index).time
 
-    data['time_mins'] = [t.hour * 60+t.minute for t in time_series]
+    data['time_mins'] = [t.hour * 60 + t.minute for t in time_series]
     TIME_OK = (data['time_mins'] >= 575) & (data['time_mins'] <= 910)
 
     # ===========================================================
-    # SETUPS - now with relaxed thresholds + EMA filter
+    # CANDLE BASICS
     # ===========================================================
-    SETUP_1 = (
-            TIME_OK &
-            was_deep_oversold &
-            k_v_shape &
-            k_now_above_20 &
-            k_below_70 &  # ← relaxed
-            recent_green &
-            above_support &
-            uptrend_ema
-    )
-
-    SETUP_2 = (
-            TIME_OK &
-            was_oversold &
-            k_cross_d &
-            k_rising &
-            k_below_65 &  # ← relaxed
-            recent_green &
-            above_support &
-            uptrend_ema
-    )
-
-    SETUP_3 = (
-            TIME_OK &
-            was_oversold &
-            k_sustained_rise &
-            decent_bounce &
-            k_above_d &
-            k_below_70 &  # ← relaxed
-            (green | higher_close) &
-            above_support &
-            uptrend_ema
-    )
+    green = close > data['Open']
 
     # ===========================================================
-    # REJECTIONS - relaxed version
+    # K CROSSOVER D
     # ===========================================================
-    k_too_high = K > 75  # raised from 70
-    k_falling = k_vel < -1.2  # slightly softer
-    bounce_exhausted = k_bounce_size > 35  # raised from 30
+    prev_k_below_d = K.shift(1) < D.shift(1)
+    curr_k_above_d = K > D
+    prev_k_equal_d = K.shift(1) == D.shift(1)
+    k_crossover_d_v2 = (prev_k_below_d | prev_k_equal_d) & curr_k_above_d
 
-    REJECTION = k_too_high | k_falling | bounce_exhausted | trap | divergence | k_too_fast
+    # ===========================================================
+    # OVERSOLD
+    # ===========================================================
+    OVERSOLD_LEVEL = 25
+
+    was_oversold = pd.Series(False, index=data.index)
+    for i in range(0, 15):
+        was_oversold |= (K.shift(i) < OVERSOLD_LEVEL)
+
+    bars_in_oversold = pd.Series(0, index=data.index, dtype=float)
+    for i in range(0, 15):
+        bars_in_oversold += (K.shift(i) < 30).astype(int)
+    sufficient_oversold = bars_in_oversold >= 2
+
+    # ===========================================================
+    # CONFIRMATIONS
+    # ===========================================================
+    k_has_room = K < 80
+    ema5_rising = ema5 > ema5.shift(1)
+
+    # ===========================================================
+    # PRIMARY LONG SIGNAL
+    # ===========================================================
+    LONG_SIGNAL = (
+        TIME_OK &
+        was_oversold &
+        sufficient_oversold &
+        k_crossover_d_v2 &
+        k_has_room &
+        green
+    )
+
+    # ===========================================================
+    # EMA BOUNCES
+    # ===========================================================
+    k_above_d = K > D
+    k_rising = k_vel > 0
+    recovery_context = (K > 30) & (K < 70) & was_oversold & k_above_d
+
+    near_ema9 = (abs(low - ema9) / ema9 * 100) < 0.15
+    touch_ema9 = low <= ema9 * 1.001
+    bounce_off_ema9 = (touch_ema9 | near_ema9) & (close > ema9) & green
+    ema9_rising = ema9 > ema9.shift(1)
+
+    LONG_EMA9_BOUNCE = (
+        TIME_OK &
+        bounce_off_ema9 &
+        recovery_context &
+        ema9_rising &
+        k_rising &
+        (close > ema5)
+    )
+
+    near_ema15 = (abs(low - ema15) / ema15 * 100) < 0.2
+    touch_ema15 = low <= ema15 * 1.002
+    bounce_off_ema15 = (touch_ema15 | near_ema15) & (close > ema15) & green
+    ema15_rising = ema15 > ema15.shift(1)
+    strong_bounce = bounce_off_ema15 & (close > close.shift(1)) & (close > ema9)
+
+    LONG_EMA15_BOUNCE = (
+        TIME_OK &
+        strong_bounce &
+        recovery_context &
+        ema15_rising &
+        k_rising &
+        k_above_d
+    )
+
+    # ===========================================================
+    # REJECTIONS
+    # ===========================================================
+    LONG_REJECT = (K > 80) | (k_vel < -3)
+
+    # ===========================================================
+    # COMBINE
+    # ===========================================================
+    long_raw = (
+        (LONG_SIGNAL | LONG_EMA9_BOUNCE | LONG_EMA15_BOUNCE) &
+        ~LONG_REJECT
+    ).astype(int)
+
+    # ===========================================================
+    # GRADING
+    # ===========================================================
+    data['signal_grade'] = ""
+    data.loc[(long_raw == 1) & LONG_SIGNAL & ema5_rising & (close > ema5), 'signal_grade'] = "A+"
+    data.loc[(long_raw == 1) & (data['signal_grade'] == "") & LONG_SIGNAL, 'signal_grade'] = "A"
+    data.loc[(long_raw == 1) & (data['signal_grade'] == ""), 'signal_grade'] = "B"
+
+    # ===========================================================
+    # REASONS
+    # ===========================================================
+    data["signal_reason"] = ""
+    data.loc[LONG_SIGNAL & (long_raw == 1), "signal_reason"] = "BUY: Oversold + K Crossed Over D"
+    data.loc[LONG_EMA9_BOUNCE & (long_raw == 1) & (data["signal_reason"] == ""), "signal_reason"] = "BUY: 9 EMA Bounce"
+    data.loc[LONG_EMA15_BOUNCE & (long_raw == 1) & (data["signal_reason"] == ""), "signal_reason"] = "BUY: 15 EMA Bounce"
+
+    data.loc[data['signal_grade'] == "A+", 'signal_reason'] += " [★★★★]"
+    data.loc[data['signal_grade'] == "A", 'signal_reason'] += " [★★★]"
+    data.loc[data['signal_grade'] == "B", 'signal_reason'] += " [★★]"
+
+    mask_long = (long_raw == 1)
+    data.loc[mask_long, 'signal_reason'] += (
+        "  K=" + K.round(1).astype(str) +
+        " D=" + D.round(1).astype(str) +
+        " vel=" + k_vel.round(1).astype(str)
+    )
+
+    # ===========================================================
+    # COOLDOWN
+    # ===========================================================
+    cooldown = 5
+    long_recent = long_raw.shift(1).rolling(cooldown).sum().fillna(0)
+    long_after_cooldown = ((long_raw == 1) & (long_recent == 0)).astype(int)
+
+    # ===========================================================
+    # INIT COLUMNS
+    # ===========================================================
+    data['st_sig_raw'] = long_after_cooldown
+    data['confidence'] = 0.0
+    data['llm_signal'] = None
+    data['llm_reason'] = ""
+    data['llm_entry'] = 0.0
+    data['llm_stop_loss'] = 0.0
+    data['llm_target_1'] = 0.0
+    data['llm_target_2'] = 0.0
+    data['llm_bias'] = ""
+
+    # ===========================================================
+    # MODE: WITHOUT LLM
+    # ===========================================================
+    if not use_llm:
+        print("📊 LLM Mode: OFF")
+        data['st_sig'] = long_after_cooldown
+        data.loc[data['st_sig'] == 1, 'signal_reason'] += " | 🔧 NO LLM"
+        return data
+
+    # ===========================================================
+    # MODE: WITH LLM
+    # ===========================================================
+    print("🤖 LLM Mode: ON")
+
+    llm_confidence = 0.0
+    llm_signal = None
+    llm_reason = ""
+    llm_entry = 0.0
+    llm_stop_loss = 0.0
+    llm_target_1 = 0.0
+    llm_target_2 = 0.0
+    llm_bias = ""
+
+    if long_after_cooldown.iloc[-1] == 1:
+        print("=" * 60)
+        print(f"🔔 RAW BUY SIGNAL: {symbol}")
+        print(f"   Grade:  {data['signal_grade'].iloc[-1]}")
+        print(f"   Reason: {data['signal_reason'].iloc[-1]}")
+        print("=" * 60)
+
+        try:
+            ohlcv = fetch_ohlcv(symbol)
+
+            if not ohlcv:
+                print("⚠️  No OHLCV data for LLM")
+            else:
+                llm_result = llm_trade_signal(symbol, ohlcv, "3m")
+
+                print("========== LLM RESULT ==========")
+                print(f"  Result: {llm_result}")
+
+                # Extract values (LLM now returns lowercase signal)
+                llm_signal = str(llm_result.get("signal", "no trade")).strip()
+                llm_confidence = float(llm_result.get("confidence", 0.0))
+                llm_reason = str(llm_result.get("reason", ""))
+                llm_bias = str(llm_result.get("bias", ""))
+                llm_entry = float(llm_result.get("entry", 0.0))
+                llm_stop_loss = float(llm_result.get("stop_loss", 0.0))
+                llm_target_1 = float(llm_result.get("target_1", 0.0))
+                llm_target_2 = float(llm_result.get("target_2", 0.0))
+
+                print(f"  Bias:       {llm_bias}")
+                print(f"  Signal:     {llm_signal}")
+                print(f"  Confidence: {llm_confidence}")
+                print(f"  Entry:      {llm_entry}")
+                print(f"  Stop Loss:  {llm_stop_loss}")
+                print(f"  Target 1:   {llm_target_1}")
+                print(f"  Target 2:   {llm_target_2}")
+                print(f"  Reason:     {llm_reason}")
+
+                # Decision
+                if llm_signal == "buy" and llm_confidence >= 0.7:
+                    print(f"  ✅ LLM CONFIRMS BUY (conf={llm_confidence})")
+                elif llm_signal == "buy":
+                    print(f"  ⚠️  LOW conf ({llm_confidence} < 0.7) — BLOCKED")
+                elif llm_signal == "sell":
+                    print(f"  ❌ LLM says SELL — BLOCKED")
+                else:
+                    print(f"  ⏸️  LLM says '{llm_signal}' — BLOCKED")
+
+                print("=" * 45)
+
+        except Exception as e:
+            print(f"❌ LLM error: {e}")
+
+    # Store values
+    data.loc[data.index[-1], 'confidence'] = llm_confidence
+    data.loc[data.index[-1], 'llm_signal'] = llm_signal
+    data.loc[data.index[-1], 'llm_reason'] = llm_reason
+    data.loc[data.index[-1], 'llm_bias'] = llm_bias
+    data.loc[data.index[-1], 'llm_entry'] = llm_entry
+    data.loc[data.index[-1], 'llm_stop_loss'] = llm_stop_loss
+    data.loc[data.index[-1], 'llm_target_1'] = llm_target_1
+    data.loc[data.index[-1], 'llm_target_2'] = llm_target_2
 
     # ===========================================================
     # FINAL SIGNAL
     # ===========================================================
-    raw_sig = ((SETUP_1 | SETUP_2 | SETUP_3) & ~REJECTION).astype(int)
+    data['st_sig'] = (
+        (long_after_cooldown == 1) &
+        (data['confidence'] >= 0.7) &
+        (data['llm_signal'] == 'buy')
+    ).astype(int)
 
-    # Grading
-    data['signal_grade'] = ""
-    confluence = SETUP_1.astype(int)+SETUP_2.astype(int)+SETUP_3.astype(int)
-    data.loc[(raw_sig == 1) & (confluence >= 2), 'signal_grade'] = "A+"
-    data.loc[(raw_sig == 1) & (confluence == 1), 'signal_grade'] = "A"
-
-    # Reasons + debug info
-    data["signal_reason"] = ""
-    data.loc[SETUP_1 & (raw_sig == 1), "signal_reason"] = "Oversold V-Launch"
-    data.loc[SETUP_2 & (raw_sig == 1) & (data["signal_reason"] == ""), "signal_reason"] = "Oversold K Cross D"
-    data.loc[SETUP_3 & (raw_sig == 1) & (data["signal_reason"] == ""), "signal_reason"] = "Sustained Recovery"
-
-    data.loc[data['signal_grade'] == "A+", 'signal_reason'] += " [★★★★]"
-    data.loc[data['signal_grade'] == "A", 'signal_reason'] += " [★★★]"
-
-    data.loc[raw_sig == 1, 'signal_reason'] += (
-            "  K="+K.round(1).astype(str)+
-            " D="+D.round(1).astype(str)+
-            " vel="+k_vel.round(1).astype(str)
+    # Tag reasons
+    final_buy = data['st_sig'] == 1
+    data.loc[final_buy, 'signal_reason'] += (
+        f" | ✅ LLM=BUY conf={llm_confidence:.2f}"
+        f" entry={llm_entry} sl={llm_stop_loss}"
     )
 
-    # ===========================================================
-    # COOLDOWN - RELAXED to 4 candles
-    # ===========================================================
-    cooldown = 4
-    recent = raw_sig.shift(1).rolling(cooldown).sum().fillna(0)
-    data['st_sig'] = ((raw_sig == 1) & (recent == 0)).astype(int)
+    blocked = (long_after_cooldown == 1) & (data['st_sig'] == 0)
+    data.loc[blocked, 'signal_reason'] += (
+        f" | ❌ BLOCKED ({llm_signal}, conf={llm_confidence:.2f})"
+    )
+
+    # Summary
+    if long_after_cooldown.iloc[-1] == 1:
+        if data['st_sig'].iloc[-1] == 1:
+            print("\n" + "🟢" * 15)
+            print(f"✅ TAKING BUY: {symbol}")
+            print(f"   Conf: {llm_confidence:.2f}")
+            print(f"   Entry: {llm_entry} | SL: {llm_stop_loss}")
+            print("🟢" * 15 + "\n")
+        else:
+            print("\n" + "🔴" * 15)
+            print(f"❌ BLOCKED: {symbol}")
+            print(f"   Signal: {llm_signal} | Conf: {llm_confidence:.2f}")
+            print("🔴" * 15 + "\n")
 
     return data
+
 
 
 
