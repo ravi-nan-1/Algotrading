@@ -423,13 +423,25 @@ def detect_trendline_touches_for_strategy(df: pd.DataFrame,
     #     print(f"   Touch indices: {touch_indices}")
 
     return touch_indices
+
+
+
+
+import pandas as pd
+import numpy as np
+import pandas_ta as ta
+import json
+import requests
+import datetime as dt  # Assuming dt is datetime
+
+# Assuming external dependencies are defined elsewhere: client, instrument_df, scripcode_lookup
+
 def fetch_ohlcv(symbol, timeframe="3m", candles=30):
     print('call11 fetch_ohlcv')
     scripcode = scripcode_lookup(instrument_df, symbol)
     print(scripcode)
     if not scripcode:
         return None
-
     df = pd.DataFrame(
         client.historical_data(
             Exch='N', ExchangeSegment='D',
@@ -446,18 +458,14 @@ def fetch_ohlcv(symbol, timeframe="3m", candles=30):
         if col in df.columns:
             datetime_col = col
             break
-
     if datetime_col:
         df[datetime_col] = pd.to_datetime(df[datetime_col])
         df = df.sort_values(datetime_col)
-
     # Ensure required columns exist
     required = {"Open", "High", "Low", "Close", "Volume"}
     if not required.issubset(df.columns):
         return None
-
     df = df.tail(candles)
-
     return [
         {
             "o": round(float(r["Open"]), 2),
@@ -471,16 +479,17 @@ def fetch_ohlcv(symbol, timeframe="3m", candles=30):
 
 
 
+
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 
 
 
 
-def llm_trade_signal(symbol, ohlcv, timeframe="3m"):
+def llm_trade_signal(symbol, ohlcv=None, timeframe="3m"):
     """
     Call Groq LLM to validate a BUY signal.
-
     Returns:
         {
             "signal": "buy" | "sell" | "no trade",
@@ -493,9 +502,8 @@ def llm_trade_signal(symbol, ohlcv, timeframe="3m"):
             "target_2": float
         }
     """
-
     # ===========================================================
-    #  SAFE DEFAULTS — returned on ANY failure
+    # SAFE DEFAULTS — returned on ANY failure
     # ===========================================================
     SAFE_DEFAULT = {
         "signal": "no trade",
@@ -507,88 +515,123 @@ def llm_trade_signal(symbol, ohlcv, timeframe="3m"):
         "target_1": 0.0,
         "target_2": 0.0
     }
-
     try:
         print(f"🤖 Calling LLM for {symbol}...")
-
         # ===========================================================
-        #  FORMAT OHLCV DATA
+        # FETCH OHLCV IF NOT PROVIDED
         # ===========================================================
-        recent_data = ohlcv[-50:] if len(ohlcv) > 50 else ohlcv
-
+        if ohlcv is None:
+            ohlcv = fetch_ohlcv(symbol, timeframe, candles=50)  # Fetch up to 50 for better analysis
+        if not ohlcv:
+            SAFE_DEFAULT["reason"] = "Failed to fetch OHLCV data"
+            return SAFE_DEFAULT
+        
+        # ===========================================================
+        # CONVERT TO DATAFRAME FOR INDICATOR CALCULATION
+        # ===========================================================
+        df = pd.DataFrame(ohlcv)
+        df = df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"})
+        if len(df) < 15:  # Minimum for EMAs/Stoch
+            SAFE_DEFAULT["reason"] = "Insufficient candle data"
+            return SAFE_DEFAULT
+        
+        # ===========================================================
+        # COMPUTE INDICATORS
+        # ===========================================================
+        stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3, smooth_k=3)
+        ema5 = ta.ema(df['close'], length=5)
+        ema9 = ta.ema(df['close'], length=9)
+        ema15 = ta.ema(df['close'], length=15)
+        rsi = ta.rsi(df['close'], length=14)
+        macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
+        vol_ma = ta.sma(df['volume'], length=20)
+        
+        last_close = df['close'].iloc[-1]
+        indicators_text = f"""
+Computed Indicators (latest values):
+- Stochastic %K: {stoch['STOCHk_14_3_3'].iloc[-1]:.2f}
+- Stochastic %D: {stoch['STOCHd_14_3_3'].iloc[-1]:.2f}
+- EMA5: {ema5.iloc[-1]:.2f}
+- EMA9: {ema9.iloc[-1]:.2f}
+- EMA15: {ema15.iloc[-1]:.2f}
+- RSI: {rsi.iloc[-1]:.2f} (Oversold <30, Overbought >70)
+- MACD Line: {macd['MACD_12_26_9'].iloc[-1]:.2f}
+- MACD Signal: {macd['MACDs_12_26_9'].iloc[-1]:.2f}
+- MACD Histogram: {macd['MACDh_12_26_9'].iloc[-1]:.2f}
+- Volume MA20: {vol_ma.iloc[-1]:.0f}
+- Current Volume: {df['volume'].iloc[-1]:.0f}
+- Volume Trend: {'Above Average' if df['volume'].iloc[-1] > vol_ma.iloc[-1] else 'Below Average'}
+- Price Trend: {'Up' if ema5.iloc[-1] > ema15.iloc[-1] else 'Down or Sideways'}
+- Support (Recent Low): {df['low'].min():.2f}
+- Resistance (Recent High): {df['high'].max():.2f}
+"""
+        
+        # ===========================================================
+        # FORMAT OHLCV DATA
+        # ===========================================================
         candle_text = ""
-        for candle in recent_data:
-            if isinstance(candle, dict):
-                candle_text += (
-                    f"  Time={candle.get('time', '?')} "
-                    f"O={candle.get('open', '?')} "
-                    f"H={candle.get('high', '?')} "
-                    f"L={candle.get('low', '?')} "
-                    f"C={candle.get('close', '?')} "
-                    f"V={candle.get('volume', '?')}\n"
-                )
-            elif isinstance(candle, (list, tuple)):
-                candle_text += (
-                    f"  {candle[0]} O={candle[1]} H={candle[2]} "
-                    f"L={candle[3]} C={candle[4]} V={candle[5]}\n"
-                )
-
+        for _, row in df.iterrows():
+            candle_text += (
+                f"O={row['open']:.2f} "
+                f"H={row['high']:.2f} "
+                f"L={row['low']:.2f} "
+                f"C={row['close']:.2f} "
+                f"V={row['volume']:.0f}\n"
+            )
         if not candle_text.strip():
-            print("⚠️  No candle data to send to LLM")
+            print("⚠️ No candle data to send to LLM")
             SAFE_DEFAULT["reason"] = "No candle data available"
             return SAFE_DEFAULT
-
+        
         # ===========================================================
-        #  PROMPT
+        # PROMPT (ENHANCED FOR HIGHER ACCURACY)
         # ===========================================================
-        prompt = f"""You are an expert intraday stock trader analyzing Indian markets.
-
+        prompt = f"""You are an elite intraday stock trader for Indian markets, aiming for 90%+ win rate by being ultra-conservative and multi-factor validated.
 SYMBOL: {symbol}
 TIMEFRAME: {timeframe}
-
+{indicators_text}
 RECENT CANDLE DATA (latest at bottom):
 {candle_text}
 
-MY TECHNICAL ANALYSIS has generated a BUY signal based on:
-- Stochastic K crossed above D from oversold zone (<25)
-- Green candle confirmation
-- EMA alignment (5 > 9 > 15) is favorable
-- K has room to run (not overbought)
+A potential BUY signal was generated based on:
+- Stochastic %K crossed above %D from oversold (<25)
+- Green candle confirmation with above-average volume
+- Bullish EMA alignment (5 > 9 > 15)
+- %K has room to run (<75)
+- Supporting RSI >30 and rising, MACD crossover bullish, no divergences
 
-YOUR TASK:
-1. Analyze price action, momentum, volume and candle structure
-2. Look for WARNING signs:
-   - Bearish divergence
-   - Strong resistance nearby
-   - Exhaustion / climax candles
-   - Fake breakout patterns
-   - Low volume on bounce
-3. If trade is valid, suggest entry, stop loss and targets
-4. Assess overall probability of success
+ADVANCED STEP-BY-STEP VALIDATION (follow strictly for high accuracy):
+1. Verify core signal: Confirm Stochastic crossover in last 1-3 candles, EMAs aligned bullishly (5>9>15), last candle green, volume > MA20.
+2. Momentum check: RSI not oversold/overbought extremes, MACD histogram positive and expanding, no bearish divergence (price highs with lower indicator highs).
+3. Price action analysis: Identify bullish patterns (hammer, engulfing), support holds (price above recent low), no resistance immediately overhead (entry < recent high - 1%).
+4. Volume validation: Bounce on high volume, no climax selling, volume trend increasing.
+5. Risk-reward: Ensure potential 1:2 RR minimum (targets based on fib extensions or recent swings).
+6. Warnings scan: Reject if bearish candles (shooting star, doji at highs), divergences, low volume, downtrend (price < EMA15), or overbought signals.
+7. Overall bias: Only BUY if ALL checks pass strongly; SELL on clear reversals; else NO TRADE.
+8. Calibrate confidence high only for pristine setups (target 90% accuracy by rejecting marginal trades).
 
-RESPOND ONLY with valid JSON. No markdown. No explanation outside JSON.
-
+If valid BUY: Entry near last close, SL below recent low - ATR buffer (estimate ATR as (high-low avg)/14 ~ {df['high'].subtract(df['low']).tail(14).mean():.2f}), Target1 = entry + (entry-SL), Target2 = entry + 2*(entry-SL).
+RESPOND ONLY with valid JSON. No markdown. No extra text.
 {{
   "bias": "Bullish" or "Bearish" or "Neutral",
   "signal": "BUY" or "SELL" or "NO TRADE",
-  "entry": number,
-  "stop_loss": number,
-  "target_1": number,
-  "target_2": number,
+  "entry": number (close to {last_close:.2f}),
+  "stop_loss": number (< entry),
+  "target_1": number (> entry),
+  "target_2": number (> target_1),
   "confidence": number between 0.0 and 1.0,
-  "reason": "1-2 sentence explanation"
+  "reason": "Concise explanation: list 2-3 key validations and any warnings"
 }}
 
-CONFIDENCE CALIBRATION:
-- 0.85-1.0: Textbook setup, strong momentum, clean structure
-- 0.70-0.84: Good setup, minor concerns but tradeable
-- 0.50-0.69: Mixed signals, risky
-- 0.30-0.49: Weak, high chance of failure
-- 0.00-0.29: Dangerous, clear reversal signals
+CONFIDENCE CALIBRATION (strict for 90% accuracy):
+- 0.90-1.0: Pristine setup, all indicators align, strong volume, clean price action
+- 0.75-0.89: Solid but minor flaw (e.g., average volume)
+- 0.60-0.74: Tradeable but risky (e.g., partial alignment)
+- 0.40-0.59: Marginal, likely whipsaw
+- 0.00-0.39: Invalid, multiple red flags
 """
-
         # ===========================================================
-        #  API CALL
+        # API CALL
         # ===========================================================
         response = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
@@ -598,12 +641,12 @@ CONFIDENCE CALIBRATION:
             },
             json={
                 "model": "llama-3.3-70b-versatile",
-                "temperature": 0.1,
-                "max_tokens": 300,
+                "temperature": 0.2,  # Slightly higher for nuanced reasoning
+                "max_tokens": 400,
                 "messages": [
                     {
                         "role": "system",
-                        "content": "You are a trading analyst. Respond ONLY in valid JSON. No markdown."
+                        "content": "You are a precision trading analyst. Respond ONLY in valid JSON. No markdown. Follow instructions exactly."
                     },
                     {
                         "role": "user",
@@ -613,44 +656,36 @@ CONFIDENCE CALIBRATION:
             },
             timeout=30
         )
-
         # ===========================================================
-        #  HANDLE API FAILURE
+        # HANDLE API FAILURE
         # ===========================================================
         if response.status_code != 200:
             print(f"❌ Groq API error: {response.status_code}")
-            print(f"   Details: {response.text[:500]}")
+            print(f" Details: {response.text[:500]}")
             SAFE_DEFAULT["reason"] = f"API error: {response.status_code}"
             return SAFE_DEFAULT
-
         data = response.json()
-
         if "choices" not in data:
             print(f"❌ Invalid Groq response: {data}")
             SAFE_DEFAULT["reason"] = "Invalid API response"
             return SAFE_DEFAULT
-
         content = data["choices"][0]["message"]["content"]
         print(f"📝 Raw LLM response: {content}")
-
         # ===========================================================
-        #  PARSE JSON
+        # PARSE JSON
         # ===========================================================
         # Remove markdown code blocks
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0].strip()
         elif "```" in content:
             content = content.split("```")[1].split("```")[0].strip()
-
         # Extract JSON object
         start = content.index("{")
         end = content.rindex("}") + 1
         json_str = content[start:end]
-
         result = json.loads(json_str)
-
         # ===========================================================
-        #  VALIDATE & NORMALIZE
+        # VALIDATE & NORMALIZE
         # ===========================================================
         # Signal
         raw_signal = str(result.get("signal", "NO TRADE")).strip().upper()
@@ -662,32 +697,29 @@ CONFIDENCE CALIBRATION:
             "NEUTRAL": "no trade"
         }
         signal = valid_signals.get(raw_signal, "no trade")
-
         # Confidence (clamp 0-1)
         try:
             confidence = float(result.get("confidence", 0.0))
             confidence = max(0.0, min(1.0, confidence))
         except (ValueError, TypeError):
             confidence = 0.0
-
         # Other fields
         reason = str(result.get("reason", "No reason provided"))
-
         bias = str(result.get("bias", "Neutral")).strip()
         if bias not in ["Bullish", "Bearish", "Neutral"]:
             bias = "Neutral"
-
         def safe_float(val, default=0.0):
             try:
                 return float(val)
             except (ValueError, TypeError):
                 return default
-
         entry = safe_float(result.get("entry"))
         stop_loss = safe_float(result.get("stop_loss"))
         target_1 = safe_float(result.get("target_1"))
         target_2 = safe_float(result.get("target_2"))
-
+        # Additional validation for levels
+        if signal == "buy" and not (stop_loss < entry < target_1 < target_2):
+            return {**SAFE_DEFAULT, "reason": "Invalid trade levels"}
         return {
             "signal": signal,
             "confidence": confidence,
@@ -698,25 +730,21 @@ CONFIDENCE CALIBRATION:
             "target_1": target_1,
             "target_2": target_2
         }
-
     # ===========================================================
-    #  ERROR HANDLING
+    # ERROR HANDLING
     # ===========================================================
     except json.JSONDecodeError as e:
         print(f"❌ JSON parse error: {e}")
         SAFE_DEFAULT["reason"] = f"JSON parse error: {e}"
         return SAFE_DEFAULT
-
     except requests.exceptions.Timeout:
         print("❌ LLM request timed out (30s)")
         SAFE_DEFAULT["reason"] = "Request timed out"
         return SAFE_DEFAULT
-
     except requests.exceptions.ConnectionError:
         print("❌ Cannot connect to Groq API")
         SAFE_DEFAULT["reason"] = "Connection error"
         return SAFE_DEFAULT
-
     except Exception as e:
         print(f"❌ LLM call failed: {e}")
         SAFE_DEFAULT["reason"] = f"Error: {e}"
