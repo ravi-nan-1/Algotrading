@@ -586,7 +586,7 @@ Computed Indicators (latest values):
         # ===========================================================
         # PROMPT (ENHANCED FOR HIGHER ACCURACY)
         # ===========================================================
-        prompt = f"""You are an elite intraday stock trader for Indian markets, aiming for 90%+ win rate by being ultra-conservative and multi-factor validated.
+        prompt = f"""You are a very selective 3-minute timeframe intraday options trader in Indian markets (Nifty/BankNifty heavy). Your edge comes from waiting for high-conviction oversold recoveries with momentum confirmation.  You are an elite intraday stock trader for Indian markets, aiming for 90%+ win rate by being ultra-conservative and multi-factor validated.
 SYMBOL: {symbol}
 TIMEFRAME: {timeframe}
 {indicators_text}
