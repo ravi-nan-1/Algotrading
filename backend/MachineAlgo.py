@@ -427,14 +427,22 @@ def detect_trendline_touches_for_strategy(df: pd.DataFrame,
 
 
 
-import pandas as pd
-import numpy as np
-import pandas_ta as ta
-import json
-import requests
-import datetime as dt  # Assuming dt is datetime
 
-# Assuming external dependencies are defined elsewhere: client, instrument_df, scripcode_lookup
+
+
+
+
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+
+
+
+
+
+
+
+
 
 def fetch_ohlcv(symbol, timeframe="3m", candles=30):
     print('call11 fetch_ohlcv')
@@ -442,6 +450,7 @@ def fetch_ohlcv(symbol, timeframe="3m", candles=30):
     print(scripcode)
     if not scripcode:
         return None
+
     df = pd.DataFrame(
         client.historical_data(
             Exch='N', ExchangeSegment='D',
@@ -458,14 +467,18 @@ def fetch_ohlcv(symbol, timeframe="3m", candles=30):
         if col in df.columns:
             datetime_col = col
             break
+
     if datetime_col:
         df[datetime_col] = pd.to_datetime(df[datetime_col])
         df = df.sort_values(datetime_col)
+
     # Ensure required columns exist
     required = {"Open", "High", "Low", "Close", "Volume"}
     if not required.issubset(df.columns):
         return None
+
     df = df.tail(candles)
+
     return [
         {
             "o": round(float(r["Open"]), 2),
@@ -481,15 +494,14 @@ def fetch_ohlcv(symbol, timeframe="3m", candles=30):
 
 
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 
 
 
-
-def llm_trade_signal(symbol, ohlcv=None, timeframe="3m"):
+def llm_trade_signalrr(symbol, ohlcv, timeframe="3m"):
     """
     Call Groq LLM to validate a BUY signal.
+
     Returns:
         {
             "signal": "buy" | "sell" | "no trade",
@@ -502,8 +514,9 @@ def llm_trade_signal(symbol, ohlcv=None, timeframe="3m"):
             "target_2": float
         }
     """
+
     # ===========================================================
-    # SAFE DEFAULTS — returned on ANY failure
+    #  SAFE DEFAULTS — returned on ANY failure
     # ===========================================================
     SAFE_DEFAULT = {
         "signal": "no trade",
@@ -515,91 +528,66 @@ def llm_trade_signal(symbol, ohlcv=None, timeframe="3m"):
         "target_1": 0.0,
         "target_2": 0.0
     }
+
     try:
         print(f"🤖 Calling LLM for {symbol}...")
+
         # ===========================================================
-        # FETCH OHLCV IF NOT PROVIDED
+        #  FORMAT OHLCV DATA
         # ===========================================================
-        if ohlcv is None:
-            ohlcv = fetch_ohlcv(symbol, timeframe, candles=50)  # Fetch up to 50 for better analysis
-        if not ohlcv:
-            SAFE_DEFAULT["reason"] = "Failed to fetch OHLCV data"
-            return SAFE_DEFAULT
-        
-        # ===========================================================
-        # CONVERT TO DATAFRAME FOR INDICATOR CALCULATION
-        # ===========================================================
-        df = pd.DataFrame(ohlcv)
-        df = df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"})
-        if len(df) < 15:  # Minimum for EMAs/Stoch
-            SAFE_DEFAULT["reason"] = "Insufficient candle data"
-            return SAFE_DEFAULT
-        
-        # ===========================================================
-        # COMPUTE INDICATORS
-        # ===========================================================
-        stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3, smooth_k=3)
-        ema5 = ta.ema(df['close'], length=5)
-        ema9 = ta.ema(df['close'], length=9)
-        ema15 = ta.ema(df['close'], length=15)
-        rsi = ta.rsi(df['close'], length=14)
-        macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
-        vol_ma = ta.sma(df['volume'], length=20)
-        
-        last_close = df['close'].iloc[-1]
-        indicators_text = f"""
-Computed Indicators (latest values):
-- Stochastic %K: {stoch['STOCHk_14_3_3'].iloc[-1]:.2f}
-- Stochastic %D: {stoch['STOCHd_14_3_3'].iloc[-1]:.2f}
-- EMA5: {ema5.iloc[-1]:.2f}
-- EMA9: {ema9.iloc[-1]:.2f}
-- EMA15: {ema15.iloc[-1]:.2f}
-- RSI: {rsi.iloc[-1]:.2f} (Oversold <30, Overbought >70)
-- MACD Line: {macd['MACD_12_26_9'].iloc[-1]:.2f}
-- MACD Signal: {macd['MACDs_12_26_9'].iloc[-1]:.2f}
-- MACD Histogram: {macd['MACDh_12_26_9'].iloc[-1]:.2f}
-- Volume MA20: {vol_ma.iloc[-1]:.0f}
-- Current Volume: {df['volume'].iloc[-1]:.0f}
-- Volume Trend: {'Above Average' if df['volume'].iloc[-1] > vol_ma.iloc[-1] else 'Below Average'}
-- Price Trend: {'Up' if ema5.iloc[-1] > ema15.iloc[-1] else 'Down or Sideways'}
-- Support (Recent Low): {df['low'].min():.2f}
-- Resistance (Recent High): {df['high'].max():.2f}
-"""
-        
-        # ===========================================================
-        # FORMAT OHLCV DATA
-        # ===========================================================
+        recent_data = ohlcv[-50:] if len(ohlcv) > 50 else ohlcv
+
         candle_text = ""
-        for _, row in df.iterrows():
-            candle_text += (
-                f"O={row['open']:.2f} "
-                f"H={row['high']:.2f} "
-                f"L={row['low']:.2f} "
-                f"C={row['close']:.2f} "
-                f"V={row['volume']:.0f}\n"
-            )
+        for candle in recent_data:
+            if isinstance(candle, dict):
+                candle_text += (
+                    f"  Time={candle.get('time', '?')} "
+                    f"O={candle.get('open', '?')} "
+                    f"H={candle.get('high', '?')} "
+                    f"L={candle.get('low', '?')} "
+                    f"C={candle.get('close', '?')} "
+                    f"V={candle.get('volume', '?')}\n"
+                )
+            elif isinstance(candle, (list, tuple)):
+                candle_text += (
+                    f"  {candle[0]} O={candle[1]} H={candle[2]} "
+                    f"L={candle[3]} C={candle[4]} V={candle[5]}\n"
+                )
+
         if not candle_text.strip():
-            print("⚠️ No candle data to send to LLM")
+            print("⚠️  No candle data to send to LLM")
             SAFE_DEFAULT["reason"] = "No candle data available"
             return SAFE_DEFAULT
-        
+
         # ===========================================================
-        # PROMPT (ENHANCED FOR HIGHER ACCURACY)
+        #  PROMPT
         # ===========================================================
         prompt = f"""You are a very selective 3-minute timeframe intraday options trader in Indian markets (Nifty/BankNifty heavy). Your edge comes from waiting for high-conviction oversold recoveries with momentum confirmation.  You are an elite intraday stock trader for Indian markets, aiming for 90%+ win rate by being ultra-conservative and multi-factor validated.
+
 SYMBOL: {symbol}
 TIMEFRAME: {timeframe}
-{indicators_text}
+
 RECENT CANDLE DATA (latest at bottom):
 {candle_text}
 
-A potential BUY signal was generated based on:
-- Stochastic %K crossed above %D from oversold (<25)
-- Green candle confirmation with above-average volume
-- Bullish EMA alignment (5 > 9 > 15)
-- %K has room to run (<75)
-- Supporting RSI >30 and rising, MACD crossover bullish, no divergences
+MY TECHNICAL ANALYSIS has generated a BUY signal based on:
+- Stochastic K crossed above D from oversold zone (<25)
+- Green candle confirmation
+- EMA alignment (5 > 9 > 15) is favorable
+- K has room to run (not overbought)
 
+
+YOUR TASK:
+
+1. Analyze price action, momentum, volume and candle structure
+2. Look for WARNING signs:
+   - Bearish divergence
+   - Strong resistance nearby
+   - Exhaustion / climax candles
+   - Fake breakout patterns
+   - Low volume on bounce
+3. If trade is valid, suggest entry, stop loss and targets
+4. Assess overall probability of success
 ADVANCED STEP-BY-STEP VALIDATION (follow strictly for high accuracy):
 1. Verify core signal: Confirm Stochastic crossover in last 1-3 candles, EMAs aligned bullishly (5>9>15), last candle green, volume > MA20.
 2. Momentum check: RSI not oversold/overbought extremes, MACD histogram positive and expanding, no bearish divergence (price highs with lower indicator highs).
@@ -610,28 +598,29 @@ ADVANCED STEP-BY-STEP VALIDATION (follow strictly for high accuracy):
 7. Overall bias: Only BUY if ALL checks pass strongly; SELL on clear reversals; else NO TRADE.
 8. Calibrate confidence high only for pristine setups (target 90% accuracy by rejecting marginal trades).
 
-If valid BUY: Entry near last close, SL below recent low - ATR buffer (estimate ATR as (high-low avg)/14 ~ {df['high'].subtract(df['low']).tail(14).mean():.2f}), Target1 = entry + (entry-SL), Target2 = entry + 2*(entry-SL).
-RESPOND ONLY with valid JSON. No markdown. No extra text.
+RESPOND ONLY with valid JSON. No markdown. No explanation outside JSON.
+
 {{
   "bias": "Bullish" or "Bearish" or "Neutral",
   "signal": "BUY" or "SELL" or "NO TRADE",
-  "entry": number (close to {last_close:.2f}),
-  "stop_loss": number (< entry),
-  "target_1": number (> entry),
-  "target_2": number (> target_1),
+  "entry": number,
+  "stop_loss": number,
+  "target_1": number,
+  "target_2": number,
   "confidence": number between 0.0 and 1.0,
-  "reason": "Concise explanation: list 2-3 key validations and any warnings"
+  "reason": "1-2 sentence explanation"
 }}
 
-CONFIDENCE CALIBRATION (strict for 90% accuracy):
-- 0.90-1.0: Pristine setup, all indicators align, strong volume, clean price action
-- 0.75-0.89: Solid but minor flaw (e.g., average volume)
-- 0.60-0.74: Tradeable but risky (e.g., partial alignment)
-- 0.40-0.59: Marginal, likely whipsaw
-- 0.00-0.39: Invalid, multiple red flags
+CONFIDENCE CALIBRATION:
+- 0.85-1.0: Textbook setup, strong momentum, clean structure
+- 0.70-0.84: Good setup, minor concerns but tradeable
+- 0.50-0.69: Mixed signals, risky
+- 0.30-0.49: Weak, high chance of failure
+- 0.00-0.29: Dangerous, clear reversal signals
 """
+
         # ===========================================================
-        # API CALL
+        #  API CALL
         # ===========================================================
         response = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
@@ -641,12 +630,12 @@ CONFIDENCE CALIBRATION (strict for 90% accuracy):
             },
             json={
                 "model": "llama-3.3-70b-versatile",
-                "temperature": 0.2,  # Slightly higher for nuanced reasoning
-                "max_tokens": 400,
+                "temperature": 0.1,
+                "max_tokens": 300,
                 "messages": [
                     {
                         "role": "system",
-                        "content": "You are a precision trading analyst. Respond ONLY in valid JSON. No markdown. Follow instructions exactly."
+                        "content": "You are a trading analyst. Respond ONLY in valid JSON. No markdown."
                     },
                     {
                         "role": "user",
@@ -656,36 +645,44 @@ CONFIDENCE CALIBRATION (strict for 90% accuracy):
             },
             timeout=30
         )
+
         # ===========================================================
-        # HANDLE API FAILURE
+        #  HANDLE API FAILURE
         # ===========================================================
         if response.status_code != 200:
             print(f"❌ Groq API error: {response.status_code}")
-            print(f" Details: {response.text[:500]}")
+            print(f"   Details: {response.text[:500]}")
             SAFE_DEFAULT["reason"] = f"API error: {response.status_code}"
             return SAFE_DEFAULT
+
         data = response.json()
+
         if "choices" not in data:
             print(f"❌ Invalid Groq response: {data}")
             SAFE_DEFAULT["reason"] = "Invalid API response"
             return SAFE_DEFAULT
+
         content = data["choices"][0]["message"]["content"]
         print(f"📝 Raw LLM response: {content}")
+
         # ===========================================================
-        # PARSE JSON
+        #  PARSE JSON
         # ===========================================================
         # Remove markdown code blocks
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0].strip()
         elif "```" in content:
             content = content.split("```")[1].split("```")[0].strip()
+
         # Extract JSON object
         start = content.index("{")
         end = content.rindex("}") + 1
         json_str = content[start:end]
+
         result = json.loads(json_str)
+
         # ===========================================================
-        # VALIDATE & NORMALIZE
+        #  VALIDATE & NORMALIZE
         # ===========================================================
         # Signal
         raw_signal = str(result.get("signal", "NO TRADE")).strip().upper()
@@ -697,29 +694,32 @@ CONFIDENCE CALIBRATION (strict for 90% accuracy):
             "NEUTRAL": "no trade"
         }
         signal = valid_signals.get(raw_signal, "no trade")
+
         # Confidence (clamp 0-1)
         try:
             confidence = float(result.get("confidence", 0.0))
             confidence = max(0.0, min(1.0, confidence))
         except (ValueError, TypeError):
             confidence = 0.0
+
         # Other fields
         reason = str(result.get("reason", "No reason provided"))
+
         bias = str(result.get("bias", "Neutral")).strip()
         if bias not in ["Bullish", "Bearish", "Neutral"]:
             bias = "Neutral"
+
         def safe_float(val, default=0.0):
             try:
                 return float(val)
             except (ValueError, TypeError):
                 return default
+
         entry = safe_float(result.get("entry"))
         stop_loss = safe_float(result.get("stop_loss"))
         target_1 = safe_float(result.get("target_1"))
         target_2 = safe_float(result.get("target_2"))
-        # Additional validation for levels
-        if signal == "buy" and not (stop_loss < entry < target_1 < target_2):
-            return {**SAFE_DEFAULT, "reason": "Invalid trade levels"}
+
         return {
             "signal": signal,
             "confidence": confidence,
@@ -730,21 +730,25 @@ CONFIDENCE CALIBRATION (strict for 90% accuracy):
             "target_1": target_1,
             "target_2": target_2
         }
+
     # ===========================================================
-    # ERROR HANDLING
+    #  ERROR HANDLING
     # ===========================================================
     except json.JSONDecodeError as e:
         print(f"❌ JSON parse error: {e}")
         SAFE_DEFAULT["reason"] = f"JSON parse error: {e}"
         return SAFE_DEFAULT
+
     except requests.exceptions.Timeout:
         print("❌ LLM request timed out (30s)")
         SAFE_DEFAULT["reason"] = "Request timed out"
         return SAFE_DEFAULT
+
     except requests.exceptions.ConnectionError:
         print("❌ Cannot connect to Groq API")
         SAFE_DEFAULT["reason"] = "Connection error"
         return SAFE_DEFAULT
+
     except Exception as e:
         print(f"❌ LLM call failed: {e}")
         SAFE_DEFAULT["reason"] = f"Error: {e}"
@@ -752,14 +756,794 @@ CONFIDENCE CALIBRATION (strict for 90% accuracy):
 
 
 
-
-
-
-
-
 import pandas as pd
 import numpy as np
 import pandas_ta as ta
+
+
+import json
+import requests
+import numpy as np
+import pandas as pd
+
+
+# ===========================================================
+#  HELPER: TECHNICAL INDICATOR CALCULATIONS
+# ===========================================================
+
+def compute_all_indicators(ohlcv):
+    """
+    Compute all technical indicators from OHLCV data.
+    Returns a DataFrame with OHLCV + all indicators.
+    """
+
+    # --- Build DataFrame ---
+    if isinstance(ohlcv[0], dict):
+        df = pd.DataFrame(ohlcv)
+        df.rename(columns={
+            'time': 'time', 'open': 'open', 'high': 'high',
+            'low': 'low', 'close': 'close', 'volume': 'volume'
+        }, inplace=True)
+    elif isinstance(ohlcv[0], (list, tuple)):
+        df = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'volume'])
+    else:
+        raise ValueError("Unsupported OHLCV format")
+
+    for col in ['open', 'high', 'low', 'close', 'volume']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    df.dropna(subset=['close'], inplace=True)
+    df.reset_index(drop=True, inplace=True)
+
+    close = df['close']
+    high = df['high']
+    low = df['low']
+    volume = df['volume']
+
+    # ========================
+    #  1. MOVING AVERAGES
+    # ========================
+    df['EMA_5']   = close.ewm(span=5, adjust=False).mean()
+    df['EMA_9']   = close.ewm(span=9, adjust=False).mean()
+    df['EMA_15']  = close.ewm(span=15, adjust=False).mean()
+    df['EMA_21']  = close.ewm(span=21, adjust=False).mean()
+    df['EMA_50']  = close.ewm(span=50, adjust=False).mean()
+    df['SMA_20']  = close.rolling(window=20).mean()
+    df['SMA_50']  = close.rolling(window=50).mean()
+    df['SMA_200'] = close.rolling(window=200).mean()
+
+    # VWAP (cumulative intraday)
+    typical_price = (high + low + close) / 3
+    df['VWAP'] = (typical_price * volume).cumsum() / volume.cumsum()
+
+    # ========================
+    #  2. RSI (14-period)
+    # ========================
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
+    avg_gain = gain.ewm(com=13, adjust=False).mean()
+    avg_loss = loss.ewm(com=13, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    df['RSI_14'] = 100 - (100 / (1 + rs))
+
+    # ========================
+    #  3. STOCHASTIC OSCILLATOR (14, 3, 3)
+    # ========================
+    lowest_14  = low.rolling(window=14).min()
+    highest_14 = high.rolling(window=14).max()
+    df['STOCH_K'] = 100 * (close - lowest_14) / (highest_14 - lowest_14).replace(0, np.nan)
+    df['STOCH_D'] = df['STOCH_K'].rolling(window=3).mean()
+
+    # ========================
+    #  4. MACD (12, 26, 9)
+    # ========================
+    ema_12 = close.ewm(span=12, adjust=False).mean()
+    ema_26 = close.ewm(span=26, adjust=False).mean()
+    df['MACD']        = ema_12 - ema_26
+    df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['MACD_Hist']   = df['MACD'] - df['MACD_Signal']
+
+    # ========================
+    #  5. BOLLINGER BANDS (20, 2)
+    # ========================
+    bb_sma = close.rolling(window=20).mean()
+    bb_std = close.rolling(window=20).std()
+    df['BB_Upper']  = bb_sma + (2 * bb_std)
+    df['BB_Middle'] = bb_sma
+    df['BB_Lower']  = bb_sma - (2 * bb_std)
+    df['BB_Width']  = (df['BB_Upper'] - df['BB_Lower']) / df['BB_Middle']
+    # %B — where price sits within the bands
+    df['BB_PctB'] = (close - df['BB_Lower']) / (df['BB_Upper'] - df['BB_Lower']).replace(0, np.nan)
+
+    # ========================
+    #  6. ATR (14-period)
+    # ========================
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    df['ATR_14'] = true_range.ewm(span=14, adjust=False).mean()
+
+    # ========================
+    #  7. ADX (14-period)
+    # ========================
+    plus_dm  = high.diff()
+    minus_dm = -low.diff()
+    plus_dm  = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
+    minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
+
+    atr_14 = df['ATR_14'].replace(0, np.nan)
+    plus_di  = 100 * (plus_dm.ewm(span=14, adjust=False).mean() / atr_14)
+    minus_di = 100 * (minus_dm.ewm(span=14, adjust=False).mean() / atr_14)
+    df['Plus_DI']  = plus_di
+    df['Minus_DI'] = minus_di
+
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    df['ADX'] = dx.ewm(span=14, adjust=False).mean()
+
+    # ========================
+    #  8. CCI (20-period)
+    # ========================
+    tp = (high + low + close) / 3
+    tp_sma = tp.rolling(window=20).mean()
+    tp_mad = tp.rolling(window=20).apply(lambda x: np.mean(np.abs(x - x.mean())), raw=True)
+    df['CCI_20'] = (tp - tp_sma) / (0.015 * tp_mad).replace(0, np.nan)
+
+    # ========================
+    #  9. WILLIAMS %R (14-period)
+    # ========================
+    df['Williams_R'] = -100 * (highest_14 - close) / (highest_14 - lowest_14).replace(0, np.nan)
+
+    # ========================
+    # 10. MFI — Money Flow Index (14-period)
+    # ========================
+    tp_mfi = (high + low + close) / 3
+    raw_money_flow = tp_mfi * volume
+    pos_flow = raw_money_flow.where(tp_mfi > tp_mfi.shift(1), 0.0)
+    neg_flow = raw_money_flow.where(tp_mfi < tp_mfi.shift(1), 0.0)
+    pos_sum = pos_flow.rolling(window=14).sum()
+    neg_sum = neg_flow.rolling(window=14).sum()
+    mfi_ratio = pos_sum / neg_sum.replace(0, np.nan)
+    df['MFI_14'] = 100 - (100 / (1 + mfi_ratio))
+
+    # ========================
+    # 11. OBV — On-Balance Volume
+    # ========================
+    obv = [0]
+    for i in range(1, len(close)):
+        if close.iloc[i] > close.iloc[i - 1]:
+            obv.append(obv[-1] + volume.iloc[i])
+        elif close.iloc[i] < close.iloc[i - 1]:
+            obv.append(obv[-1] - volume.iloc[i])
+        else:
+            obv.append(obv[-1])
+    df['OBV'] = obv
+
+    # ========================
+    # 12. VOLUME INDICATORS
+    # ========================
+    df['Vol_MA_20'] = volume.rolling(window=20).mean()
+    df['Vol_Ratio'] = volume / df['Vol_MA_20'].replace(0, np.nan)
+
+    # ========================
+    # 13. SUPERTREND (ATR multiplier=3, period=10)
+    # ========================
+    st_atr = true_range.ewm(span=10, adjust=False).mean()
+    hl2 = (high + low) / 2
+    upper_band = hl2 + (3 * st_atr)
+    lower_band = hl2 - (3 * st_atr)
+
+    supertrend = pd.Series(index=df.index, dtype='float64')
+    direction  = pd.Series(index=df.index, dtype='int64')
+
+    supertrend.iloc[0] = upper_band.iloc[0]
+    direction.iloc[0]  = -1
+
+    for i in range(1, len(df)):
+        if close.iloc[i] > upper_band.iloc[i - 1]:
+            supertrend.iloc[i] = lower_band.iloc[i]
+            direction.iloc[i]  = 1
+        elif close.iloc[i] < lower_band.iloc[i - 1]:
+            supertrend.iloc[i] = upper_band.iloc[i]
+            direction.iloc[i]  = -1
+        else:
+            if direction.iloc[i - 1] == 1:
+                supertrend.iloc[i] = max(lower_band.iloc[i], supertrend.iloc[i - 1])
+                direction.iloc[i]  = 1
+            else:
+                supertrend.iloc[i] = min(upper_band.iloc[i], supertrend.iloc[i - 1])
+                direction.iloc[i]  = -1
+
+    df['Supertrend']     = supertrend
+    df['Supertrend_Dir'] = direction   # 1 = bullish, -1 = bearish
+
+    # ========================
+    # 14. ICHIMOKU CLOUD
+    # ========================
+    nine_high  = high.rolling(window=9).max()
+    nine_low   = low.rolling(window=9).min()
+    df['Tenkan_Sen']  = (nine_high + nine_low) / 2
+
+    twenty_six_high = high.rolling(window=26).max()
+    twenty_six_low  = low.rolling(window=26).min()
+    df['Kijun_Sen']   = (twenty_six_high + twenty_six_low) / 2
+
+    df['Senkou_A'] = ((df['Tenkan_Sen'] + df['Kijun_Sen']) / 2).shift(26)
+    fifty_two_high = high.rolling(window=52).max()
+    fifty_two_low  = low.rolling(window=52).min()
+    df['Senkou_B'] = ((fifty_two_high + fifty_two_low) / 2).shift(26)
+
+    df['Chikou_Span'] = close.shift(-26)
+
+    # ========================
+    # 15. PIVOT POINTS (Standard)
+    # ========================
+    prev_high  = high.shift(1)
+    prev_low   = low.shift(1)
+    prev_close = close.shift(1)
+    pivot = (prev_high + prev_low + prev_close) / 3
+    df['Pivot']   = pivot
+    df['Pivot_R1'] = (2 * pivot) - prev_low
+    df['Pivot_S1'] = (2 * pivot) - prev_high
+    df['Pivot_R2'] = pivot + (prev_high - prev_low)
+    df['Pivot_S2'] = pivot - (prev_high - prev_low)
+
+    # ========================
+    # 16. CANDLE BODY & WICK ANALYSIS
+    # ========================
+    body = (close - df['open']).abs()
+    candle_range = high - low
+    df['Body_Pct']      = (body / candle_range.replace(0, np.nan)) * 100
+    df['Upper_Wick_Pct'] = ((high - pd.concat([close, df['open']], axis=1).max(axis=1))
+                             / candle_range.replace(0, np.nan)) * 100
+    df['Lower_Wick_Pct'] = ((pd.concat([close, df['open']], axis=1).min(axis=1) - low)
+                             / candle_range.replace(0, np.nan)) * 100
+    df['Is_Green'] = (close >= df['open']).astype(int)
+
+    # ========================
+    # 17. CONSECUTIVE CANDLE COUNTER
+    # ========================
+    green = df['Is_Green']
+    consec = [0] * len(green)
+    for i in range(1, len(green)):
+        if green.iloc[i] == green.iloc[i - 1]:
+            consec[i] = consec[i - 1] + (1 if green.iloc[i] == 1 else -1)
+        else:
+            consec[i] = 1 if green.iloc[i] == 1 else -1
+    df['Consec_Candles'] = consec  # positive = green streak, negative = red streak
+
+    # Round all float columns
+    float_cols = df.select_dtypes(include=[np.floating]).columns
+    df[float_cols] = df[float_cols].round(4)
+
+    return df
+
+
+def format_indicator_summary(df):
+    """
+    Create a concise text summary of the latest indicator values.
+    """
+    latest = df.iloc[-1]
+    prev   = df.iloc[-2] if len(df) > 1 else latest
+
+    summary = "=" * 60 + "\n"
+    summary += "TECHNICAL INDICATOR SUMMARY (Latest Candle)\n"
+    summary += "=" * 60 + "\n\n"
+
+    # --- Price & OHLCV ---
+    summary += f"📊 PRICE: O={latest['open']} H={latest['high']} L={latest['low']} C={latest['close']} V={latest['volume']}\n\n"
+
+    # --- Moving Averages ---
+    summary += "📈 MOVING AVERAGES:\n"
+    summary += f"  EMA 5:   {latest.get('EMA_5', 'N/A')}\n"
+    summary += f"  EMA 9:   {latest.get('EMA_9', 'N/A')}\n"
+    summary += f"  EMA 15:  {latest.get('EMA_15', 'N/A')}\n"
+    summary += f"  EMA 21:  {latest.get('EMA_21', 'N/A')}\n"
+    summary += f"  EMA 50:  {latest.get('EMA_50', 'N/A')}\n"
+    summary += f"  SMA 20:  {latest.get('SMA_20', 'N/A')}\n"
+    summary += f"  SMA 50:  {latest.get('SMA_50', 'N/A')}\n"
+    summary += f"  SMA 200: {latest.get('SMA_200', 'N/A')}\n"
+    summary += f"  VWAP:    {latest.get('VWAP', 'N/A')}\n"
+
+    ema_aligned = "YES ✅" if latest.get('EMA_5', 0) > latest.get('EMA_9', 0) > latest.get('EMA_15', 0) else "NO ❌"
+    price_above_vwap = "YES ✅" if latest['close'] > latest.get('VWAP', 0) else "NO ❌"
+    summary += f"  EMA Aligned (5>9>15): {ema_aligned}\n"
+    summary += f"  Price > VWAP: {price_above_vwap}\n\n"
+
+    # --- RSI ---
+    rsi = latest.get('RSI_14', 'N/A')
+    rsi_zone = "OVERSOLD 🟢" if rsi != 'N/A' and rsi < 30 else "OVERBOUGHT 🔴" if rsi != 'N/A' and rsi > 70 else "NEUTRAL"
+    summary += f"📉 RSI (14): {rsi}  [{rsi_zone}]\n\n"
+
+    # --- Stochastic ---
+    stoch_k = latest.get('STOCH_K', 'N/A')
+    stoch_d = latest.get('STOCH_D', 'N/A')
+    stoch_cross = ""
+    if stoch_k != 'N/A' and stoch_d != 'N/A':
+        prev_k = prev.get('STOCH_K', 0)
+        prev_d = prev.get('STOCH_D', 0)
+        if prev_k < prev_d and stoch_k > stoch_d:
+            stoch_cross = "BULLISH CROSS ✅"
+        elif prev_k > prev_d and stoch_k < stoch_d:
+            stoch_cross = "BEARISH CROSS ❌"
+        else:
+            stoch_cross = "No crossover"
+    summary += f"📊 STOCHASTIC: K={stoch_k} D={stoch_d}  [{stoch_cross}]\n\n"
+
+    # --- MACD ---
+    macd = latest.get('MACD', 'N/A')
+    macd_sig = latest.get('MACD_Signal', 'N/A')
+    macd_hist = latest.get('MACD_Hist', 'N/A')
+    prev_hist = prev.get('MACD_Hist', 0)
+    macd_trend = ""
+    if macd_hist != 'N/A':
+        if macd_hist > 0 and macd_hist > prev_hist:
+            macd_trend = "POSITIVE & EXPANDING ✅"
+        elif macd_hist > 0:
+            macd_trend = "POSITIVE but contracting ⚠️"
+        elif macd_hist < 0 and macd_hist < prev_hist:
+            macd_trend = "NEGATIVE & EXPANDING ❌"
+        else:
+            macd_trend = "NEGATIVE but recovering"
+    summary += f"📊 MACD: Line={macd} Signal={macd_sig} Hist={macd_hist}  [{macd_trend}]\n\n"
+
+    # --- Bollinger Bands ---
+    summary += f"📊 BOLLINGER BANDS:\n"
+    summary += f"  Upper:  {latest.get('BB_Upper', 'N/A')}\n"
+    summary += f"  Middle: {latest.get('BB_Middle', 'N/A')}\n"
+    summary += f"  Lower:  {latest.get('BB_Lower', 'N/A')}\n"
+    summary += f"  Width:  {latest.get('BB_Width', 'N/A')}\n"
+    summary += f"  %B:     {latest.get('BB_PctB', 'N/A')}\n\n"
+
+    # --- ATR ---
+    summary += f"📊 ATR (14): {latest.get('ATR_14', 'N/A')}\n\n"
+
+    # --- ADX ---
+    adx = latest.get('ADX', 'N/A')
+    adx_strength = ""
+    if adx != 'N/A':
+        if adx > 40:
+            adx_strength = "STRONG TREND 💪"
+        elif adx > 25:
+            adx_strength = "TRENDING"
+        elif adx > 20:
+            adx_strength = "WEAK TREND"
+        else:
+            adx_strength = "NO TREND / RANGE ⚠️"
+    summary += f"📊 ADX: {adx} +DI={latest.get('Plus_DI', 'N/A')} -DI={latest.get('Minus_DI', 'N/A')}  [{adx_strength}]\n\n"
+
+    # --- CCI ---
+    cci = latest.get('CCI_20', 'N/A')
+    cci_zone = ""
+    if cci != 'N/A':
+        if cci > 100:
+            cci_zone = "OVERBOUGHT"
+        elif cci < -100:
+            cci_zone = "OVERSOLD"
+        else:
+            cci_zone = "NEUTRAL"
+    summary += f"📊 CCI (20): {cci}  [{cci_zone}]\n\n"
+
+    # --- Williams %R ---
+    wr = latest.get('Williams_R', 'N/A')
+    wr_zone = ""
+    if wr != 'N/A':
+        if wr > -20:
+            wr_zone = "OVERBOUGHT"
+        elif wr < -80:
+            wr_zone = "OVERSOLD"
+        else:
+            wr_zone = "NEUTRAL"
+    summary += f"📊 WILLIAMS %R (14): {wr}  [{wr_zone}]\n\n"
+
+    # --- MFI ---
+    mfi = latest.get('MFI_14', 'N/A')
+    mfi_zone = ""
+    if mfi != 'N/A':
+        if mfi > 80:
+            mfi_zone = "OVERBOUGHT"
+        elif mfi < 20:
+            mfi_zone = "OVERSOLD"
+        else:
+            mfi_zone = "NEUTRAL"
+    summary += f"📊 MFI (14): {mfi}  [{mfi_zone}]\n\n"
+
+    # --- OBV ---
+    obv = latest.get('OBV', 'N/A')
+    prev_obv = prev.get('OBV', 0)
+    obv_trend = "RISING ✅" if obv != 'N/A' and obv > prev_obv else "FALLING ❌"
+    summary += f"📊 OBV: {obv}  [{obv_trend}]\n\n"
+
+    # --- Volume ---
+    vol = latest.get('volume', 'N/A')
+    vol_ma = latest.get('Vol_MA_20', 'N/A')
+    vol_ratio = latest.get('Vol_Ratio', 'N/A')
+    vol_status = ""
+    if vol_ratio != 'N/A':
+        if vol_ratio > 2.0:
+            vol_status = "VERY HIGH VOLUME 🔥"
+        elif vol_ratio > 1.3:
+            vol_status = "ABOVE AVERAGE ✅"
+        elif vol_ratio > 0.7:
+            vol_status = "AVERAGE"
+        else:
+            vol_status = "LOW VOLUME ⚠️"
+    summary += f"📊 VOLUME: Current={vol} MA20={vol_ma} Ratio={vol_ratio}  [{vol_status}]\n\n"
+
+    # --- Supertrend ---
+    st_dir = latest.get('Supertrend_Dir', 'N/A')
+    st_val = latest.get('Supertrend', 'N/A')
+    st_label = "BULLISH ✅" if st_dir == 1 else "BEARISH ❌" if st_dir == -1 else "N/A"
+    summary += f"📊 SUPERTREND: {st_val}  Direction={st_label}\n\n"
+
+    # --- Ichimoku ---
+    summary += f"📊 ICHIMOKU CLOUD:\n"
+    summary += f"  Tenkan-Sen:  {latest.get('Tenkan_Sen', 'N/A')}\n"
+    summary += f"  Kijun-Sen:   {latest.get('Kijun_Sen', 'N/A')}\n"
+    summary += f"  Senkou A:    {latest.get('Senkou_A', 'N/A')}\n"
+    summary += f"  Senkou B:    {latest.get('Senkou_B', 'N/A')}\n"
+    tk_cross = "BULLISH" if latest.get('Tenkan_Sen', 0) > latest.get('Kijun_Sen', 0) else "BEARISH"
+    cloud_pos = "ABOVE CLOUD ✅" if latest['close'] > max(latest.get('Senkou_A', 0) or 0, latest.get('Senkou_B', 0) or 0) else "BELOW CLOUD ❌" if latest['close'] < min(latest.get('Senkou_A', float('inf')) or float('inf'), latest.get('Senkou_B', float('inf')) or float('inf')) else "IN CLOUD ⚠️"
+    summary += f"  TK Cross: {tk_cross} | Price vs Cloud: {cloud_pos}\n\n"
+
+    # --- Pivot Points ---
+    summary += f"📊 PIVOT POINTS:\n"
+    summary += f"  R2:    {latest.get('Pivot_R2', 'N/A')}\n"
+    summary += f"  R1:    {latest.get('Pivot_R1', 'N/A')}\n"
+    summary += f"  Pivot: {latest.get('Pivot', 'N/A')}\n"
+    summary += f"  S1:    {latest.get('Pivot_S1', 'N/A')}\n"
+    summary += f"  S2:    {latest.get('Pivot_S2', 'N/A')}\n\n"
+
+    # --- Candle Structure ---
+    summary += f"🕯️ CANDLE STRUCTURE:\n"
+    summary += f"  Green: {'YES' if latest.get('Is_Green', 0) == 1 else 'NO'}\n"
+    summary += f"  Body %: {latest.get('Body_Pct', 'N/A')}%\n"
+    summary += f"  Upper Wick %: {latest.get('Upper_Wick_Pct', 'N/A')}%\n"
+    summary += f"  Lower Wick %: {latest.get('Lower_Wick_Pct', 'N/A')}%\n"
+    summary += f"  Consecutive: {latest.get('Consec_Candles', 'N/A')} (+ = green streak, - = red)\n\n"
+
+    # --- Multi-Factor Score ---
+    score = 0
+    total = 0
+
+    checks = {
+        "EMA Aligned (5>9>15)": latest.get('EMA_5', 0) > latest.get('EMA_9', 0) > latest.get('EMA_15', 0),
+        "Price > VWAP": latest['close'] > latest.get('VWAP', 0),
+        "RSI 30-65 (not overbought)": 30 <= (latest.get('RSI_14', 50) or 50) <= 65,
+        "Stoch K > D": (latest.get('STOCH_K', 0) or 0) > (latest.get('STOCH_D', 0) or 0),
+        "Stoch not overbought (<80)": (latest.get('STOCH_K', 0) or 0) < 80,
+        "MACD Hist positive": (latest.get('MACD_Hist', 0) or 0) > 0,
+        "ADX > 20 (trending)": (latest.get('ADX', 0) or 0) > 20,
+        "+DI > -DI (bullish)": (latest.get('Plus_DI', 0) or 0) > (latest.get('Minus_DI', 0) or 0),
+        "Volume > MA20": (latest.get('Vol_Ratio', 0) or 0) > 1.0,
+        "Supertrend Bullish": latest.get('Supertrend_Dir', 0) == 1,
+        "MFI 20-80 (healthy)": 20 <= (latest.get('MFI_14', 50) or 50) <= 80,
+        "Green Candle": latest.get('Is_Green', 0) == 1,
+        "Price > SMA20": latest['close'] > (latest.get('SMA_20', 0) or 0),
+        "OBV Rising": (latest.get('OBV', 0) or 0) > (prev.get('OBV', 0) or 0),
+    }
+
+    summary += "=" * 60 + "\n"
+    summary += "MULTI-FACTOR VALIDATION CHECKLIST:\n"
+    summary += "=" * 60 + "\n"
+    for name, passed in checks.items():
+        total += 1
+        if passed:
+            score += 1
+        icon = "✅" if passed else "❌"
+        summary += f"  {icon} {name}\n"
+
+    summary += f"\n  SCORE: {score}/{total} factors passed ({score/total*100:.0f}%)\n"
+
+    return summary
+
+
+# ===========================================================
+#  MAIN FUNCTION: LLM TRADE SIGNAL
+# ===========================================================
+
+def llm_trade_signal(symbol, ohlcv, timeframe="3m"):
+    """
+    Compute ALL technical indicators, format them, and send to Groq LLM
+    along with OHLCV candle data for trade validation.
+
+    Returns:
+        {
+            "signal": "buy" | "sell" | "no trade",
+            "confidence": 0.0 to 1.0,
+            "reason": "explanation",
+            "bias": "Bullish | Bearish | Neutral",
+            "entry": float,
+            "stop_loss": float,
+            "target_1": float,
+            "target_2": float
+        }
+    """
+
+    # ===========================================================
+    #  SAFE DEFAULTS
+    # ===========================================================
+    SAFE_DEFAULT = {
+        "signal": "no trade",
+        "confidence": 0.0,
+        "reason": "LLM call failed",
+        "bias": "Neutral",
+        "entry": 0.0,
+        "stop_loss": 0.0,
+        "target_1": 0.0,
+        "target_2": 0.0
+    }
+
+    try:
+        print(f"🤖 Calling LLM for {symbol}...")
+
+        # ===========================================================
+        #  COMPUTE ALL INDICATORS
+        # ===========================================================
+        df = compute_all_indicators(ohlcv)
+
+        if df.empty or len(df) < 20:
+            print("⚠️  Not enough data to compute indicators")
+            SAFE_DEFAULT["reason"] = "Insufficient data for indicators"
+            return SAFE_DEFAULT
+
+        # ===========================================================
+        #  FORMAT OHLCV + INDICATOR DATA (last 30 candles)
+        # ===========================================================
+        recent_df = df.tail(30)
+
+        # Compact candle table with key indicators per candle
+        candle_text = ""
+        display_cols = [
+            'time', 'open', 'high', 'low', 'close', 'volume',
+            'EMA_5', 'EMA_9', 'EMA_15', 'RSI_14',
+            'STOCH_K', 'STOCH_D', 'MACD_Hist', 'Vol_Ratio'
+        ]
+
+        for idx, row in recent_df.iterrows():
+            candle_text += (
+                f"  T={row.get('time', '?')} "
+                f"O={row['open']} H={row['high']} L={row['low']} C={row['close']} V={row['volume']} | "
+                f"EMA5={row.get('EMA_5', '?')} EMA9={row.get('EMA_9', '?')} EMA15={row.get('EMA_15', '?')} | "
+                f"RSI={row.get('RSI_14', '?')} StK={row.get('STOCH_K', '?')} StD={row.get('STOCH_D', '?')} | "
+                f"MACD_H={row.get('MACD_Hist', '?')} VolR={row.get('Vol_Ratio', '?')}\n"
+            )
+
+        if not candle_text.strip():
+            print("⚠️  No candle data to send to LLM")
+            SAFE_DEFAULT["reason"] = "No candle data available"
+            return SAFE_DEFAULT
+
+        # ===========================================================
+        #  INDICATOR SUMMARY (latest values)
+        # ===========================================================
+        indicator_summary = format_indicator_summary(df)
+        print(f"📊 Indicator Summary:\n{indicator_summary}")
+
+        # ===========================================================
+        #  PROMPT
+        # ===========================================================
+        prompt = f"""You are a very selective 3-minute timeframe intraday options trader in Indian markets (Nifty/BankNifty heavy). Your edge comes from waiting for high-conviction oversold recoveries with momentum confirmation. You are an elite intraday stock trader for Indian markets, aiming for 90%+ win rate by being ultra-conservative and multi-factor validated.
+
+SYMBOL: {symbol}
+TIMEFRAME: {timeframe}
+
+{'='*60}
+RECENT CANDLE DATA WITH INLINE INDICATORS (latest at bottom, last 30 candles):
+{'='*60}
+{candle_text}
+
+{indicator_summary}
+
+MY TECHNICAL ANALYSIS has generated a BUY signal based on:
+- Stochastic K crossed above D from oversold zone (<25)
+- Green candle confirmation
+- EMA alignment (5 > 9 > 15) is favorable
+- K has room to run (not overbought)
+
+ALL THE ABOVE INDICATOR DATA IS COMPUTED AND PROVIDED TO YOU. Use ALL of them in your analysis.
+
+YOUR TASK:
+
+1. Analyze ALL provided indicators holistically:
+   - Moving Averages: EMA alignment, price vs VWAP, SMA positions
+   - Momentum: RSI, Stochastic, MACD histogram direction & magnitude
+   - Trend: ADX strength, +DI vs -DI, Supertrend direction
+   - Volume: Volume ratio vs MA20, OBV trend, MFI
+   - Volatility: Bollinger Band position (%B), ATR for stop sizing
+   - Support/Resistance: Pivot points, Ichimoku cloud
+   - Candle Structure: Body %, wick analysis, consecutive candle streaks
+
+2. Look for WARNING signs:
+   - Bearish RSI/MACD divergence (price rising, indicator falling)
+   - Price near Bollinger Upper Band or Pivot R1/R2 (resistance)
+   - ADX < 20 (no trend / choppy market)
+   - Volume ratio < 1.0 (weak participation)
+   - Supertrend bearish
+   - Shooting star / doji candle patterns
+   - CCI > 100 or Williams %R > -20 (overbought)
+   - MFI > 80 (money flow overbought)
+
+3. If trade is valid, suggest entry, stop loss (use ATR for sizing) and targets (use Pivot levels / Fib)
+
+4. Use the MULTI-FACTOR SCORE as a baseline — if < 70% factors pass, heavily penalize confidence
+
+ADVANCED STEP-BY-STEP VALIDATION (follow strictly):
+1. Verify core signal: Stochastic crossover in last 1-3 candles, EMAs aligned, last candle green, volume > MA20
+2. Momentum check: RSI 30-65, MACD histogram positive & expanding, no bearish divergence
+3. Trend check: ADX > 20, +DI > -DI, Supertrend bullish, price above Ichimoku cloud
+4. Volume validation: Vol_Ratio > 1.0, OBV rising, MFI 20-80
+5. Volatility check: BB %B between 0.3-0.8 (not extreme), use ATR for stop distance
+6. Support/Resistance: Entry not near R1/R2 pivot, stop below S1 or Supertrend
+7. Candle quality: Strong body (>50%), small upper wick, green candle
+8. Risk-reward: Minimum 1:2 RR using ATR-based stop and pivot targets
+9. Final scoring: ALL major checks must pass for BUY; any 3+ failures = NO TRADE
+
+RESPOND ONLY with valid JSON. No markdown. No explanation outside JSON.
+
+{{
+  "bias": "Bullish" or "Bearish" or "Neutral",
+  "signal": "BUY" or "SELL" or "NO TRADE",
+  "entry": number,
+  "stop_loss": number,
+  "target_1": number,
+  "target_2": number,
+  "confidence": number between 0.0 and 1.0,
+  "reason": "2-3 sentence explanation referencing specific indicators"
+}}
+
+CONFIDENCE CALIBRATION:
+- 0.85-1.0: ALL indicators aligned, strong momentum, clean structure, 12+ factors pass
+- 0.70-0.84: Most indicators aligned, minor concerns, 10-11 factors pass
+- 0.50-0.69: Mixed signals, significant concerns, 7-9 factors pass
+- 0.30-0.49: Majority negative, high failure risk, 4-6 factors pass
+- 0.00-0.29: Clear counter-signals, avoid trade, <4 factors pass
+"""
+
+        # ===========================================================
+        #  API CALL
+        # ===========================================================
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "temperature": 0.1,
+                "max_tokens": 400,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an expert intraday trading analyst. "
+                            "You have been provided with comprehensive OHLCV data AND "
+                            "all computed technical indicators (EMAs, RSI, Stochastic, MACD, "
+                            "Bollinger Bands, ATR, ADX, CCI, Williams %R, MFI, OBV, Supertrend, "
+                            "Ichimoku, Pivot Points, Volume analysis, Candle structure). "
+                            "Use ALL indicators in your analysis. "
+                            "Respond ONLY in valid JSON. No markdown."
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            },
+            timeout=30
+        )
+
+        # ===========================================================
+        #  HANDLE API FAILURE
+        # ===========================================================
+        if response.status_code != 200:
+            print(f"❌ Groq API error: {response.status_code}")
+            print(f"   Details: {response.text[:500]}")
+            SAFE_DEFAULT["reason"] = f"API error: {response.status_code}"
+            return SAFE_DEFAULT
+
+        data = response.json()
+
+        if "choices" not in data:
+            print(f"❌ Invalid Groq response: {data}")
+            SAFE_DEFAULT["reason"] = "Invalid API response"
+            return SAFE_DEFAULT
+
+        content = data["choices"][0]["message"]["content"]
+        print(f"📝 Raw LLM response: {content}")
+
+        # ===========================================================
+        #  PARSE JSON
+        # ===========================================================
+        if "```json" in content:
+            content = content.split("```json")[1].split("```")[0].strip()
+        elif "```" in content:
+            content = content.split("```")[1].split("```")[0].strip()
+
+        start = content.index("{")
+        end = content.rindex("}") + 1
+        json_str = content[start:end]
+
+        result = json.loads(json_str)
+
+        # ===========================================================
+        #  VALIDATE & NORMALIZE
+        # ===========================================================
+        raw_signal = str(result.get("signal", "NO TRADE")).strip().upper()
+        valid_signals = {
+            "BUY": "buy",
+            "SELL": "sell",
+            "NO TRADE": "no trade",
+            "HOLD": "no trade",
+            "NEUTRAL": "no trade"
+        }
+        signal = valid_signals.get(raw_signal, "no trade")
+
+        try:
+            confidence = float(result.get("confidence", 0.0))
+            confidence = max(0.0, min(1.0, confidence))
+        except (ValueError, TypeError):
+            confidence = 0.0
+
+        reason = str(result.get("reason", "No reason provided"))
+
+        bias = str(result.get("bias", "Neutral")).strip()
+        if bias not in ["Bullish", "Bearish", "Neutral"]:
+            bias = "Neutral"
+
+        def safe_float(val, default=0.0):
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return default
+
+        entry     = safe_float(result.get("entry"))
+        stop_loss = safe_float(result.get("stop_loss"))
+        target_1  = safe_float(result.get("target_1"))
+        target_2  = safe_float(result.get("target_2"))
+
+        final_result = {
+            "signal": signal,
+            "confidence": confidence,
+            "reason": reason,
+            "bias": bias,
+            "entry": entry,
+            "stop_loss": stop_loss,
+            "target_1": target_1,
+            "target_2": target_2
+        }
+
+        print(f"✅ LLM Result: signal={signal}, confidence={confidence}, bias={bias}")
+        print(f"   Entry={entry}, SL={stop_loss}, T1={target_1}, T2={target_2}")
+        print(f"   Reason: {reason}")
+
+        return final_result
+
+    # ===========================================================
+    #  ERROR HANDLING
+    # ===========================================================
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON parse error: {e}")
+        SAFE_DEFAULT["reason"] = f"JSON parse error: {e}"
+        return SAFE_DEFAULT
+
+    except requests.exceptions.Timeout:
+        print("❌ LLM request timed out (30s)")
+        SAFE_DEFAULT["reason"] = "Request timed out"
+        return SAFE_DEFAULT
+
+    except requests.exceptions.ConnectionError:
+        print("❌ Cannot connect to Groq API")
+        SAFE_DEFAULT["reason"] = "Connection error"
+        return SAFE_DEFAULT
+
+    except Exception as e:
+        print(f"❌ LLM call failed: {e}")
+        SAFE_DEFAULT["reason"] = f"Error: {e}"
+        return SAFE_DEFAULT
 
 
 def super_trend(symbol, data, use_llm=True):
