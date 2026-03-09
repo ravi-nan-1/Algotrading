@@ -1750,7 +1750,7 @@ def super_trend(symbol, data, use_llm=True):
     data.loc[data.index[-1], 'llm_stop_loss'] = llm_stop_loss
     data.loc[data.index[-1], 'llm_target_1'] = llm_target_1
     data.loc[data.index[-1], 'llm_target_2'] = llm_target_2
-    tele_msg("Long Entry Taken llm data  "+str(llm_confidence)+" confidence "+str(llm_signal)+"  reason "+str(llm_reason)+"   llm_entry "+str(llm_entry)+" llm_target_1 "+str(llm_target_1)+"  llm_target_2 "+str(llm_target_2))
+    #tele_msg("Long Entry Taken llm data  "+str(llm_confidence)+" confidence "+str(llm_signal)+"  reason "+str(llm_reason)+"   llm_entry "+str(llm_entry)+" llm_target_1 "+str(llm_target_1)+"  llm_target_2 "+str(llm_target_2))
     #tele_msg("Short Entry Taken For "+i+" Total Quantity "+str(Trade_quantity)+" And the Target Price is "+str(Target_Price))
     # ===========================================================
     # FINAL SIGNAL
@@ -1780,6 +1780,7 @@ def super_trend(symbol, data, use_llm=True):
             print(f"✅ TAKING BUY: {symbol}")
             print(f"   Conf: {llm_confidence:.2f}")
             print(f"   Entry: {llm_entry} | SL: {llm_stop_loss}")
+            tele_msg("Long Entry Taken llm data  "+str(llm_confidence)+" confidence "+str(llm_signal)+"  reason "+str(llm_reason)+"   llm_entry "+str(llm_entry)+" llm_target_1 "+str(llm_target_1)+"  llm_target_2 "+str(llm_target_2))
             print("🟢" * 15 + "\n")
         else:
             print("\n" + "🔴" * 15)
