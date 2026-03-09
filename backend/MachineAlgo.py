@@ -498,7 +498,7 @@ def fetch_ohlcv(symbol, timeframe="3m", candles=30):
 
 
 
-def llm_trade_signalrr(symbol, ohlcv, timeframe="3m"):
+def llm_trade_signal(symbol, ohlcv, timeframe="3m"):
     """
     Call Groq LLM to validate a BUY signal.
 
@@ -1246,7 +1246,7 @@ def format_indicator_summary(df):
     return "\n".join(lines)
 
 
-def llm_trade_signal(symbol, ohlcv, timeframe="3m"):
+def llm_trade_signaldd(symbol, ohlcv, timeframe="3m"):
     """
     Compute ALL technical indicators and send to Groq LLM for trade validation.
     Handles None data, different column formats, and all edge cases.
@@ -1750,7 +1750,8 @@ def super_trend(symbol, data, use_llm=True):
     data.loc[data.index[-1], 'llm_stop_loss'] = llm_stop_loss
     data.loc[data.index[-1], 'llm_target_1'] = llm_target_1
     data.loc[data.index[-1], 'llm_target_2'] = llm_target_2
-
+    tele_msg("Long Entry Taken llm data  "+str(llm_confidence)+" confidence "+str(llm_signal)+"  reason "+str(llm_reason)+"   llm_entry "+str(llm_entry)+" llm_target_1 "+str(llm_target_1)+"  llm_target_2 "+str(llm_target_2))
+    #tele_msg("Short Entry Taken For "+i+" Total Quantity "+str(Trade_quantity)+" And the Target Price is "+str(Target_Price))
     # ===========================================================
     # FINAL SIGNAL
     # ===========================================================
