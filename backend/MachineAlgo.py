@@ -562,7 +562,9 @@ def llm_trade_signal(symbol, ohlcv, timeframe="3m"):
         # ===========================================================
         #  PROMPT
         # ===========================================================
-        prompt = f""" You are a very selective 3-minute timeframe intraday options trader in Indian markets (Nifty/BankNifty heavy). Your edge comes from waiting for high-conviction oversold recoveries with momentum confirmation.  You are an elite intraday stock trader for Indian markets, aiming for 90%+ win rate by being ultra-conservative and multi-factor validated.You are a professional discretionary trader.
+        prompt = f""" You are a very selective 3-minute timeframe intraday options trader in Indian markets (Nifty/BankNifty heavy). 
+        Your edge comes from waiting for high-conviction oversold recoveries with momentum confirmation. 
+        You are an elite intraday stock trader for Indian markets, aiming for 90%+ win rate by being ultra-conservative and multi-factor validated.You are a professional discretionary trader.
 
 Analyze OHLCV data for {symbol} on {timeframe}.
 Trade only if quality is high.
@@ -573,16 +575,12 @@ TIMEFRAME: {timeframe}
 RECENT CANDLE DATA (latest at bottom):
 {candle_text}
 
-MY TECHNICAL ANALYSIS has generated a BUY signal based on:
-- Stochastic K crossed above D from oversold zone (<25)
-- Green candle confirmation
-- EMA alignment (5 > 9 > 15) is favorable
-- K has room to run (not overbought)
+
 
 
 YOUR TASK:
 
-1. Analyze price action, momentum, volume and candle structure
+1. Analyze price action, momentum, volume,volume profile  and candle structure 
 2. Look for WARNING signs:
    - Bearish divergence
    - Strong resistance nearby
@@ -590,16 +588,8 @@ YOUR TASK:
    - Fake breakout patterns
    - Low volume on bounce
 3. If trade is valid, suggest entry, stop loss and targets
-4. Assess overall probability of success
-ADVANCED STEP-BY-STEP VALIDATION (follow strictly for high accuracy):
-1. Verify core signal: Confirm Stochastic crossover in last 1-3 candles, EMAs aligned bullishly (5>9>15), last candle green, volume > MA20.
-2. Momentum check: RSI not oversold/overbought extremes, MACD histogram positive and expanding, no bearish divergence (price highs with lower indicator highs).
-3. Price action analysis: Identify bullish patterns (hammer, engulfing), support holds (price above recent low), no resistance immediately overhead (entry < recent high - 1%).
-4. Volume validation: Bounce on high volume, no climax selling, volume trend increasing.
-5. Risk-reward: Ensure potential 1:2 RR minimum (targets based on fib extensions or recent swings).
-6. Warnings scan: Reject if bearish candles (shooting star, doji at highs), divergences, low volume, downtrend (price < EMA15), or overbought signals.
-7. Overall bias: Only BUY if ALL checks pass strongly; SELL on clear reversals; else NO TRADE.
-8. Calibrate confidence high only for pristine setups (target 90% accuracy by rejecting marginal trades).
+
+4. Calibrate confidence high only for pristine setups (target 90% accuracy by rejecting marginal trades).
 
 RESPOND ONLY with valid JSON. No markdown. No explanation outside JSON.
 
