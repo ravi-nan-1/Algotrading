@@ -444,119 +444,277 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 
 
-def fetch_ohlcv(symbol, timeframe="3m", candles=30):
-    print('call11 fetch_ohlcv')
+def fetch_ohlcv(symbol, timeframe="3m", candles=30, existing_data=None):
+    """
+    Fetch OHLCV data for LLM analysis.
+    
+    If existing_data (DataFrame) is provided, convert it directly
+    instead of making a new API call — ensures LLM sees the SAME
+    data that super_trend analyzed.
+    
+    If existing_data is None, fetch fresh from 5paisa API.
+    """
+    print('📡 fetch_ohlcv called')
+
+    # ═══════════════════════════════════════════════════════════════
+    #  PATH 1: Use existing data (same data super_trend analyzed)
+    # ═══════════════════════════════════════════════════════════════
+    if existing_data is not None and isinstance(existing_data, pd.DataFrame):
+        print('  ✅ Using existing DataFrame (same as super_trend input)')
+
+        required = {"Open", "High", "Low", "Close", "Volume"}
+        if not required.issubset(existing_data.columns):
+            print(f"  ❌ Missing columns: {required - set(existing_data.columns)}")
+            return None
+
+        df = existing_data.tail(candles)
+
+        ohlcv = []
+        for _, r in df.iterrows():
+            try:
+                ohlcv.append({
+                    "o": round(float(r["Open"]), 2),
+                    "h": round(float(r["High"]), 2),
+                    "l": round(float(r["Low"]), 2),
+                    "c": round(float(r["Close"]), 2),
+                    "v": int(float(r["Volume"]))
+                })
+            except (ValueError, TypeError) as e:
+                print(f"  ⚠️ Skipping bad row: {e}")
+                continue
+
+        if not ohlcv:
+            print("  ❌ No valid OHLCV rows")
+            return None
+
+        print(f"  📊 Converted {len(ohlcv)} candles from existing data")
+        return ohlcv
+
+    # ═══════════════════════════════════════════════════════════════
+    #  PATH 2: Fresh API fetch (fallback)
+    # ═══════════════════════════════════════════════════════════════
+    print('  📡 Fetching fresh from 5paisa API...')
+
     scripcode = scripcode_lookup(instrument_df, symbol)
-    print(scripcode)
+    print(f'  ScripCode: {scripcode}')
     if not scripcode:
+        print("  ❌ ScripCode not found")
         return None
 
-    df = pd.DataFrame(
-        client.historical_data(
+    try:
+        raw = client.historical_data(
             Exch='N', ExchangeSegment='D',
             ScripCode=scripcode,
             time=timeframe,
             From=dt.date.today() - dt.timedelta(5),
             To=dt.date.today()
         )
-    )
-    print(df)
-    # 🔥 SAFE DATETIME HANDLING
+    except Exception as e:
+        print(f"  ❌ API call failed: {e}")
+        return None
+
+    if not raw:
+        print("  ❌ API returned empty data")
+        return None
+
+    df = pd.DataFrame(raw)
+    print(f"  📦 API returned {len(df)} rows")
+    print(f"  📋 Columns: {list(df.columns)}")
+
+    # ─── Safe datetime handling ───
     datetime_col = None
-    for col in ["Datetime", "DateTime", "Date", "Time"]:
+    for col in ["Datetime", "DateTime", "Date", "Time", "datetime", "date"]:
         if col in df.columns:
             datetime_col = col
             break
 
     if datetime_col:
-        df[datetime_col] = pd.to_datetime(df[datetime_col])
-        df = df.sort_values(datetime_col)
+        try:
+            df[datetime_col] = pd.to_datetime(df[datetime_col])
+            df = df.sort_values(datetime_col)
+        except Exception as e:
+            print(f"  ⚠️ DateTime parse warning: {e}")
 
-    # Ensure required columns exist
+    # ─── Column name normalization ───
+    # Handle different APIs returning different column names
+    col_map = {}
+    for col in df.columns:
+        cl = col.lower().strip()
+        if cl in ('open', 'o'):
+            col_map[col] = 'Open'
+        elif cl in ('high', 'h'):
+            col_map[col] = 'High'
+        elif cl in ('low', 'l'):
+            col_map[col] = 'Low'
+        elif cl in ('close', 'c'):
+            col_map[col] = 'Close'
+        elif cl in ('volume', 'v', 'vol'):
+            col_map[col] = 'Volume'
+
+    if col_map:
+        df = df.rename(columns=col_map)
+
+    # ─── Validate required columns ───
     required = {"Open", "High", "Low", "Close", "Volume"}
     if not required.issubset(df.columns):
+        missing = required - set(df.columns)
+        print(f"  ❌ Missing columns after normalization: {missing}")
+        print(f"  Available: {list(df.columns)}")
         return None
 
     df = df.tail(candles)
 
-    return [
-        {
-            "o": round(float(r["Open"]), 2),
-            "h": round(float(r["High"]), 2),
-            "l": round(float(r["Low"]), 2),
-            "c": round(float(r["Close"]), 2),
-            "v": int(r["Volume"])
-        }
-        for _, r in df.iterrows()
-    ]
+    # ─── Convert to OHLCV list ───
+    ohlcv = []
+    for _, r in df.iterrows():
+        try:
+            ohlcv.append({
+                "o": round(float(r["Open"]), 2),
+                "h": round(float(r["High"]), 2),
+                "l": round(float(r["Low"]), 2),
+                "c": round(float(r["Close"]), 2),
+                "v": int(float(r["Volume"]))
+            })
+        except (ValueError, TypeError) as e:
+            print(f"  ⚠️ Skipping bad row: {e}")
+            continue
+
+    if not ohlcv:
+        print("  ❌ No valid OHLCV rows after conversion")
+        return None
+
+    print(f"  ✅ Returning {len(ohlcv)} candles")
+    return ohlcv
 
 
 
 
-def llm_trade_signal(symbol, ohlcv, timeframe):
-    print('call11 fetch_ohlcv')
+def llm_trade_signal(symbol, ohlcv, timeframe, signal_context=None):
+    """
+    LLM acts as a QUALITATIVE SANITY CHECK only.
+    Does NOT re-verify technical rules. super_trend already did that.
+    Evaluates: price action quality, volume behavior, volatility, setup cleanliness.
+    """
+    print('🧠 llm_trade_signal called')
 
-    prompt = f"""
-You are a professional discretionary trader.
+    # Extract only high-level context (no rule duplication)
+    grade = signal_context.get('grade', 'N/A') if signal_context else 'N/A'
+    path  = signal_context.get('path', 'N/A') if signal_context else 'N/A'
+    close = signal_context.get('close', 'N/A') if signal_context else 'N/A'
 
-Analyze OHLCV data for {symbol} on {timeframe}.
-Trade only if quality is high.
+    prompt = f"""You are a professional intraday trader acting as a final qualitative filter.
 
-OHLCV:
-{json.dumps(ohlcv)}
+A deterministic algorithm has already verified a LONG setup for {symbol} on {timeframe}.
+Signal Grade: {grade} | Path: {path} | Current Price: {close}
 
-Respond ONLY with valid JSON. No explanation. No markdown.
+DO NOT re-check technical rules. They are already confirmed.
+Your only job is to evaluate the RAW PRICE ACTION for quality:
 
+1. Trend cleanliness: Is the move smooth and directional, or choppy/whippy?
+2. Volume behavior: Does volume support the advance, or show distribution/hesitation?
+3. Candle conviction: Are candles showing real buying pressure, or long wicks/indecision?
+4. Volatility context: Is the move sustainable, or an exhausted spike?
+5. Overall setup quality: Does this look like a high-probability long, or a trap?
+
+If price action is clean, volume confirms, and momentum looks genuine → CONFIRM with high confidence.
+If you see chop, distribution, long upper wicks, or exhaustion → REJECT.
+
+OHLCV (last {len(ohlcv)} candles):
+{json.dumps(ohlcv, indent=1)}
+
+Respond ONLY with valid JSON. No markdown. No explanation.
 Format:
-{{
-  "bias": "Bullish | Bearish | Neutral",
-  "signal": "BUY | SELL | NO TRADE",
-  "entry": number,
-  "stop_loss": number,
-  "target_1": number,
-  "target_2": number,
-  "confidence": number,
-  "reason": "short explanation"
-}}
-"""
+{{"bias": "Bullish | Bearish | Neutral", "signal": "buy | sell | no trade", "entry": number, "stop_loss": number, "target_1": number, "target_2": number, "confidence": number_between_0_and_1, "reason": "one line"}}"""
 
-    response = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json"
-        },
-        json={
-            "model": "llama-3.3-70b-versatile",
-            "temperature": 0.1,
-            "messages": [{"role": "user", "content": prompt}]
-        },
-        timeout=30
-    )
+    max_retries = 2
+    last_error = None
 
-    # 🔥 HANDLE API FAILURE
-    if response.status_code != 200:
-        return {"error": "Groq API error", "details": response.text}
+    for attempt in range(max_retries + 1):
+        try:
+            if attempt > 0:
+                import time
+                time.sleep(2)
 
-    data = response.json()
+            response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "llama-3.3-70b-versatile",
+                    "temperature": 0.05,
+                    "max_tokens": 250,
+                    "messages": [{"role": "user", "content": prompt}]
+                },
+                timeout=20
+            )
 
-    # 🔥 HANDLE MISSING CHOICES
-    if "choices" not in data:
-        return {"error": "Invalid Groq response", "raw": data}
+            if response.status_code != 200:
+                last_error = f"HTTP {response.status_code}"
+                continue
 
-    content = data["choices"][0]["message"]["content"]
+            data = response.json()
+            if "choices" not in data:
+                last_error = "No choices in response"
+                continue
 
-    # 🔥 EXTRACT JSON SAFELY
-    try:
-        start = content.index("{")
-        end = content.rindex("}") + 1
-        json_str = content[start:end]
-        return json.loads(json_str)
-    except Exception as e:
-        return {
-            "error": "LLM did not return valid JSON",
-            "raw_response": content
-        }
+            content = data["choices"][0]["message"]["content"].strip()
+            
+            # Strip markdown if present
+            if content.startswith("```"):
+                lines = [l for l in content.split("\n") if not l.strip().startswith("```")]
+                content = "\n".join(lines)
+
+            start = content.index("{")
+            end = content.rindex("}") + 1
+            result = json.loads(content[start:end])
+
+            # Normalize signal to lowercase (matches super_trend comparison)
+            raw_sig = str(result.get("signal", "no trade")).strip().lower()
+            if raw_sig in ("buy", "long", "confirm", "yes"):
+                signal = "buy"
+            elif raw_sig in ("sell", "short", "reject", "no"):
+                signal = "sell"
+            else:
+                signal = "no trade"
+
+            # Safe confidence
+            try:
+                conf = float(result.get("confidence", 0.0))
+                conf = max(0.0, min(1.0, conf))
+            except (ValueError, TypeError):
+                conf = 0.0
+
+            def safe_float(v, d=0.0):
+                try:
+                    f = float(v)
+                    return f if f == f else d
+                except:
+                    return d
+
+            return {
+                "bias": str(result.get("bias", "Neutral")),
+                "signal": signal,
+                "entry": safe_float(result.get("entry", 0.0)),
+                "stop_loss": safe_float(result.get("stop_loss", 0.0)),
+                "target_1": safe_float(result.get("target_1", 0.0)),
+                "target_2": safe_float(result.get("target_2", 0.0)),
+                "confidence": conf,
+                "reason": str(result.get("reason", ""))
+            }
+
+        except Exception as e:
+            last_error = str(e)
+            continue
+
+    # Fallback on failure
+    print(f"  ❌ LLM failed: {last_error}")
+    return {
+        "bias": "Neutral", "signal": "no trade", "entry": 0.0,
+        "stop_loss": 0.0, "target_1": 0.0, "target_2": 0.0,
+        "confidence": 0.0, "reason": f"LLM error: {last_error}"
+    }
 
 
 
