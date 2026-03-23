@@ -602,33 +602,363 @@ def fetch_ohlcv(symbol, timeframe="3m", candles=30, existing_data=None):
 
 def llm_trade_signal(symbol, ohlcv, timeframe, signal_context=None):
     """
-    LLM analyzes chart like a professional trader.
-    Looks at: trend, momentum, volume, patterns, support/resistance.
+    LLM analyzes pre-computed technical indicators like a 20-year veteran scalper.
+    Step 1: Compute all indicators from OHLCV (math done in Python, not by LLM)
+    Step 2: Feed computed analysis to LLM for pattern recognition + decision
+    Step 3: Apply strict filters before returning signal
     """
     print('🧠 llm_trade_signal called')
 
-    prompt = f"""You are a professional intraday trader analyzing {symbol} on {timeframe} timeframe.
+    # ═══════════════════════════════════════════════════════════════════
+    #  STEP 1: PRE-COMPUTE ALL TECHNICAL INDICATORS (Python does the math)
+    # ═══════════════════════════════════════════════════════════════════
+    if not ohlcv or len(ohlcv) < 10:
+        print("  ❌ Insufficient data for analysis")
+        return _no_trade_response("Insufficient candle data")
 
-OHLCV DATA (last {len(ohlcv)} candles, most recent at end):
-{json.dumps(ohlcv, indent=1)}
+    closes = [c["c"] for c in ohlcv]
+    highs  = [c["h"] for c in ohlcv]
+    lows   = [c["l"] for c in ohlcv]
+    opens  = [c["o"] for c in ohlcv]
+    volumes = [c["v"] for c in ohlcv]
 
-ANALYZE LIKE A REAL TRADER:
-1. What is the overall trend? (higher highs/lows or lower highs/lows)
-2. Is there momentum? (are moves getting stronger or weaker)
-3. Volume behavior? (increasing on moves = conviction)
-4. Any chart patterns? (breakout, reversal, consolidation)
-5. Where is price relative to recent range? (near highs/lows/middle)
-6. Risk/reward - is there a clear stop loss and target?
+    current_price = closes[-1]
+    prev_close    = closes[-2]
 
-GIVE YOUR TRADING DECISION:
-- "buy" = Clear long setup with good risk/reward
-- "sell" = Clear short setup with good risk/reward  
-- "no trade" = Unclear, choppy, or poor risk/reward
+    # ─── EMA Calculations ───
+    def calc_ema(data, period):
+        if len(data) < period:
+            return [sum(data) / len(data)] * len(data)
+        ema = [sum(data[:period]) / period]
+        multiplier = 2 / (period + 1)
+        for i in range(period, len(data)):
+            ema.append((data[i] - ema[-1]) * multiplier + ema[-1])
+        # Pad front
+        return [ema[0]] * (len(data) - len(ema)) + ema
 
-Be honest. If the chart looks bad for buying, say so.
+    ema_5  = calc_ema(closes, 5)
+    ema_9  = calc_ema(closes, 9)
+    ema_20 = calc_ema(closes, 20)
 
-Respond ONLY with JSON:
-{{"bias": "Bullish|Bearish|Neutral", "signal": "buy|sell|no trade", "confidence": 0.0-1.0, "entry": price, "stop_loss": price, "target_1": price, "target_2": price, "reason": "your analysis"}}"""
+    ema_5_current  = round(ema_5[-1], 2)
+    ema_9_current  = round(ema_9[-1], 2)
+    ema_20_current = round(ema_20[-1], 2)
+
+    ema_5_prev  = round(ema_5[-2], 2)
+    ema_9_prev  = round(ema_9[-2], 2)
+
+    # EMA alignment
+    ema_bullish_stack = ema_5_current > ema_9_current > ema_20_current
+    ema_bearish_stack = ema_5_current < ema_9_current < ema_20_current
+
+    # EMA crossover detection
+    ema_5_crossed_above_9 = (ema_5_prev <= ema_9_prev) and (ema_5_current > ema_9_current)
+    ema_5_crossed_below_9 = (ema_5_prev >= ema_9_prev) and (ema_5_current < ema_9_current)
+
+    # ─── RSI (14-period) ───
+    def calc_rsi(data, period=14):
+        if len(data) < period + 1:
+            return 50.0  # neutral default
+        deltas = [data[i] - data[i-1] for i in range(1, len(data))]
+        gains = [d if d > 0 else 0 for d in deltas]
+        losses = [-d if d < 0 else 0 for d in deltas]
+
+        avg_gain = sum(gains[:period]) / period
+        avg_loss = sum(losses[:period]) / period
+
+        for i in range(period, len(deltas)):
+            avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+
+        if avg_loss == 0:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return round(100 - (100 / (1 + rs)), 2)
+
+    rsi = calc_rsi(closes)
+
+    # ─── MACD ───
+    ema_12 = calc_ema(closes, 12)
+    ema_26 = calc_ema(closes, 26)
+    macd_line = [round(ema_12[i] - ema_26[i], 2) for i in range(len(closes))]
+    macd_signal_line = calc_ema(macd_line, 9)
+    macd_histogram = round(macd_line[-1] - macd_signal_line[-1], 2)
+    macd_current = round(macd_line[-1], 2)
+    macd_signal_current = round(macd_signal_line[-1], 2)
+    macd_prev_histogram = round(macd_line[-2] - macd_signal_line[-2], 2)
+    macd_crossover_bull = macd_prev_histogram <= 0 and macd_histogram > 0
+    macd_crossover_bear = macd_prev_histogram >= 0 and macd_histogram < 0
+
+    # ─── Volume Analysis ───
+    avg_volume = sum(volumes[-10:]) / min(10, len(volumes))
+    current_volume = volumes[-1]
+    volume_ratio = round(current_volume / avg_volume, 2) if avg_volume > 0 else 1.0
+    volume_surge = volume_ratio > 1.5
+    volume_dry = volume_ratio < 0.5
+
+    # Volume trend (last 3 candles)
+    vol_increasing = len(volumes) >= 3 and volumes[-1] > volumes[-2] > volumes[-3]
+    vol_decreasing = len(volumes) >= 3 and volumes[-1] < volumes[-2] < volumes[-3]
+
+    # ─── Candle Pattern Analysis ───
+    last_candle_body = abs(closes[-1] - opens[-1])
+    last_candle_range = highs[-1] - lows[-1]
+    last_candle_bullish = closes[-1] > opens[-1]
+    last_candle_bearish = closes[-1] < opens[-1]
+    body_ratio = round(last_candle_body / last_candle_range, 2) if last_candle_range > 0 else 0
+
+    # Doji detection
+    is_doji = body_ratio < 0.15
+
+    # Strong candle (big body, small wicks)
+    is_strong_bull_candle = last_candle_bullish and body_ratio > 0.65
+    is_strong_bear_candle = last_candle_bearish and body_ratio > 0.65
+
+    # Hammer / Shooting Star
+    upper_wick = highs[-1] - max(opens[-1], closes[-1])
+    lower_wick = min(opens[-1], closes[-1]) - lows[-1]
+    is_hammer = (lower_wick > 2 * last_candle_body) and (upper_wick < last_candle_body * 0.5) and last_candle_range > 0
+    is_shooting_star = (upper_wick > 2 * last_candle_body) and (lower_wick < last_candle_body * 0.5) and last_candle_range > 0
+
+    # Engulfing patterns (last 2 candles)
+    if len(ohlcv) >= 2:
+        prev_body = abs(closes[-2] - opens[-2])
+        bull_engulfing = (closes[-2] < opens[-2]) and (closes[-1] > opens[-1]) and \
+                         (opens[-1] <= closes[-2]) and (closes[-1] >= opens[-2]) and \
+                         (last_candle_body > prev_body)
+        bear_engulfing = (closes[-2] > opens[-2]) and (closes[-1] < opens[-1]) and \
+                         (opens[-1] >= closes[-2]) and (closes[-1] <= opens[-2]) and \
+                         (last_candle_body > prev_body)
+    else:
+        bull_engulfing = False
+        bear_engulfing = False
+
+    # ─── Support / Resistance ───
+    recent_high = max(highs[-10:])
+    recent_low  = min(lows[-10:])
+    price_range = recent_high - recent_low
+
+    # Position in range (0 = at support, 1 = at resistance)
+    range_position = round((current_price - recent_low) / price_range, 2) if price_range > 0 else 0.5
+
+    near_support    = range_position < 0.2
+    near_resistance = range_position > 0.8
+    near_middle     = 0.35 < range_position < 0.65
+
+    # ─── Trend Structure (Higher Highs/Lows) ───
+    swing_highs = highs[-6:]
+    swing_lows  = lows[-6:]
+
+    higher_highs = all(swing_highs[i] >= swing_highs[i-1] for i in range(1, len(swing_highs)))
+    higher_lows  = all(swing_lows[i] >= swing_lows[i-1] for i in range(1, len(swing_lows)))
+    lower_highs  = all(swing_highs[i] <= swing_highs[i-1] for i in range(1, len(swing_highs)))
+    lower_lows   = all(swing_lows[i] <= swing_lows[i-1] for i in range(1, len(swing_lows)))
+
+    uptrend   = higher_highs and higher_lows
+    downtrend = lower_highs and lower_lows
+
+    # ─── Momentum (Rate of Change) ───
+    roc_3 = round(((closes[-1] - closes[-4]) / closes[-4]) * 100, 3) if len(closes) >= 4 else 0
+    roc_5 = round(((closes[-1] - closes[-6]) / closes[-6]) * 100, 3) if len(closes) >= 6 else 0
+
+    # Momentum acceleration
+    momentum_accelerating = abs(roc_3) > abs(roc_5 / 2)
+
+    # ─── ATR (Average True Range) for stop-loss calculation ───
+    true_ranges = []
+    for i in range(1, len(ohlcv)):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i-1]),
+            abs(lows[i] - closes[i-1])
+        )
+        true_ranges.append(tr)
+
+    atr = round(sum(true_ranges[-10:]) / min(10, len(true_ranges)), 2) if true_ranges else round(price_range / 5, 2)
+
+    # ─── Bollinger Band Position ───
+    if len(closes) >= 20:
+        bb_mean = sum(closes[-20:]) / 20
+        bb_std = (sum((c - bb_mean)**2 for c in closes[-20:]) / 20) ** 0.5
+        bb_upper = round(bb_mean + 2 * bb_std, 2)
+        bb_lower = round(bb_mean - 2 * bb_std, 2)
+        bb_position = round((current_price - bb_lower) / (bb_upper - bb_lower), 2) if (bb_upper - bb_lower) > 0 else 0.5
+        bb_squeeze = round(bb_std, 2) < round(atr * 0.5, 2)
+    else:
+        bb_upper = recent_high
+        bb_lower = recent_low
+        bb_position = range_position
+        bb_squeeze = False
+
+    # ─── Consecutive Candle Direction ───
+    consec_green = 0
+    consec_red = 0
+    for i in range(len(closes)-1, 0, -1):
+        if closes[i] > opens[i]:
+            if consec_red > 0:
+                break
+            consec_green += 1
+        elif closes[i] < opens[i]:
+            if consec_green > 0:
+                break
+            consec_red += 1
+        else:
+            break
+
+    # ─── Pre-computed Risk/Reward for potential entries ───
+    # BUY setup
+    buy_entry     = current_price
+    buy_stop_loss = round(min(lows[-3:]) - atr * 0.3, 2)
+    buy_target_1  = round(buy_entry + (buy_entry - buy_stop_loss) * 1.5, 2)
+    buy_target_2  = round(buy_entry + (buy_entry - buy_stop_loss) * 2.5, 2)
+    buy_risk      = round(buy_entry - buy_stop_loss, 2)
+    buy_reward_1  = round(buy_target_1 - buy_entry, 2)
+    buy_rr_ratio  = round(buy_reward_1 / buy_risk, 2) if buy_risk > 0 else 0
+
+    # SELL setup
+    sell_entry     = current_price
+    sell_stop_loss = round(max(highs[-3:]) + atr * 0.3, 2)
+    sell_target_1  = round(sell_entry - (sell_stop_loss - sell_entry) * 1.5, 2)
+    sell_target_2  = round(sell_entry - (sell_stop_loss - sell_entry) * 2.5, 2)
+    sell_risk      = round(sell_stop_loss - sell_entry, 2)
+    sell_reward_1  = round(sell_entry - sell_target_1, 2)
+    sell_rr_ratio  = round(sell_reward_1 / sell_risk, 2) if sell_risk > 0 else 0
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  STEP 1.5: HARD FILTERS — Block obviously bad setups BEFORE LLM
+    # ═══════════════════════════════════════════════════════════════════
+
+    # Build signal context summary
+    ctx_direction = ""
+    ctx_confidence = ""
+    if signal_context:
+        ctx_direction = signal_context.get("direction", "")
+        ctx_confidence = signal_context.get("confidence", "")
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  STEP 2: BUILD STRUCTURED PROMPT WITH PRE-COMPUTED DATA
+    # ═══════════════════════════════════════════════════════════════════
+
+    analysis_summary = f"""
+=== COMPUTED TECHNICAL ANALYSIS FOR {symbol} ({timeframe}) ===
+
+PRICE ACTION:
+  Current Price: {current_price}
+  Previous Close: {prev_close}
+  Change: {round(current_price - prev_close, 2)} ({round(((current_price - prev_close)/prev_close)*100, 3)}%)
+  Recent High (10 candles): {recent_high}
+  Recent Low (10 candles): {recent_low}
+  ATR: {atr}
+
+TREND STRUCTURE:
+  Higher Highs + Higher Lows (Uptrend): {uptrend}
+  Lower Highs + Lower Lows (Downtrend): {downtrend}
+  Trend: {"UPTREND" if uptrend else "DOWNTREND" if downtrend else "NO CLEAR TREND / RANGING"}
+
+EMA ANALYSIS:
+  EMA 5: {ema_5_current} | EMA 9: {ema_9_current} | EMA 20: {ema_20_current}
+  Bullish Stack (5>9>20): {ema_bullish_stack}
+  Bearish Stack (5<9<20): {ema_bearish_stack}
+  EMA 5 crossed above 9: {ema_5_crossed_above_9}
+  EMA 5 crossed below 9: {ema_5_crossed_below_9}
+  Price vs EMA20: {"ABOVE" if current_price > ema_20_current else "BELOW"}
+
+MOMENTUM:
+  RSI (14): {rsi}
+  RSI Zone: {"OVERBOUGHT (>70)" if rsi > 70 else "OVERSOLD (<30)" if rsi < 30 else "NEUTRAL"}
+  MACD Line: {macd_current} | Signal: {macd_signal_current} | Histogram: {macd_histogram}
+  MACD Bullish Crossover: {macd_crossover_bull}
+  MACD Bearish Crossover: {macd_crossover_bear}
+  ROC 3-candle: {roc_3}% | ROC 5-candle: {roc_5}%
+  Momentum Accelerating: {momentum_accelerating}
+
+VOLUME:
+  Current Volume: {current_volume}
+  Average Volume (10): {round(avg_volume)}
+  Volume Ratio: {volume_ratio}x
+  Volume Surge (>1.5x): {volume_surge}
+  Volume Dry (<0.5x): {volume_dry}
+  Volume Increasing (3 candles): {vol_increasing}
+
+CANDLE PATTERNS:
+  Last Candle: {"BULLISH (Green)" if last_candle_bullish else "BEARISH (Red)" if last_candle_bearish else "DOJI"}
+  Body Ratio: {body_ratio}
+  Strong Bullish Candle: {is_strong_bull_candle}
+  Strong Bearish Candle: {is_strong_bear_candle}
+  Hammer: {is_hammer}
+  Shooting Star: {is_shooting_star}
+  Bullish Engulfing: {bull_engulfing}
+  Bearish Engulfing: {bear_engulfing}
+  Doji: {is_doji}
+  Consecutive Green Candles: {consec_green}
+  Consecutive Red Candles: {consec_red}
+
+PRICE POSITION:
+  Position in Range (0=support, 1=resistance): {range_position}
+  Near Support: {near_support}
+  Near Resistance: {near_resistance}
+  Bollinger Band Position: {bb_position} (0=lower band, 1=upper band)
+  Bollinger Squeeze: {bb_squeeze}
+
+RISK/REWARD (if BUY):
+  Entry: {buy_entry} | SL: {buy_stop_loss} | T1: {buy_target_1} | T2: {buy_target_2}
+  Risk: {buy_risk} | Reward: {buy_reward_1} | R:R Ratio: {buy_rr_ratio}
+
+RISK/REWARD (if SELL):
+  Entry: {sell_entry} | SL: {sell_stop_loss} | T1: {sell_target_1} | T2: {sell_target_2}
+  Risk: {sell_risk} | Reward: {sell_reward_1} | R:R Ratio: {sell_rr_ratio}
+
+PRIMARY STRATEGY SIGNAL CONTEXT:
+  Direction from primary strategy: {ctx_direction if ctx_direction else "Not provided"}
+  Primary strategy confidence: {ctx_confidence if ctx_confidence else "Not provided"}
+"""
+
+    prompt = f"""You are a veteran intraday options scalper with 20 years of experience. You ONLY take A+ setups. You would rather miss 10 trades than take 1 losing trade. Your win rate is above 90% because you are extremely selective.
+
+{analysis_summary}
+
+YOUR STRICT TRADING RULES (NEVER VIOLATE THESE):
+
+FOR A "buy" SIGNAL — ALL of these MUST be true:
+1. Trend structure shows uptrend OR price is bouncing from support with reversal confirmation
+2. At least 2 of 3 must align: (EMA bullish stack OR EMA crossover bullish), (RSI between 35-65 or recovering from oversold), (MACD histogram positive or bullish crossover)
+3. Volume must NOT be dry (ratio > 0.7)
+4. Last candle must show buying pressure (bullish candle, hammer, or bullish engulfing)
+5. Risk:Reward ratio must be >= 1.5
+6. Price must NOT be at resistance (range_position < 0.85)
+7. RSI must NOT be overbought (< 72)
+8. NOT more than 4 consecutive green candles (exhaustion risk)
+9. If primary strategy direction is given, LLM should AGREE with it for high confidence
+
+FOR A "sell" SIGNAL — ALL of these MUST be true:
+1. Trend structure shows downtrend OR price is rejecting from resistance with reversal confirmation
+2. At least 2 of 3 must align: (EMA bearish stack OR EMA crossover bearish), (RSI between 35-65 or rejecting from overbought), (MACD histogram negative or bearish crossover)
+3. Volume must NOT be dry (ratio > 0.7)
+4. Last candle must show selling pressure (bearish candle, shooting star, or bearish engulfing)
+5. Risk:Reward ratio must be >= 1.5
+6. Price must NOT be at support (range_position > 0.15)
+7. RSI must NOT be oversold (> 28)
+8. NOT more than 4 consecutive red candles (exhaustion risk)
+
+FOR "no trade" — ANY of these:
+- Conditions above not fully met
+- Doji candle with no clear direction
+- Price in middle of range with no momentum
+- Bollinger squeeze with no breakout
+- Volume dry
+- Conflicting signals between indicators
+- Risk:Reward below 1.5
+
+CONFIDENCE SCORING (be brutally honest):
+- 0.90-1.00: ALL conditions perfectly aligned, strong momentum + volume + trend + pattern
+- 0.80-0.89: Most conditions aligned, minor concern (e.g., volume slightly below average)
+- 0.70-0.79: Setup exists but some weakness — still tradeable  
+- Below 0.70: Do NOT give a buy/sell signal — output "no trade"
+
+You MUST output "no trade" if confidence would be below 0.70.
+
+Respond ONLY with this exact JSON format (no extra text):
+{{"bias": "Bullish|Bearish|Neutral", "signal": "buy|sell|no trade", "confidence": 0.0-1.0, "entry": {buy_entry}, "stop_loss": price, "target_1": price, "target_2": price, "reason": "brief explanation citing specific indicator values"}}"""
 
     try:
         response = requests.post(
@@ -639,18 +969,25 @@ Respond ONLY with JSON:
             },
             json={
                 "model": "llama-3.3-70b-versatile",
-                "temperature": 0.1,
-                "max_tokens": 250,
-                "messages": [{"role": "user", "content": prompt}]
+                "temperature": 0.05,  # 🔥 LOWER = more deterministic/consistent
+                "max_tokens": 300,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a professional quant trader. You ONLY output valid JSON. You are extremely selective — you reject 7 out of 10 setups. You never chase. You never trade without confluence of at least 3 indicators. When in doubt, you say 'no trade'."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
             },
             timeout=20
         )
 
         if response.status_code != 200:
             print(f"  ❌ API error: HTTP {response.status_code}")
-            return {"bias": "Neutral", "signal": "no trade", "confidence": 0.0,
-                    "entry": 0.0, "stop_loss": 0.0, "target_1": 0.0, "target_2": 0.0,
-                    "reason": f"API error: {response.status_code}"}
+            return _no_trade_response(f"API error: {response.status_code}")
 
         content = response.json()["choices"][0]["message"]["content"].strip()
 
@@ -660,7 +997,7 @@ Respond ONLY with JSON:
 
         # Parse JSON
         start = content.index("{")
-        end = content.rindex("}")+1
+        end = content.rindex("}") + 1
         result = json.loads(content[start:end])
 
         # Normalize
@@ -680,22 +1017,152 @@ Respond ONLY with JSON:
             except:
                 return 0.0
 
-        return {
+        # ═══════════════════════════════════════════════════════════════
+        #  STEP 3: POST-LLM HARD VALIDATION (Python overrides LLM if needed)
+        # ═══════════════════════════════════════════════════════════════
+        override_reason = ""
+
+        # Rule 1: Confidence too low = no trade
+        if conf < 0.70 and signal in ("buy", "sell"):
+            override_reason = f"Confidence {conf} below 0.70 threshold"
+            signal = "no trade"
+
+        # Rule 2: BUY at resistance = no trade
+        if signal == "buy" and range_position > 0.88:
+            override_reason = f"Buy blocked: price at resistance (range_pos={range_position})"
+            signal = "no trade"
+            conf = min(conf, 0.4)
+
+        # Rule 3: SELL at support = no trade
+        if signal == "sell" and range_position < 0.12:
+            override_reason = f"Sell blocked: price at support (range_pos={range_position})"
+            signal = "no trade"
+            conf = min(conf, 0.4)
+
+        # Rule 4: BUY with RSI overbought = no trade
+        if signal == "buy" and rsi > 75:
+            override_reason = f"Buy blocked: RSI overbought ({rsi})"
+            signal = "no trade"
+            conf = min(conf, 0.4)
+
+        # Rule 5: SELL with RSI oversold = no trade
+        if signal == "sell" and rsi < 25:
+            override_reason = f"Sell blocked: RSI oversold ({rsi})"
+            signal = "no trade"
+            conf = min(conf, 0.4)
+
+        # Rule 6: Volume too dry = no trade
+        if signal in ("buy", "sell") and volume_ratio < 0.5:
+            override_reason = f"Trade blocked: volume too dry ({volume_ratio}x)"
+            signal = "no trade"
+            conf = min(conf, 0.4)
+
+        # Rule 7: Doji with no trend = no trade
+        if signal in ("buy", "sell") and is_doji and not uptrend and not downtrend:
+            override_reason = "Trade blocked: doji in ranging market"
+            signal = "no trade"
+            conf = min(conf, 0.4)
+
+        # Rule 8: R:R check
+        if signal == "buy" and buy_rr_ratio < 1.3:
+            override_reason = f"Buy blocked: poor R:R ({buy_rr_ratio})"
+            signal = "no trade"
+            conf = min(conf, 0.4)
+
+        if signal == "sell" and sell_rr_ratio < 1.3:
+            override_reason = f"Sell blocked: poor R:R ({sell_rr_ratio})"
+            signal = "no trade"
+            conf = min(conf, 0.4)
+
+        # Rule 9: Exhaustion check
+        if signal == "buy" and consec_green >= 5:
+            override_reason = f"Buy blocked: {consec_green} consecutive green candles (exhaustion)"
+            signal = "no trade"
+            conf = min(conf, 0.4)
+
+        if signal == "sell" and consec_red >= 5:
+            override_reason = f"Sell blocked: {consec_red} consecutive red candles (exhaustion)"
+            signal = "no trade"
+            conf = min(conf, 0.4)
+
+        # Rule 10: If primary strategy disagrees strongly, reduce confidence
+        if signal_context and ctx_direction:
+            if signal == "buy" and ctx_direction.lower() in ("bearish", "sell", "short"):
+                conf = min(conf, 0.65)
+                if conf < 0.70:
+                    override_reason = "Buy blocked: conflicts with primary strategy (bearish)"
+                    signal = "no trade"
+            elif signal == "sell" and ctx_direction.lower() in ("bullish", "buy", "long"):
+                conf = min(conf, 0.65)
+                if conf < 0.70:
+                    override_reason = "Sell blocked: conflicts with primary strategy (bullish)"
+                    signal = "no trade"
+
+        if override_reason:
+            print(f"  ⚠️ OVERRIDE: {override_reason}")
+
+        # Build final response
+        final_reason = str(result.get("reason", ""))
+        if override_reason:
+            final_reason = f"[BLOCKED] {override_reason} | Original: {final_reason}"
+
+        # Use pre-computed levels if LLM returned garbage values
+        entry_price = safe_float(result.get("entry"))
+        sl_price    = safe_float(result.get("stop_loss"))
+        t1_price    = safe_float(result.get("target_1"))
+        t2_price    = safe_float(result.get("target_2"))
+
+        # Sanity check LLM prices — if way off, use pre-computed
+        if signal == "buy":
+            if entry_price <= 0 or abs(entry_price - current_price) > atr * 3:
+                entry_price = buy_entry
+            if sl_price <= 0 or sl_price >= entry_price:
+                sl_price = buy_stop_loss
+            if t1_price <= 0 or t1_price <= entry_price:
+                t1_price = buy_target_1
+            if t2_price <= 0 or t2_price <= t1_price:
+                t2_price = buy_target_2
+        elif signal == "sell":
+            if entry_price <= 0 or abs(entry_price - current_price) > atr * 3:
+                entry_price = sell_entry
+            if sl_price <= 0 or sl_price <= entry_price:
+                sl_price = sell_stop_loss
+            if t1_price <= 0 or t1_price >= entry_price:
+                t1_price = sell_target_1
+            if t2_price <= 0 or t2_price >= t1_price:
+                t2_price = sell_target_2
+
+        final_result = {
             "bias": str(result.get("bias", "Neutral")),
             "signal": signal,
-            "confidence": conf,
-            "entry": safe_float(result.get("entry")),
-            "stop_loss": safe_float(result.get("stop_loss")),
-            "target_1": safe_float(result.get("target_1")),
-            "target_2": safe_float(result.get("target_2")),
-            "reason": str(result.get("reason", ""))
+            "confidence": round(conf, 2),
+            "entry": round(entry_price, 2),
+            "stop_loss": round(sl_price, 2),
+            "target_1": round(t1_price, 2),
+            "target_2": round(t2_price, 2),
+            "reason": final_reason
         }
+
+        print(f"  ✅ LLM Result: {final_result['signal']} | Conf: {final_result['confidence']} | {final_result['reason'][:80]}")
+        return final_result
 
     except Exception as e:
         print(f"  ❌ LLM error: {e}")
-        return {"bias": "Neutral", "signal": "no trade", "confidence": 0.0,
-                "entry": 0.0, "stop_loss": 0.0, "target_1": 0.0, "target_2": 0.0,
-                "reason": f"Error: {e}"}
+        return _no_trade_response(f"Error: {e}")
+
+
+def _no_trade_response(reason=""):
+    """Helper to return a clean no-trade response."""
+    return {
+        "bias": "Neutral",
+        "signal": "no trade",
+        "confidence": 0.0,
+        "entry": 0.0,
+        "stop_loss": 0.0,
+        "target_1": 0.0,
+        "target_2": 0.0,
+        "reason": reason
+    }
 
 
 
