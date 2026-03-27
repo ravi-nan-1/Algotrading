@@ -600,19 +600,27 @@ def fetch_ohlcv(symbol, timeframe="3m", candles=30, existing_data=None):
     return ohlcv
 
 
+
+
+
 def llm_trade_signal(symbol, ohlcv, timeframe, signal_context=None):
     """
-    LLM BUY SIGNAL CONFIRMER — EXACTLY AS YOU REQUESTED
-    ONLY job: Give confidence score on your existing buy signal
-    Checks: momentum, volume, price action, support/resistance
-    """
-    print('🧠 llm_trade_signal (BUY CONFIRMATION MODE)')
+    ADVANCED LLM FILTER — REJECT BAD TRADES ONLY
 
-    # ═══════════════════════════════════════════════════════════════
-    #  STEP 1: EXTRACT PRICE DATA
-    # ═══════════════════════════════════════════════════════════════
-    if not ohlcv or len(ohlcv) < 8:
-        return _no_trade_response("Need at least 8 candles for confirmation")
+    Role:
+    - DO NOT generate signals
+    - DO NOT overthink indicators
+    - ONLY detect traps & risky setups
+
+    Output:
+    - "buy" → allow trade
+    - "no trade" → reject trade
+    """
+
+    print('🧠 llm_trade_signal (ADVANCED FILTER MODE)')
+
+    if not ohlcv or len(ohlcv) < 12:
+        return _no_trade_response("Not enough candles")
 
     closes  = [c["c"] for c in ohlcv]
     highs   = [c["h"] for c in ohlcv]
@@ -621,120 +629,101 @@ def llm_trade_signal(symbol, ohlcv, timeframe, signal_context=None):
     volumes = [c["v"] for c in ohlcv]
 
     current_price = closes[-1]
-    prev_close    = closes[-2] if len(closes) >=2 else current_price
 
-    # ═══════════════════════════════════════════════════════════════
-    #  STEP 2: COMPUTE ONLY WHAT LLM NEEDS
-    # ═══════════════════════════════════════════════════════════════
+    # ─────────────────────────────────────────────
+    # 🔹 Compact Structured Context (IMPORTANT)
+    # ─────────────────────────────────────────────
+    last_6 = [
+        {
+            "o": round(opens[i],2),
+            "h": round(highs[i],2),
+            "l": round(lows[i],2),
+            "c": round(closes[i],2)
+        }
+        for i in range(-6, 0)
+    ]
 
-    # ─── MOMENTUM (EMA, RSI) ───
-    def calc_ema(data, period):
-        if len(data) < period: return [sum(data)/len(data)]*len(data)
-        ema = [sum(data[:period])/period]
-        k = 2/(period+1)
-        for i in range(period, len(data)):
-            ema.append((data[i]-ema[-1])*k + ema[-1])
-        return [ema[0]]*(len(data)-len(ema)) + ema
+    avg_vol_5 = sum(volumes[-5:]) / 5
+    vol_ratio = round(volumes[-1] / avg_vol_5, 2) if avg_vol_5 > 0 else 1
 
-    ema_5  = calc_ema(closes,5)
-    ema_20 = calc_ema(closes,20)
-    ema_5_current  = round(ema_5[-1],2)
-    ema_20_current = round(ema_20[-1],2)
-    price_above_ema5  = current_price > ema_5_current
-    price_above_ema20 = current_price > ema_20_current
+    recent_high = max(highs[-10:])
+    recent_low  = min(lows[-10:])
+    range_pos = round((current_price - recent_low) / (recent_high - recent_low), 2) if recent_high != recent_low else 0.5
 
-    def calc_rsi(data, period=14):
-        if len(data) < period+1: return 50.0
-        deltas = [data[i]-data[i-1] for i in range(1, len(data))]
-        gains = [d if d>0 else 0 for d in deltas]
-        losses = [-d if d<0 else 0 for d in deltas]
-        avg_g = sum(gains[:period])/period
-        avg_l = sum(losses[:period])/period
-        for i in range(period, len(deltas)):
-            avg_g = (avg_g*(period-1)+gains[i])/period
-            avg_l = (avg_l*(period-1)+losses[i])/period
-        if avg_l ==0: return 100.0
-        return round(100 - (100/(1+avg_g/avg_l)),2)
-
-    rsi = calc_rsi(closes)
-    rsi_trending_up = rsi > calc_rsi(closes[:-1]) if len(closes)>=15 else True
-
-    # ─── VOLUME (Slight Increase Check) ───
-    avg_vol_5 = sum(volumes[-5:])/min(5, len(volumes)) if volumes else 1
-    avg_vol_10 = sum(volumes[-10:])/min(10, len(volumes)) if volumes else 1
-    current_vol = volumes[-1] if volumes else 1
-    vol_increase_5 = current_vol > avg_vol_5 * 1.1
-    vol_increase_10 = current_vol > avg_vol_10 * 1.05
-    volume_ok = vol_increase_5 or vol_increase_10 or current_vol > avg_vol_5 * 0.9
-
-    # ─── PRICE ACTION ───
-    last_green = closes[-1] > opens[-1]
-    candle_body = abs(closes[-1]-opens[-1])
-    candle_range = highs[-1]-lows[-1]
-    body_ratio = round(candle_body/candle_range,2) if candle_range>0 else 0
-    strong_bull_candle = last_green and body_ratio>0.6
-
-    # ─── SUPPORT/RESISTANCE ───
-    recent_high = max(highs[-8:])
-    recent_low = min(lows[-8:])
-    price_range = recent_high - recent_low
-    range_position = round((current_price - recent_low)/price_range,2) if price_range>0 else 0.5
-
-    near_support = range_position < 0.30
-    near_resistance = range_position > 0.70
-    room_to_move_up = not near_resistance or current_price > recent_high * 1.01
-
-    # ─── PRIMARY SIGNAL INFO ───
-    primary_confidence = signal_context.get("confidence",0.0) if signal_context else 0.0
     primary_reason = signal_context.get("reason","") if signal_context else ""
 
-    # ═══════════════════════════════════════════════════════════════
-    #  STEP 3: LLM PROMPT — EXACTLY WHAT YOU WANT
-    # ═══════════════════════════════════════════════════════════════
-    prompt = f"""YOU ARE A PROFESSIONAL TRADER.
-YOUR ONLY JOB: GIVE A CONFIDENCE SCORE (0.0-1.0) FOR THIS BUY SIGNAL.
+    # ─────────────────────────────────────────────
+    # 🔥 ADVANCED PROMPT (THIS IS THE EDGE)
+    # ─────────────────────────────────────────────
+    prompt = f"""
+You are an ELITE OPTIONS SCALPING RISK MANAGER.
 
-SYMBOL: {symbol} | TIMEFRAME: {timeframe}
-CURRENT PRICE: {current_price}
+You DO NOT give buy signals.
+You ONLY REJECT bad trades.
 
-CHECK THESE FACTORS:
-1. MOMENTUM:
-   - Price above EMA5: {price_above_ema5}
-   - Price above EMA20: {price_above_ema20}
-   - RSI: {rsi} | Trending up: {rsi_trending_up}
-   
-2. VOLUME:
-   - Current volume: {current_vol}
-   - Avg 5-candle volume: {round(avg_vol_5)}
-   - Avg 10-candle volume: {round(avg_vol_10)}
-   - Volume slightly increasing: {vol_increase_5 or vol_increase_10}
-   - Volume is acceptable: {volume_ok}
+Analyze the structure deeply like a professional trader.
 
-3. PRICE ACTION:
-   - Last candle is green: {last_green}
-   - Strong bullish candle: {strong_bull_candle}
-   - Body ratio: {body_ratio}
+DATA:
+Candles (last 6):
+{last_6}
 
-4. SUPPORT/RESISTANCE:
-   - Recent high: {recent_high} | Recent low: {recent_low}
-   - Range position (0=low,1=high): {range_position}
-   - Near support: {near_support}
-   - Near resistance: {near_resistance}
-   - Room to move up 20 points: {room_to_move_up}
+Volume ratio (current / avg5): {vol_ratio}
+Range position (0=low, 1=high): {range_pos}
+Recent High: {recent_high}
+Recent Low: {recent_low}
 
-5. PRIMARY SIGNAL:
-   - Confidence: {primary_confidence}
-   - Reason: {primary_reason}
+Primary Signal Reason:
+{primary_reason}
 
-GIVE YOUR CONFIDENCE SCORE:
-- 0.90-1.00: Perfect buy setup — all factors align, strong momentum, good volume, room to move
-- 0.70-0.89: Good buy setup — minor concern (e.g., volume not increasing much)
-- 0.50-0.69: Tradeable but not ideal — one or two factors are weak
-- 0.30-0.49: Risky buy — multiple factors are weak
-- 0.00-0.29: Bad buy setup — don't take this trade
+----------------------------------------
 
-REPLY ONLY WITH JSON:
-{{"bias":"Bullish|Neutral","signal":"buy|no trade","confidence":0.0-1.0,"reason":"brief explanation"}}"""
+REJECT TRADE if you see ANY of these:
+
+1. CHOPPY MARKET:
+- overlapping candles
+- no clear direction
+- alternating colors
+
+2. FAKE BREAKOUT:
+- price near high but weak close
+- upper wicks / rejection
+- breakout without volume follow-through
+
+3. EXHAUSTION MOVE:
+- 2-3 strong candles already done
+- late entry near top
+
+4. LOW QUALITY MOMENTUM:
+- small bodies
+- inconsistent candle structure
+
+5. BAD LOCATION:
+- range_pos > 0.75 (too close to resistance)
+- no room to move
+
+----------------------------------------
+
+ALLOW TRADE ONLY IF:
+- clean directional candles
+- strong closes near highs
+- no rejection wicks
+- not extended already
+
+----------------------------------------
+
+STRICT RULE:
+When in doubt → REJECT TRADE
+
+----------------------------------------
+
+Return ONLY JSON:
+
+{{
+  "signal": "buy" or "no trade",
+  "confidence": 0.0-1.0,
+  "reason": "very short explanation"
+}}
+"""
 
     try:
         response = requests.post(
@@ -745,81 +734,63 @@ REPLY ONLY WITH JSON:
             },
             json={
                 "model": "llama-3.3-70b-versatile",
-                "temperature": 0.03,
-                "max_tokens": 200,
+                "temperature": 0.0,   # ❗ ultra deterministic
+                "max_tokens": 120,
                 "messages": [
                     {"role": "system", "content": (
-                        "You are a professional trader. "
-                        "You give honest confidence scores for buy signals. "
-                        "You ONLY output valid JSON. "
-                        "You do NOT add extra filters — just evaluate the given data."
+                        "You are a strict risk manager. "
+                        "You reject bad trades aggressively. "
+                        "You NEVER hallucinate. "
+                        "Output ONLY valid JSON."
                     )},
                     {"role": "user", "content": prompt}
                 ]
             },
-            timeout=15
+            timeout=10
         )
 
-        if response.status_code !=200:
-            print(f"  ❌ API error: {response.status_code}")
-            return _no_trade_response(f"API error: {response.status_code}")
+        if response.status_code != 200:
+            return _no_trade_response(f"API error {response.status_code}")
 
         content = response.json()["choices"][0]["message"]["content"].strip()
+
         if "```" in content:
             content = content.replace("```json","").replace("```","")
 
-        start = content.index("{")
-        end = content.rindex("}")+1
-        result = json.loads(content[start:end])
+        result = json.loads(content[content.index("{"):content.rindex("}")+1])
 
-        # Normalize response
-        signal = str(result.get("signal","buy")).strip().lower()
+        signal = str(result.get("signal","no trade")).lower()
+        confidence = float(result.get("confidence",0.0))
+
         if signal not in ("buy","no trade"):
-            signal = "buy" if result.get("confidence",0.0)>=0.5 else "no trade"
+            signal = "no trade"
 
-        confidence = 0.0
-        try:
-            confidence = max(0.0, min(1.0, float(result.get("confidence",0.0))))
-        except:
-            pass
+        # ─────────────────────────────────────────────
+        # 🔒 FINAL SAFETY (VERY IMPORTANT)
+        # ─────────────────────────────────────────────
+        if confidence < 0.55:
+            signal = "no trade"
 
-        # Fixed SL/Target levels
         entry = current_price
-        stop_loss = round(current_price -10,2)
-        target_1 = round(current_price +20,2)
-        target_2 = round(current_price +30,2)
+        stop_loss = round(current_price - 10, 2)
+        target_1  = round(current_price + 20, 2)
+        target_2  = round(current_price + 30, 2)
 
         final = {
-            "bias": str(result.get("bias","Bullish")),
             "signal": signal,
             "confidence": round(confidence,2),
-            "entry": round(entry,2),
-            "stop_loss": round(stop_loss,2),
-            "target_1": round(target_1,2),
-            "target_2": round(target_2,2),
-            "reason": str(result.get("reason","No reason provided"))
+            "entry": entry,
+            "stop_loss": stop_loss,
+            "target_1": target_1,
+            "target_2": target_2,
+            "reason": result.get("reason","")
         }
 
-        print(f"  ✅ CONFIRMATION: {final['signal']} | Confidence: {final['confidence']} | {final['reason'][:80]}")
+        print(f"  🧠 FILTER RESULT: {signal} | {confidence} | {final['reason']}")
         return final
 
     except Exception as e:
-        print(f"  ❌ LLM error: {e}")
-        return _no_trade_response(f"Error: {e}")
-
-
-def _no_trade_response(reason=""):
-    return {
-        "bias": "Neutral",
-        "signal": "no trade",
-        "confidence": 0.0,
-        "entry": 0.0,
-        "stop_loss": 0.0,
-        "target_1": 0.0,
-        "target_2": 0.0,
-        "reason": reason
-    }
-
+        return _no_trade_response(f"LLM error: {e}")
 
 
 
