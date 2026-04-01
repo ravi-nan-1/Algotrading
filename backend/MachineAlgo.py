@@ -794,7 +794,7 @@ Return ONLY JSON:
 
 
 
-def super_trend(symbol, data, use_llm=True):
+def super_trend(symbol, data, use_llm=False):
     """
     ╔══════════════════════════════════════════════════════════════╗
     ║          5-STEP VERIFICATION TRADING MACHINE                ║
