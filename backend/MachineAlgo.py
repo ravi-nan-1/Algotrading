@@ -797,62 +797,29 @@ Return ONLY JSON:
 def super_trend(symbol, data, use_llm=False):
     """
     ╔══════════════════════════════════════════════════════════════╗
-    ║          5-STEP VERIFICATION TRADING MACHINE                ║
-    ║          LONG ONLY · STOCHASTIC BASED                       ║
+    ║          INSTANT K×D CROSSOVER STRATEGY                     ║
+    ║          LONG ONLY                                           ║
     ╠══════════════════════════════════════════════════════════════╣
     ║                                                              ║
-    ║  STEP 1: OVERSOLD DETECTION                                  ║
-    ║          K < 20 AND D < 20 → System ARMED                   ║
+    ║  SIGNAL: K crosses above D  →  INSTANT BUY                  ║
     ║                                                              ║
-    ║  STEP 2: REVERSAL CONFIRMATION                               ║
-    ║          K crosses above D + Both turning up (V-shape)       ║
+    ║  PATH A:  K×D cross in OVERSOLD  (K<20, D<20)  → Grade A   ║
+    ║  PATH B:  K×D cross in MID ZONE  (20<K,D<80)   → Grade B   ║
     ║                                                              ║
-    ║  STEP 3: MOMENTUM & VELOCITY CHECK                           ║
-    ║          K/D slow vs Price fast → Strength confirmed         ║
-    ║                                                              ║
-    ║  STEP 4: MID-ZONE CROSSOVER (Alternative Entry)             ║
-    ║          K crosses D between 20-80 + Momentum/Velocity OK   ║
-    ║                                                              ║
-    ║  STEP 5: BULLISH CANDLE PATTERN CONFIRMATION ★NEW★          ║
-    ║          Oversold + K×D + (K-D)>5 + Bullish candle/pattern  ║
-    ║          Detects: Engulfing, Hammer, Morning Star,           ║
-    ║          Piercing Line, Three White Soldiers, Marubozu,      ║
-    ║          Harami, Dragonfly Doji, simple green candle         ║
-    ║                                                              ║
-    ║  ★ MASTER FILTER (ALL PATHS): ★                             ║
-    ║    • Previous 2 candles MUST be GREEN                        ║
-    ║    • Current Open > Previous Open                            ║
-    ║    • Current High > Previous High                            ║
-    ║                                                              ║
-    ║  TRADE: Step1+2+3 OR Step4 OR Step5 must pass               ║
-    ║         + Master Filter must pass                            ║
     ╚══════════════════════════════════════════════════════════════╝
-
-    PARAMS:
-        symbol   : Stock symbol
-        data     : DataFrame with OHLCV
-        use_llm  : True  → Filter through LLM
-                   False → Raw technical signals only
     """
 
-    # ═══════════════════════════════════════════════════════════════
-    #  MACHINE INITIALIZATION — COMPUTE ALL INDICATORS
-    # ═══════════════════════════════════════════════════════════════
-    print("=" * 70)
-    print(f"  ⚙️  TRADING MACHINE INITIALIZING — {symbol}")
-    print("=" * 70)
+    print("=" * 60)
+    print(f"  ⚙️  INSTANT K×D CROSSOVER MACHINE — {symbol}")
+    print("=" * 60)
 
-    # --- Stochastic Oscillator ---
-    stoch = ta.stoch(data['High'], data['Low'], data['Close'], 14, 3, 3)
-    data['Stoch_K'] = stoch['STOCHk_14_3_3']
-    data['Stoch_D'] = stoch['STOCHd_14_3_3']
+    # ═══════════════════════════════════════════════════════
+    #  INDICATORS
+    # ═══════════════════════════════════════════════════════
+    stoch           = ta.stoch(data['High'], data['Low'], data['Close'], 28, 3, 3)
+    data['Stoch_K'] = stoch['STOCHk_28_3_3']
+    data['Stoch_D'] = stoch['STOCHd_28_3_3']
 
-    # --- EMAs ---
-    data['EMA5']  = ta.ema(data['Close'], length=5)
-    data['EMA9']  = ta.ema(data['Close'], length=9)
-    data['EMA15'] = ta.ema(data['Close'], length=15)
-
-    # --- Aliases ---
     K      = data['Stoch_K']
     D      = data['Stoch_D']
     close  = data['Close']
@@ -860,757 +827,143 @@ def super_trend(symbol, data, use_llm=False):
     high   = data['High']
     low    = data['Low']
     volume = data['Volume']
-    ema5   = data['EMA5']
-    ema9   = data['EMA9']
-    ema15  = data['EMA15']
 
-    # --- Velocities ---
-    k_vel       = K - K.shift(1)
-    d_vel       = D - D.shift(1)
-    k_accel     = k_vel - k_vel.shift(1)
-    d_accel     = d_vel - d_vel.shift(1)
+    k_vel = K - K.shift(1)
 
-    # --- Price velocities ---
-    price_change_pct = ((close - close.shift(1)) / close.shift(1) * 100).fillna(0)
-    price_vel_abs    = close - close.shift(1)
+    # ═══════════════════════════════════════════════════════
+    #  INSTANT K×D CROSS  — THIS BAR ONLY
+    #  Previous bar: K <= D
+    #  Current  bar: K >  D
+    # ═══════════════════════════════════════════════════════
+    K_CROSS_D = (K.shift(1) <= D.shift(1)) & (K > D)
 
-    # --- Candle basics ---
-    green_candle   = close > opn
-    candle_body    = abs(close - opn)
-    candle_range   = high - low
-    body_ratio     = (candle_body / candle_range.replace(0, float('nan'))).fillna(0)
-
-    # --- Volume ---
-    vol_rising     = volume > volume.shift(1)
-    vol_avg_10     = volume.rolling(10).mean()
-    vol_above_avg  = volume > vol_avg_10
-
-    # --- EMA slopes ---
-    ema5_rising    = ema5 > ema5.shift(1)
-    ema9_rising    = ema9 > ema9.shift(1)
-    ema15_rising   = ema15 > ema15.shift(1)
-
-    # ═══════════════════════════════════════════════════════════════
-    # ╔═══════════════════════════════════════════════════════════╗
-    # ║  ★★★ MASTER FILTER: 2 GREEN CANDLES + OPEN/HIGH ★★★     ║
-    # ║                                                           ║
-    # ║  This condition MUST pass for ANY trade signal:           ║
-    # ║    1. Current candle (i) is GREEN (Close > Open)          ║
-    # ║    2. Previous candle (i-1) is GREEN (Close > Open)       ║
-    # ║    3. Current Open > Previous Open                        ║
-    # ║    4. Current High > Previous High                        ║
-    # ╚═══════════════════════════════════════════════════════════╝
-    # ═══════════════════════════════════════════════════════════════
-
-    print("\n  🟩  Initializing Master Filter: 2 Green Candles + Open/High Check...")
-
-    # Current candle is green
-    curr_green = close > opn
-
-    # Previous candle is green
-    prev_candle_green = close.shift(1) > opn.shift(1)
-
-    # Both candles must be green
-    two_green_candles = curr_green & prev_candle_green
-
-    # Current candle Open > Previous candle Open
-    curr_open_gt_prev_open = opn > opn.shift(1)
-
-    # Current candle High > Previous candle High
-    curr_high_gt_prev_high = high > high.shift(1)
-
-    # ── MASTER FILTER VERDICT ──
-    MASTER_FILTER = (
-        two_green_candles &
-        curr_open_gt_prev_open &
-        curr_high_gt_prev_high
-    )
-
-    data['master_filter'] = MASTER_FILTER.astype(int)
-
-    # ── MASTER FILTER STATUS LOG ──
-    last_idx_mf = len(data) - 1
-    print("\n  ─── MASTER FILTER: 2 GREEN CANDLES + OPEN/HIGH CHECK ───")
-    print(f"    Current candle GREEN:        {'✅' if curr_green.iloc[last_idx_mf] else '❌'}"
-          f"  (O={opn.iloc[last_idx_mf]:.2f} C={close.iloc[last_idx_mf]:.2f})")
-    print(f"    Previous candle GREEN:       {'✅' if prev_candle_green.iloc[last_idx_mf] else '❌'}"
-          f"  (O={opn.shift(1).iloc[last_idx_mf]:.2f} C={close.shift(1).iloc[last_idx_mf]:.2f})" if last_idx_mf > 0 else "")
-    print(f"    Curr Open > Prev Open:       {'✅' if curr_open_gt_prev_open.iloc[last_idx_mf] else '❌'}"
-          f"  ({opn.iloc[last_idx_mf]:.2f} > {opn.shift(1).iloc[last_idx_mf]:.2f})" if last_idx_mf > 0 else "")
-    print(f"    Curr High > Prev High:       {'✅' if curr_high_gt_prev_high.iloc[last_idx_mf] else '❌'}"
-          f"  ({high.iloc[last_idx_mf]:.2f} > {high.shift(1).iloc[last_idx_mf]:.2f})" if last_idx_mf > 0 else "")
-    print(f"    MASTER FILTER VERDICT:       {'🟢 PASS' if MASTER_FILTER.iloc[last_idx_mf] else '🔴 FAIL'}")
-
-    # ═══════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════
     #  TIME FILTER
-    # ═══════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════
     if isinstance(data.index, pd.DatetimeIndex):
         time_series = data.index.time
     else:
         time_series = pd.to_datetime(data.index).time
 
-    data['time_mins'] = [t.hour * 60 + t.minute for t in time_series]
-    TIME_OK = (data['time_mins'] >= 575) & (data['time_mins'] <= 910)
-
-    # ═══════════════════════════════════════════════════════════════
-    # ╔═══════════════════════════════════════════════════════════╗
-    # ║              STEP 1: OVERSOLD DETECTION                  ║
-    # ║     "Is the system armed? Are K and D both under 20?"    ║
-    # ╚═══════════════════════════════════════════════════════════╝
-    # ═══════════════════════════════════════════════════════════════
-
-    k_below_20 = K < 20
-    d_below_20 = D < 20
-    both_below_20_now = k_below_20 & d_below_20
-
-    OVERSOLD_LOOKBACK = 12
-
-    was_both_below_20 = pd.Series(False, index=data.index)
-    for i in range(0, OVERSOLD_LOOKBACK + 1):
-        was_both_below_20 |= (K.shift(i) < 20) & (D.shift(i) < 20)
-
-    bars_both_below_20 = pd.Series(0, index=data.index, dtype=float)
-    for i in range(0, OVERSOLD_LOOKBACK + 1):
-        bars_both_below_20 += ((K.shift(i) < 20) & (D.shift(i) < 20)).astype(int)
-
-    deep_oversold = bars_both_below_20 >= 2
-
-    STEP_1_ARMED = was_both_below_20 & deep_oversold
-    data['step_1_armed'] = STEP_1_ARMED.astype(int)
-
-    # ═══════════════════════════════════════════════════════════════
-    # ╔═══════════════════════════════════════════════════════════╗
-    # ║         STEP 2: REVERSAL CONFIRMATION (V-SHAPE)          ║
-    # ║   "K crossed above D AND both K,D are turning up"        ║
-    # ╚═══════════════════════════════════════════════════════════╝
-    # ═══════════════════════════════════════════════════════════════
-
-    prev_k_below_d  = K.shift(1) < D.shift(1)
-    prev_k_equal_d  = K.shift(1) == D.shift(1)
-    curr_k_above_d  = K > D
-    k_crossover_d   = (prev_k_below_d | prev_k_equal_d) & curr_k_above_d
-
-    recent_crossover = pd.Series(False, index=data.index)
-    for i in range(0, 4):
-        shifted_cross = k_crossover_d.shift(i).fillna(False)
-        recent_crossover |= shifted_cross
-
-    k_turning_up = (K > K.shift(1)) & (K.shift(1) <= K.shift(2))
-    d_turning_up = (D > D.shift(1)) & (D.shift(1) <= D.shift(2))
-
-    k_rising = K > K.shift(1)
-    d_rising = D > D.shift(1)
-    both_rising = k_rising & d_rising
-
-    k_was_falling = K.shift(2) > K.shift(1)
-    k_now_rising  = K > K.shift(1)
-    v_shape_k     = k_was_falling & k_now_rising
-
-    d_was_falling = D.shift(2) > D.shift(1)
-    d_now_rising  = D > D.shift(1)
-    v_shape_d     = d_was_falling & d_now_rising
-
-    v_reversal = (v_shape_k | v_shape_d) & both_rising
-
-    k_above_d = K > D
-
-    STEP_2_REVERSAL = recent_crossover & both_rising & k_above_d
-    data['step_2_reversal'] = STEP_2_REVERSAL.astype(int)
-
-    # ═══════════════════════════════════════════════════════════════
-    # ╔═══════════════════════════════════════════════════════════╗
-    # ║       STEP 3: MOMENTUM, STRENGTH & VELOCITY CHECK        ║
-    # ╚═══════════════════════════════════════════════════════════╝
-    # ═══════════════════════════════════════════════════════════════
-
-    k_speed      = k_vel.abs()
-    d_speed      = d_vel.abs()
-    price_speed  = price_change_pct.abs()
-
-    k_not_too_fast   = k_speed < 15
-    d_not_too_fast   = d_speed < 12
-    kd_controlled    = k_not_too_fast & d_not_too_fast
-
-    price_has_pulse  = price_speed > 0.02
-
-    kd_avg_speed     = (k_speed + d_speed) / 2
-    velocity_ratio   = price_speed / kd_avg_speed.replace(0, float('nan'))
-    velocity_ratio   = velocity_ratio.fillna(0)
-
-    slow_kd_vs_price = (kd_avg_speed < 10) | (velocity_ratio > 0.01)
-
-    price_momentum_3  = close > close.shift(3)
-    price_momentum_1  = close > close.shift(1)
-
-    k_momentum        = k_vel > 0
-    k_positive_accel  = k_accel >= 0
-    d_not_falling     = d_vel >= 0
-
-    is_green = green_candle
-    above_ema5 = close > ema5
-    vol_ok = vol_rising | vol_above_avg
-    decent_body = body_ratio > 0.3
-
-    k_has_room = K < 80
-    k_not_dead_low = K > 8
-
-    STEP_3_MOMENTUM = (
-        kd_controlled &
-        price_has_pulse &
-        slow_kd_vs_price &
-        price_momentum_1 &
-        k_momentum &
-        d_not_falling &
-        is_green &
-        k_has_room &
-        k_not_dead_low
+    time_mins = pd.Series(
+        [t.hour * 60 + t.minute for t in time_series],
+        index=data.index
     )
+    TIME_OK = (time_mins >= 575) & (time_mins <= 910)
 
-    STEP_3_MOMENTUM_RELAXED = (
-        kd_controlled &
-        price_has_pulse &
-        k_momentum &
-        is_green &
-        k_has_room
-    )
+    # ═══════════════════════════════════════════════════════
+    #  PATH A — OVERSOLD CROSS
+    #  K & D were both below 20 just before the cross
+    # ═══════════════════════════════════════════════════════
+    oversold_now  = (K.shift(1) < 20) & (D.shift(1) < 20)
+    oversold_prev = (K.shift(2) < 20) & (D.shift(2) < 20)
+    WAS_OVERSOLD  = oversold_now | oversold_prev
 
-    data['step_3_momentum'] = STEP_3_MOMENTUM.astype(int)
+    PATH_A = TIME_OK & K_CROSS_D & WAS_OVERSOLD
 
-    # ═══════════════════════════════════════════════════════════════
-    # ╔═══════════════════════════════════════════════════════════╗
-    # ║    STEP 4: MID-ZONE CROSSOVER (Alternative Entry Path)   ║
-    # ╚═══════════════════════════════════════════════════════════╝
-    # ═══════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════
+    #  PATH B — MID-ZONE CROSS
+    #  K crosses D while both are between 20 and 80
+    # ═══════════════════════════════════════════════════════
+    in_mid_zone = (K > 20) & (K < 80) & (D > 20) & (D < 80)
 
-    k_in_mid_zone     = (K > 20) & (K < 80)
-    d_in_mid_zone     = (D > 20) & (D < 80)
-    mid_zone           = k_in_mid_zone & d_in_mid_zone
+    PATH_B = TIME_OK & K_CROSS_D & in_mid_zone & ~WAS_OVERSOLD
 
-    mid_zone_crossover = k_crossover_d & mid_zone
+    # ═══════════════════════════════════════════════════════
+    #  RAW SIGNAL  — fire the moment K crosses D
+    # ═══════════════════════════════════════════════════════
+    long_raw = (PATH_A | PATH_B).astype(int)
 
-    recent_mid_cross   = pd.Series(False, index=data.index)
-    for i in range(0, 3):
-        recent_mid_cross |= mid_zone_crossover.shift(i).fillna(False)
-
-    ema_support_count  = ema5_rising.astype(int) + ema9_rising.astype(int) + ema15_rising.astype(int)
-    ema_support        = ema_support_count >= 2
-
-    price_above_ema9   = close > ema9
-
-    STEP_4_MID_ZONE = (
-        TIME_OK &
-        recent_mid_cross &
-        k_above_d &
-        both_rising &
-        STEP_3_MOMENTUM_RELAXED &
-        ema_support &
-        price_above_ema9 &
-        decent_body &
-        ~STEP_1_ARMED
-    )
-
-    data['step_4_midzone'] = STEP_4_MID_ZONE.astype(int)
-
-    # ═══════════════════════════════════════════════════════════════
-    # ╔═══════════════════════════════════════════════════════════╗
-    # ║  STEP 5: BULLISH CANDLE PATTERN CONFIRMATION ★NEW★       ║
-    # ╚═══════════════════════════════════════════════════════════╝
-    # ═══════════════════════════════════════════════════════════════
-
-    print("\n  🕯️  Initializing Bullish Candle Pattern Detection Engine...")
-
-    # ─── HELPER CALCULATIONS FOR PATTERNS ───
-    upper_shadow = high - close.where(close >= opn, opn)
-    lower_shadow = close.where(close <= opn, opn) - low
-    upper_shadow = high - pd.concat([close, opn], axis=1).max(axis=1)
-    lower_shadow = pd.concat([close, opn], axis=1).min(axis=1) - low
-
-    candle_body_raw = close - opn
-    candle_body_abs = candle_body
-    candle_range_safe = candle_range.replace(0, float('nan'))
-
-    # Previous candle info
-    prev_close  = close.shift(1)
-    prev_open   = opn.shift(1)
-    prev_high   = high.shift(1)
-    prev_low    = low.shift(1)
-    prev_body   = abs(prev_close - prev_open)
-    prev_range  = prev_high - prev_low
-    prev_green  = prev_close > prev_open
-    prev_red    = prev_close < prev_open
-
-    # 2-bars-ago candle info
-    prev2_close = close.shift(2)
-    prev2_open  = opn.shift(2)
-    prev2_high  = high.shift(2)
-    prev2_low   = low.shift(2)
-    prev2_body  = abs(prev2_close - prev2_open)
-    prev2_green = prev2_close > prev2_open
-    prev2_red   = prev2_close < prev2_open
-
-    # ─── PATTERN 1: SIMPLE GREEN (BULLISH) CANDLE ───
-    simple_green = (
-        green_candle &
-        (candle_body_abs > candle_range_safe * 0.3)
-    )
-
-    # ─── PATTERN 2: BULLISH ENGULFING ───
-    bullish_engulfing = (
-        green_candle &
-        prev_red &
-        (opn <= prev_close) &
-        (close >= prev_open) &
-        (candle_body_abs > prev_body) &
-        (candle_body_abs > candle_range_safe * 0.4)
-    )
-
-    # ─── PATTERN 3: HAMMER ───
-    hammer = (
-        (lower_shadow >= candle_body_abs * 2) &
-        (upper_shadow <= candle_body_abs * 0.3) &
-        (candle_body_abs > 0) &
-        (candle_body_abs <= candle_range_safe * 0.35) &
-        (lower_shadow >= candle_range_safe * 0.6)
-    )
-
-    # ─── PATTERN 4: INVERTED HAMMER ───
-    inverted_hammer = (
-        (upper_shadow >= candle_body_abs * 2) &
-        (lower_shadow <= candle_body_abs * 0.3) &
-        (candle_body_abs > 0) &
-        (candle_body_abs <= candle_range_safe * 0.35) &
-        prev_red
-    )
-
-    # ─── PATTERN 5: MORNING STAR ───
-    prev2_midpoint = (prev2_open + prev2_close) / 2
-    morning_star = (
-        prev2_red &
-        (prev2_body > prev2_high.sub(prev2_low).replace(0, float('nan')) * 0.5) &
-        (prev_body < prev_range.replace(0, float('nan')) * 0.3) &
-        green_candle &
-        (candle_body_abs > candle_range_safe * 0.4) &
-        (close > prev2_midpoint)
-    )
-
-    # ─── PATTERN 6: PIERCING LINE ───
-    prev_midpoint = (prev_open + prev_close) / 2
-    piercing_line = (
-        prev_red &
-        green_candle &
-        (opn < prev_close) &
-        (close > prev_midpoint) &
-        (close < prev_open) &
-        (candle_body_abs > candle_range_safe * 0.4)
-    )
-
-    # ─── PATTERN 7: THREE WHITE SOLDIERS ───
-    three_white_soldiers = (
-        green_candle &
-        prev_green &
-        prev2_green &
-        (close > prev_close) &
-        (prev_close > prev2_close) &
-        (opn >= prev_open) & (opn <= prev_close) &
-        (prev_open >= prev2_open) & (prev_open <= prev2_close) &
-        (candle_body_abs > candle_range_safe * 0.5) &
-        (prev_body > prev_range.replace(0, float('nan')) * 0.5)
-    )
-
-    # ─── PATTERN 8: BULLISH MARUBOZU ───
-    bullish_marubozu = (
-        green_candle &
-        (upper_shadow <= candle_range_safe * 0.05) &
-        (lower_shadow <= candle_range_safe * 0.05) &
-        (candle_body_abs >= candle_range_safe * 0.9)
-    )
-
-    # ─── PATTERN 9: BULLISH HARAMI ───
-    bullish_harami = (
-        prev_red &
-        green_candle &
-        (opn > prev_close) &
-        (close < prev_open) &
-        (candle_body_abs < prev_body * 0.5) &
-        (prev_body > prev_range.replace(0, float('nan')) * 0.5)
-    )
-
-    # ─── PATTERN 10: DRAGONFLY DOJI ───
-    dragonfly_doji = (
-        (candle_body_abs <= candle_range_safe * 0.1) &
-        (lower_shadow >= candle_range_safe * 0.7) &
-        (upper_shadow <= candle_range_safe * 0.1) &
-        (candle_range > 0)
-    )
-
-    # ─── PATTERN 11: TWEEZER BOTTOM ───
-    low_tolerance = candle_range_safe * 0.02
-    tweezer_bottom = (
-        prev_red &
-        green_candle &
-        (abs(low - prev_low) <= low_tolerance) &
-        (candle_body_abs > candle_range_safe * 0.3)
-    )
-
-    # ═══════════════════════════════════════════════════════════════
-    #  COMBINE ALL BULLISH PATTERNS
-    # ═══════════════════════════════════════════════════════════════
-
-    ANY_BULLISH_PATTERN = (
-        simple_green |
-        bullish_engulfing |
-        hammer |
-        inverted_hammer |
-        morning_star |
-        piercing_line |
-        three_white_soldiers |
-        bullish_marubozu |
-        bullish_harami |
-        dragonfly_doji |
-        tweezer_bottom
-    )
-
-    # ─── PATTERN NAME TRACKING ───
-    data['bullish_pattern_name'] = ""
-    data.loc[bullish_engulfing,       'bullish_pattern_name'] = "BULLISH_ENGULFING"
-    data.loc[hammer,                  'bullish_pattern_name'] = "HAMMER"
-    data.loc[inverted_hammer,         'bullish_pattern_name'] = "INVERTED_HAMMER"
-    data.loc[morning_star,            'bullish_pattern_name'] = "MORNING_STAR"
-    data.loc[piercing_line,           'bullish_pattern_name'] = "PIERCING_LINE"
-    data.loc[three_white_soldiers,    'bullish_pattern_name'] = "THREE_WHITE_SOLDIERS"
-    data.loc[bullish_marubozu,        'bullish_pattern_name'] = "BULLISH_MARUBOZU"
-    data.loc[bullish_harami,          'bullish_pattern_name'] = "BULLISH_HARAMI"
-    data.loc[dragonfly_doji,          'bullish_pattern_name'] = "DRAGONFLY_DOJI"
-    data.loc[tweezer_bottom,          'bullish_pattern_name'] = "TWEEZER_BOTTOM"
-    mask_only_green = simple_green & (data['bullish_pattern_name'] == "")
-    data.loc[mask_only_green,         'bullish_pattern_name'] = "BULLISH_CANDLE"
-
-    # ═══════════════════════════════════════════════════════════════
-    #  STEP 5 CONDITIONS
-    # ═══════════════════════════════════════════════════════════════
-
-    step5_oversold = was_both_below_20
-    step5_k_cross_d = recent_crossover
-    k_minus_d = K - D
-    step5_kd_diff_gt_5 = k_minus_d > 5
-    step5_bullish_candle = ANY_BULLISH_PATTERN
-
-    recent_bullish_pattern = pd.Series(False, index=data.index)
-    for i in range(0, 3):
-        recent_bullish_pattern |= ANY_BULLISH_PATTERN.shift(i).fillna(False)
-
-    STEP_5_BULLISH_PATTERN = (
-        TIME_OK &
-        step5_oversold &
-        step5_k_cross_d &
-        step5_kd_diff_gt_5 &
-        (step5_bullish_candle | recent_bullish_pattern) &
-        k_above_d &
-        (K < 80)
-    )
-
-    data['step_5_bullish_pattern'] = STEP_5_BULLISH_PATTERN.astype(int)
-    data['k_minus_d'] = k_minus_d.round(2)
-
-    # ═══════════════════════════════════════════════════════════════
-    #  STEP 5 STATUS LOGGING
-    # ═══════════════════════════════════════════════════════════════
-
-    last_idx = len(data) - 1
-    print("\n  ─── STEP 5: BULLISH CANDLE PATTERN CHECK ───")
-    print(f"    Oversold (was K&D<20):   {'✅' if step5_oversold.iloc[last_idx] else '⬜'}")
-    print(f"    K crossed D:             {'✅' if step5_k_cross_d.iloc[last_idx] else '⬜'}")
-    print(f"    K - D = {k_minus_d.iloc[last_idx]:.2f}  (>5 needed): {'✅' if step5_kd_diff_gt_5.iloc[last_idx] else '⬜'}")
-    print(f"    Bullish Pattern:         {'✅ ' + data['bullish_pattern_name'].iloc[last_idx] if ANY_BULLISH_PATTERN.iloc[last_idx] else '⬜ NONE'}")
-    print(f"    STEP 5 VERDICT:          {'🟢 ACTIVE' if STEP_5_BULLISH_PATTERN.iloc[last_idx] else '⚪ INACTIVE'}")
-
-    # ═══════════════════════════════════════════════════════════════
-    # ╔═══════════════════════════════════════════════════════════╗
-    # ║         TRADE DECISION ENGINE — FINAL SIGNAL             ║
-    # ╚═══════════════════════════════════════════════════════════╝
-    # ═══════════════════════════════════════════════════════════════
-
-    # --- PATH A: Oversold Recovery (Steps 1 + 2 + 3) ---
-    PATH_A_OVERSOLD = (
-        TIME_OK &
-        STEP_1_ARMED &
-        STEP_2_REVERSAL &
-        STEP_3_MOMENTUM
-    )
-
-    # --- PATH B: Mid-Zone Crossover (Step 4) ---
-    PATH_B_MIDZONE = STEP_4_MID_ZONE
-
-    # --- PATH C: Bullish Candle Pattern Entry (Step 5) ---
-    PATH_C_BULLISH_PATTERN = STEP_5_BULLISH_PATTERN
-
-    # --- REJECTION OVERRIDES (kill switch) ---
-    REJECT_OVERBOUGHT  = K > 85
-    REJECT_K_CRASHING  = k_vel < -5
-    REJECT_DEAD_VOLUME = volume < (vol_avg_10 * 0.3)
-    REJECT_HUGE_K_JUMP = k_speed > 25
-
-    REJECTION = REJECT_OVERBOUGHT | REJECT_K_CRASHING | REJECT_DEAD_VOLUME | REJECT_HUGE_K_JUMP
-
-    # ═══════════════════════════════════════════════════════════════
-    # ╔═══════════════════════════════════════════════════════════╗
-    # ║  ★★★ APPLY MASTER FILTER TO ALL PATHS ★★★               ║
-    # ║                                                           ║
-    # ║  EVERY trade signal MUST have:                            ║
-    # ║    ✓ Previous 2 candles GREEN                             ║
-    # ║    ✓ Current Open > Previous Open                         ║
-    # ║    ✓ Current High > Previous High                         ║
-    # ╚═══════════════════════════════════════════════════════════╝
-    # ═══════════════════════════════════════════════════════════════
-
-    # --- COMBINED RAW SIGNAL (ALL paths filtered through MASTER_FILTER) ---
-    long_raw = (
-        MASTER_FILTER &                          # ★ MANDATORY for ALL trades ★
-        (PATH_A_OVERSOLD | PATH_B_MIDZONE | PATH_C_BULLISH_PATTERN) &
-        ~REJECTION
-    ).astype(int)
-
-    # ═══════════════════════════════════════════════════════════════
-    #  SIGNAL GRADING
-    # ═══════════════════════════════════════════════════════════════
-
-    data['signal_grade'] = ""
+    # ═══════════════════════════════════════════════════════
+    #  GRADE & PATH LABELS
+    # ═══════════════════════════════════════════════════════
     data['signal_path']  = ""
+    data['signal_grade'] = ""
 
-    # --- A+ Grade ---
-    grade_aplus = (
+    data.loc[(long_raw == 1) & PATH_A, 'signal_path']  = "OVERSOLD_CROSS"
+    data.loc[(long_raw == 1) & PATH_A, 'signal_grade'] = "A"
+
+    data.loc[(long_raw == 1) & PATH_B, 'signal_path']  = "MIDZONE_CROSS"
+    data.loc[(long_raw == 1) & PATH_B, 'signal_grade'] = "B"
+
+    # ═══════════════════════════════════════════════════════
+    #  SIGNAL REASON
+    # ═══════════════════════════════════════════════════════
+    data['signal_reason'] = ""
+
+    data.loc[(long_raw == 1) & PATH_A, 'signal_reason'] = (
+        "BUY: K crossed above D from OVERSOLD zone"
+    )
+    data.loc[(long_raw == 1) & PATH_B, 'signal_reason'] = (
+        "BUY: K crossed above D in MID zone"
+    )
+
+    # Append live K/D values
+    mask_any = long_raw == 1
+    data.loc[mask_any, 'signal_reason'] += (
+        "  K="   + K.round(1).astype(str) +
+        " D="    + D.round(1).astype(str) +
+        " K-D="  + (K - D).round(1).astype(str) +
+        " Kvel=" + k_vel.round(1).astype(str)
+    )
+
+    data.loc[data['signal_grade'] == "A", 'signal_reason'] += " [★★★★]"
+    data.loc[data['signal_grade'] == "B", 'signal_reason'] += " [★★]"
+
+    # ═══════════════════════════════════════════════════════
+    #  COOLDOWN  — 3 bars minimum  (Grade A bypasses)
+    # ═══════════════════════════════════════════════════════
+    COOLDOWN     = 3
+    long_recent  = long_raw.shift(1).rolling(COOLDOWN).sum().fillna(0)
+    grade_a_mask = data['signal_grade'] == "A"
+
+    long_final = (
         (long_raw == 1) &
-        PATH_A_OVERSOLD &
-        ema5_rising &
-        above_ema5 &
-        vol_ok &
-        v_reversal &
-        decent_body
-    )
-    data.loc[grade_aplus, 'signal_grade'] = "A+"
-    data.loc[grade_aplus, 'signal_path']  = "OVERSOLD_RECOVERY"
-
-    # --- A Grade ---
-    grade_a = (
-        (long_raw == 1) &
-        PATH_A_OVERSOLD &
-        (data['signal_grade'] == "")
-    )
-    data.loc[grade_a, 'signal_grade'] = "A"
-    data.loc[grade_a, 'signal_path']  = "OVERSOLD_RECOVERY"
-
-    # --- A Grade (Path C) ---
-    grade_a_pattern = (
-        (long_raw == 1) &
-        PATH_C_BULLISH_PATTERN &
-        (
-            bullish_engulfing |
-            morning_star |
-            three_white_soldiers |
-            bullish_marubozu
-        ) &
-        vol_ok &
-        (data['signal_grade'] == "")
-    )
-    data.loc[grade_a_pattern, 'signal_grade'] = "A"
-    data.loc[grade_a_pattern, 'signal_path']  = "BULLISH_PATTERN_STRONG"
-
-    # --- B+ Grade ---
-    grade_bplus = (
-        (long_raw == 1) &
-        PATH_B_MIDZONE &
-        vol_ok &
-        above_ema5 &
-        (data['signal_grade'] == "")
-    )
-    data.loc[grade_bplus, 'signal_grade'] = "B+"
-    data.loc[grade_bplus, 'signal_path']  = "MIDZONE_CROSSOVER"
-
-    # --- B+ Grade (Path C) ---
-    grade_bplus_pattern = (
-        (long_raw == 1) &
-        PATH_C_BULLISH_PATTERN &
-        vol_ok &
-        (data['signal_grade'] == "")
-    )
-    data.loc[grade_bplus_pattern, 'signal_grade'] = "B+"
-    data.loc[grade_bplus_pattern, 'signal_path']  = "BULLISH_PATTERN"
-
-    # --- B Grade ---
-    grade_b = (
-        (long_raw == 1) &
-        (data['signal_grade'] == "")
-    )
-    data.loc[grade_b, 'signal_grade'] = "B"
-    mask_b_pathc = grade_b & PATH_C_BULLISH_PATTERN
-    mask_b_pathb = grade_b & PATH_B_MIDZONE & ~PATH_C_BULLISH_PATTERN
-    mask_b_other = grade_b & ~PATH_C_BULLISH_PATTERN & ~PATH_B_MIDZONE
-    data.loc[mask_b_pathc, 'signal_path'] = "BULLISH_PATTERN"
-    data.loc[mask_b_pathb, 'signal_path'] = "MIDZONE_CROSSOVER"
-    data.loc[mask_b_other, 'signal_path'] = "MIXED"
-
-    # ═══════════════════════════════════════════════════════════════
-    #  SIGNAL REASONS — DETAILED LOGGING
-    # ═══════════════════════════════════════════════════════════════
-
-    data["signal_reason"] = ""
-
-    # Path A reasons
-    mask_path_a = PATH_A_OVERSOLD & (long_raw == 1)
-    data.loc[mask_path_a, "signal_reason"] = (
-        "BUY: OVERSOLD RECOVERY | "
-        "Step1:ARMED ✓ Step2:REVERSAL ✓ Step3:MOMENTUM ✓"
-        " | MasterFilter:2GREEN+O/H ✓"
-    )
-
-    # Path B reasons
-    mask_path_b = PATH_B_MIDZONE & (long_raw == 1) & (data["signal_reason"] == "")
-    data.loc[mask_path_b, "signal_reason"] = (
-        "BUY: MIDZONE CROSSOVER | "
-        "Step4:MIDZONE ✓ Momentum ✓ Velocity ✓"
-        " | MasterFilter:2GREEN+O/H ✓"
-    )
-
-    # Path C reasons
-    mask_path_c = PATH_C_BULLISH_PATTERN & (long_raw == 1) & (data["signal_reason"] == "")
-    data.loc[mask_path_c, "signal_reason"] = (
-        "BUY: BULLISH CANDLE PATTERN | "
-        "Step5:OVERSOLD+K×D+(K-D>5)+PATTERN ✓"
-        " | MasterFilter:2GREEN+O/H ✓"
-    )
-
-    # Append pattern name for Path C
-    mask_path_c_all = PATH_C_BULLISH_PATTERN & (long_raw == 1)
-    data.loc[mask_path_c_all, 'signal_reason'] += (
-        " Pattern=" + data['bullish_pattern_name'] +
-        " K-D=" + k_minus_d.round(1).astype(str)
-    )
-
-    # Overlap signals
-    mask_both_ac = PATH_A_OVERSOLD & PATH_C_BULLISH_PATTERN & (long_raw == 1)
-    data.loc[mask_both_ac, 'signal_reason'] += (
-        " + BULLISH_PATTERN_BONUS(" + data['bullish_pattern_name'] + ")"
-    )
-
-    # Grade stars
-    data.loc[data['signal_grade'] == "A+", 'signal_reason'] += " [★★★★★]"
-    data.loc[data['signal_grade'] == "A",  'signal_reason'] += " [★★★★]"
-    data.loc[data['signal_grade'] == "B+", 'signal_reason'] += " [★★★]"
-    data.loc[data['signal_grade'] == "B",  'signal_reason'] += " [★★]"
-
-    # Append K/D details
-    mask_any_signal = (long_raw == 1)
-    data.loc[mask_any_signal, 'signal_reason'] += (
-        "  K=" + K.round(1).astype(str) +
-        " D=" + D.round(1).astype(str) +
-        " Kvel=" + k_vel.round(1).astype(str) +
-        " Dvel=" + d_vel.round(1).astype(str) +
-        " PriceChg=" + price_change_pct.round(3).astype(str) + "%"
-    )
-
-    # ═══════════════════════════════════════════════════════════════
-    #  COOLDOWN — Prevent signal spam
-    # ═══════════════════════════════════════════════════════════════
-    cooldown = 5
-    long_recent = long_raw.shift(1).rolling(cooldown).sum().fillna(0)
-
-    strong_signal = data['signal_grade'].isin(['A', 'A+'])
-    priority_pattern = data['bullish_pattern_name'].isin([
-        'MORNING_STAR',
-        'BULLISH_ENGULFING',
-        'THREE_WHITE_SOLDIERS',
-        'BULLISH_MARUBOZU'
-    ])
-
-    override = strong_signal | priority_pattern
-
-    long_after_cooldown = (
-            (long_raw == 1) &
-            (
-                    (long_recent == 0) |
-                    override
-            )
+        ((long_recent == 0) | grade_a_mask)
     ).astype(int)
 
-    # ═══════════════════════════════════════════════════════════════
-    #  MACHINE STATUS DASHBOARD
-    # ═══════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════
+    #  DASHBOARD
+    # ═══════════════════════════════════════════════════════
+    last  = len(data) - 1
+    k_now = K.iloc[last]
+    d_now = D.iloc[last]
 
-    last = len(data) - 1
+    print("\n" + "═" * 60)
+    print("  📟  INSTANT K×D — STATUS DASHBOARD")
+    print("═" * 60)
+    print(f"  Symbol      :  {symbol}")
+    print(f"  Close       :  {close.iloc[last]:.2f}")
+    print(f"  K           :  {k_now:.2f}")
+    print(f"  D           :  {d_now:.2f}")
+    print(f"  K - D       :  {(k_now - d_now):.2f}")
+    print(f"  K velocity  :  {k_vel.iloc[last]:.2f}")
+    print("─" * 60)
+    print(f"  ⚡ K crossed D (THIS bar) : {'✅ YES' if K_CROSS_D.iloc[last] else '❌ NO'}")
+    print(f"     Prev K={K.shift(1).iloc[last]:.2f}  Prev D={D.shift(1).iloc[last]:.2f}")
+    print(f"     Curr K={k_now:.2f}         Curr D={d_now:.2f}")
+    print("─" * 60)
+    print(f"  PATH A (Oversold cross) : {'🟢 ACTIVE' if PATH_A.iloc[last] else '⚪ INACTIVE'}")
+    print(f"  PATH B (Midzone cross)  : {'🟢 ACTIVE' if PATH_B.iloc[last] else '⚪ INACTIVE'}")
+    print("─" * 60)
 
-    print("\n" + "═" * 70)
-    print("  📟  5-STEP VERIFICATION MACHINE — STATUS DASHBOARD")
-    print("═" * 70)
-    print(f"  Symbol:       {symbol}")
-    print(f"  Close:        {close.iloc[last]:.2f}")
-    print(f"  K:            {K.iloc[last]:.2f}")
-    print(f"  D:            {D.iloc[last]:.2f}")
-    print(f"  K - D:        {k_minus_d.iloc[last]:.2f}")
-    print(f"  K velocity:   {k_vel.iloc[last]:.2f}")
-    print(f"  D velocity:   {d_vel.iloc[last]:.2f}")
-    print(f"  Price Chg%:   {price_change_pct.iloc[last]:.3f}%")
-    print("─" * 70)
-
-    step1_status  = "✅ ARMED" if STEP_1_ARMED.iloc[last] else "⬜ NOT ARMED"
-    step2_status  = "✅ REVERSAL" if STEP_2_REVERSAL.iloc[last] else "⬜ NO REVERSAL"
-    step3_status  = "✅ MOMENTUM OK" if STEP_3_MOMENTUM.iloc[last] else "⬜ NO MOMENTUM"
-    step4_status  = "✅ MID-ZONE" if STEP_4_MID_ZONE.iloc[last] else "⬜ NO MID-ZONE"
-    step5_status  = "✅ BULLISH PATTERN" if STEP_5_BULLISH_PATTERN.iloc[last] else "⬜ NO PATTERN"
-    master_status = "🟢 PASS" if MASTER_FILTER.iloc[last] else "🔴 FAIL"
-    patha_status  = "🟢 ACTIVE" if PATH_A_OVERSOLD.iloc[last] else "⚪ INACTIVE"
-    pathb_status  = "🟢 ACTIVE" if PATH_B_MIDZONE.iloc[last] else "⚪ INACTIVE"
-    pathc_status  = "🟢 ACTIVE" if PATH_C_BULLISH_PATTERN.iloc[last] else "⚪ INACTIVE"
-    reject_status = "🔴 REJECTED" if REJECTION.iloc[last] else "🟢 CLEAR"
-
-    print(f"  ★ MASTER FILTER (2 Green+O/H): {master_status}")
-    if not MASTER_FILTER.iloc[last]:
-        reasons = []
-        if not curr_green.iloc[last]:
-            reasons.append("Current candle RED")
-        if not prev_candle_green.iloc[last]:
-            reasons.append("Previous candle RED")
-        if not curr_open_gt_prev_open.iloc[last]:
-            reasons.append(f"Open({opn.iloc[last]:.2f}) <= PrevOpen({opn.shift(1).iloc[last]:.2f})")
-        if not curr_high_gt_prev_high.iloc[last]:
-            reasons.append(f"High({high.iloc[last]:.2f}) <= PrevHigh({high.shift(1).iloc[last]:.2f})")
-        print(f"    Fail reasons: {', '.join(reasons)}")
-    print("─" * 70)
-    print(f"  STEP 1 (Oversold K&D<20):     {step1_status}")
-    print(f"  STEP 2 (K×D + V-shape):       {step2_status}")
-    print(f"  STEP 3 (Momentum/Velocity):   {step3_status}")
-    print(f"  STEP 4 (Mid-Zone Crossover):  {step4_status}")
-    print(f"  STEP 5 (Bullish Pattern):     {step5_status}")
-    if STEP_5_BULLISH_PATTERN.iloc[last]:
-        print(f"         Pattern Found:         🕯️  {data['bullish_pattern_name'].iloc[last]}")
-    print("─" * 70)
-    print(f"  PATH A (Oversold Recovery):   {patha_status}")
-    print(f"  PATH B (Mid-Zone Entry):      {pathb_status}")
-    print(f"  PATH C (Bullish Pattern):     {pathc_status}")
-    print(f"  REJECTION CHECK:              {reject_status}")
-    print("─" * 70)
-
-    if long_raw.iloc[last] == 1:
-        print(f"  🔔 RAW SIGNAL:   BUY  (Master Filter: ✅)")
-        print(f"     Grade:        {data['signal_grade'].iloc[last]}")
-        print(f"     Path:         {data['signal_path'].iloc[last]}")
-    else:
-        if not MASTER_FILTER.iloc[last] and (PATH_A_OVERSOLD.iloc[last] or PATH_B_MIDZONE.iloc[last] or PATH_C_BULLISH_PATTERN.iloc[last]):
-            print(f"  ⚠️  RAW SIGNAL:  BLOCKED BY MASTER FILTER (2 Green Candle + O/H condition)")
-        else:
-            print(f"  💤 RAW SIGNAL:   NO TRADE")
-
-    if long_after_cooldown.iloc[last] == 1:
-        print(f"  ⏱️  COOLDOWN:     CLEAR — Signal passes")
+    if long_final.iloc[last] == 1:
+        print(f"  🔔 SIGNAL  : ✅ BUY  (INSTANT K×D CROSS)")
+        print(f"     Grade   : {data['signal_grade'].iloc[last]}")
+        print(f"     Path    : {data['signal_path'].iloc[last]}")
     elif long_raw.iloc[last] == 1:
-        print(f"  ⏱️  COOLDOWN:     BLOCKED — Too soon after last signal")
+        print(f"  ⏱️  SIGNAL  : BLOCKED BY COOLDOWN (too soon)")
+    elif K_CROSS_D.iloc[last]:
+        print(f"  ⚠️  SIGNAL  : K×D CROSS detected but outside trading hours")
+    else:
+        print(f"  💤 SIGNAL  : NO CROSS THIS BAR")
 
-    print("═" * 70 + "\n")
+    print("═" * 60 + "\n")
 
-    # ═══════════════════════════════════════════════════════════════
-    #  INIT OUTPUT COLUMNS
-    # ═══════════════════════════════════════════════════════════════
-
-    data['st_sig_raw']    = long_after_cooldown
+    # ═══════════════════════════════════════════════════════
+    #  OUTPUT COLUMNS
+    # ═══════════════════════════════════════════════════════
+    data['st_sig_raw']    = long_raw
     data['confidence']    = 0.0
     data['llm_signal']    = None
     data['llm_reason']    = ""
@@ -1620,20 +973,18 @@ def super_trend(symbol, data, use_llm=False):
     data['llm_target_2']  = 0.0
     data['llm_bias']      = ""
 
-    # ═══════════════════════════════════════════════════════════════
-    #  MODE: WITHOUT LLM
-    # ═══════════════════════════════════════════════════════════════
-
+    # ═══════════════════════════════════════════════════════
+    #  NO LLM
+    # ═══════════════════════════════════════════════════════
     if not use_llm:
-        print("📊 LLM Mode: OFF — Pure technical signals")
-        data['st_sig'] = long_after_cooldown
+        print("📊 LLM Mode: OFF — Pure K×D cross signals")
+        data['st_sig'] = long_final
         data.loc[data['st_sig'] == 1, 'signal_reason'] += " | 🔧 NO LLM"
         return data
 
-    # ═══════════════════════════════════════════════════════════════
-    #  MODE: WITH LLM
-    # ═══════════════════════════════════════════════════════════════
-
+    # ═══════════════════════════════════════════════════════
+    #  WITH LLM
+    # ═══════════════════════════════════════════════════════
     print("🤖 LLM Mode: ON — Final AI verification")
 
     llm_confidence = 0.0
@@ -1645,80 +996,67 @@ def super_trend(symbol, data, use_llm=False):
     llm_target_2   = 0.0
     llm_bias       = ""
 
-    if long_after_cooldown.iloc[-1] == 1:
+    if long_final.iloc[-1] == 1:
         print("=" * 60)
-        print(f"🔔 5-STEP VERIFIED BUY SIGNAL → Sending to LLM: {symbol}")
-        print(f"   Grade:  {data['signal_grade'].iloc[-1]}")
-        print(f"   Path:   {data['signal_path'].iloc[-1]}")
-        print(f"   Reason: {data['signal_reason'].iloc[-1]}")
+        print(f"🔔 INSTANT K×D BUY → LLM: {symbol}")
+        print(f"   Grade  : {data['signal_grade'].iloc[-1]}")
+        print(f"   Path   : {data['signal_path'].iloc[-1]}")
         print("=" * 60)
 
         try:
             ohlcv = fetch_ohlcv(symbol)
 
             if not ohlcv:
-                print("⚠️  No OHLCV data for LLM — proceeding with technical only")
+                print("⚠️  No OHLCV — proceeding without LLM")
             else:
                 llm_result = llm_trade_signal(symbol, ohlcv, "3m")
 
-                print("\n" + "─" * 50)
-                print("  🧠  LLM ANALYSIS RESULT")
-                print("─" * 50)
-
-                llm_signal     = str(llm_result.get("signal", "no trade")).strip()
+                llm_signal     = str(llm_result.get("signal",     "no trade")).strip()
                 llm_confidence = float(llm_result.get("confidence", 0.0))
-                llm_reason     = str(llm_result.get("reason", ""))
-                llm_bias       = str(llm_result.get("bias", ""))
-                llm_entry      = float(llm_result.get("entry", 0.0))
-                llm_stop_loss  = float(llm_result.get("stop_loss", 0.0))
-                llm_target_1   = float(llm_result.get("target_1", 0.0))
-                llm_target_2   = float(llm_result.get("target_2", 0.0))
+                llm_reason     = str(llm_result.get("reason",     ""))
+                llm_bias       = str(llm_result.get("bias",       ""))
+                llm_entry      = float(llm_result.get("entry",      0.0))
+                llm_stop_loss  = float(llm_result.get("stop_loss",  0.0))
+                llm_target_1   = float(llm_result.get("target_1",   0.0))
+                llm_target_2   = float(llm_result.get("target_2",   0.0))
 
-                print(f"  Bias:       {llm_bias}")
-                print(f"  Signal:     {llm_signal}")
-                print(f"  Confidence: {llm_confidence}")
-                print(f"  Entry:      {llm_entry}")
-                print(f"  Stop Loss:  {llm_stop_loss}")
-                print(f"  Target 1:   {llm_target_1}")
-                print(f"  Target 2:   {llm_target_2}")
-                print(f"  Reason:     {llm_reason}")
+                print(f"  Bias       : {llm_bias}")
+                print(f"  Signal     : {llm_signal}")
+                print(f"  Confidence : {llm_confidence:.2f}")
+                print(f"  Entry      : {llm_entry}   SL : {llm_stop_loss}")
+                print(f"  T1 : {llm_target_1}   T2 : {llm_target_2}")
+                print(f"  Reason     : {llm_reason}")
 
-                if llm_signal == "buy" and llm_confidence >= 0.7:
-                    print(f"\n  ✅ LLM CONFIRMS BUY (confidence={llm_confidence:.2f})")
-                elif llm_signal == "buy":
-                    print(f"\n  ⚠️  LLM says BUY but LOW confidence ({llm_confidence:.2f} < 0.7) — BLOCKED")
-                elif llm_signal == "sell":
-                    print(f"\n  ❌ LLM says SELL — BLOCKED")
-                else:
-                    print(f"\n  ⏸️  LLM says '{llm_signal}' — BLOCKED")
-
-                print("─" * 50)
+                verdict = (
+                    "✅ CONFIRMED"
+                    if llm_signal == "buy" and llm_confidence >= 0.7
+                    else f"❌ BLOCKED ({llm_signal}, conf={llm_confidence:.2f})"
+                )
+                print(f"\n  LLM VERDICT : {verdict}")
 
         except Exception as e:
             print(f"❌ LLM error: {e}")
-            print("   Proceeding without LLM confirmation")
 
-    # Store LLM values
-    data.loc[data.index[-1], 'confidence']    = llm_confidence
-    data.loc[data.index[-1], 'llm_signal']    = llm_signal
-    data.loc[data.index[-1], 'llm_reason']    = llm_reason
-    data.loc[data.index[-1], 'llm_bias']      = llm_bias
-    data.loc[data.index[-1], 'llm_entry']     = llm_entry
-    data.loc[data.index[-1], 'llm_stop_loss'] = llm_stop_loss
-    data.loc[data.index[-1], 'llm_target_1']  = llm_target_1
-    data.loc[data.index[-1], 'llm_target_2']  = llm_target_2
+    # Store LLM output
+    idx = data.index[-1]
+    data.loc[idx, 'confidence']    = llm_confidence
+    data.loc[idx, 'llm_signal']    = llm_signal
+    data.loc[idx, 'llm_reason']    = llm_reason
+    data.loc[idx, 'llm_bias']      = llm_bias
+    data.loc[idx, 'llm_entry']     = llm_entry
+    data.loc[idx, 'llm_stop_loss'] = llm_stop_loss
+    data.loc[idx, 'llm_target_1']  = llm_target_1
+    data.loc[idx, 'llm_target_2']  = llm_target_2
 
-    # ═══════════════════════════════════════════════════════════════
-    #  FINAL TRADE SIGNAL
-    # ═══════════════════════════════════════════════════════════════
-
+    # ═══════════════════════════════════════════════════════
+    #  FINAL SIGNAL
+    # ═══════════════════════════════════════════════════════
     data['st_sig'] = (
-        (long_after_cooldown == 1) &
+        (long_final == 1)           &
         (data['confidence'] >= 0.7) &
         (data['llm_signal'] == 'buy')
     ).astype(int)
 
-    # Tag final reasons
     final_buy = data['st_sig'] == 1
     data.loc[final_buy, 'signal_reason'] += (
         f" | ✅ LLM=BUY conf={llm_confidence:.2f}"
@@ -1726,43 +1064,29 @@ def super_trend(symbol, data, use_llm=False):
         f" t1={llm_target_1} t2={llm_target_2}"
     )
 
-    blocked = (long_after_cooldown == 1) & (data['st_sig'] == 0)
+    blocked = (long_final == 1) & (data['st_sig'] == 0)
     data.loc[blocked, 'signal_reason'] += (
         f" | ❌ LLM BLOCKED ({llm_signal}, conf={llm_confidence:.2f})"
     )
 
-    # ═══════════════════════════════════════════════════════════════
-    #  FINAL MACHINE OUTPUT
-    # ═══════════════════════════════════════════════════════════════
-
-    if long_after_cooldown.iloc[-1] == 1:
+    # ═══════════════════════════════════════════════════════
+    #  FINAL PRINT
+    # ═══════════════════════════════════════════════════════
+    if long_final.iloc[-1] == 1:
         if data['st_sig'].iloc[-1] == 1:
-            print("\n" + "🟢" * 20)
-            print("  ╔═══════════════════════════════════════════╗")
-            print("  ║     ✅  TRADE EXECUTED — BUY CONFIRMED   ║")
-            print("  ╚═══════════════════════════════════════════╝")
-            print(f"  Symbol:     {symbol}")
-            print(f"  Grade:      {data['signal_grade'].iloc[-1]}")
-            print(f"  Path:       {data['signal_path'].iloc[-1]}")
-            print(f"  Confidence: {llm_confidence:.2f}")
-            print(f"  Entry:      {llm_entry}")
-            print(f"  Stop Loss:  {llm_stop_loss}")
-            print(f"  Target 1:   {llm_target_1}")
-            print(f"  Target 2:   {llm_target_2}")
-            print(f"  🟩 Master:   2 Green Candles + O/H confirmed")
-            if PATH_C_BULLISH_PATTERN.iloc[-1]:
-                print(f"  🕯️ Pattern:  {data['bullish_pattern_name'].iloc[-1]}")
-            print("🟢" * 20 + "\n")
+            print("\n" + "🟢" * 15)
+            print(f"  ✅  TRADE CONFIRMED — {symbol}")
+            print(f"      Grade  : {data['signal_grade'].iloc[-1]}")
+            print(f"      Path   : {data['signal_path'].iloc[-1]}")
+            print(f"      Entry  : {llm_entry}   SL : {llm_stop_loss}")
+            print(f"      T1 : {llm_target_1}   T2 : {llm_target_2}")
+            print("🟢" * 15 + "\n")
         else:
-            print("\n" + "🔴" * 20)
-            print("  ╔═══════════════════════════════════════════╗")
-            print("  ║     ❌  TRADE BLOCKED BY LLM             ║")
-            print("  ╚═══════════════════════════════════════════╝")
-            print(f"  Symbol:     {symbol}")
-            print(f"  LLM Signal: {llm_signal}")
-            print(f"  Confidence: {llm_confidence:.2f}")
-            print(f"  Reason:     {llm_reason}")
-            print("🔴" * 20 + "\n")
+            print("\n" + "🔴" * 15)
+            print(f"  ❌  BLOCKED BY LLM — {symbol}")
+            print(f"      Signal : {llm_signal}   conf={llm_confidence:.2f}")
+            print(f"      Reason : {llm_reason}")
+            print("🔴" * 15 + "\n")
 
     return data
 
