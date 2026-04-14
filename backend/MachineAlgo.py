@@ -797,28 +797,33 @@ Return ONLY JSON:
 def super_trend(symbol, data, use_llm=False):
     """
     ╔══════════════════════════════════════════════════════════════╗
-    ║          INSTANT K×D CROSSOVER STRATEGY                     ║
+    ║          VWAP-FILTERED K×D CROSSOVER STRATEGY               ║
     ║          LONG ONLY                                           ║
     ╠══════════════════════════════════════════════════════════════╣
     ║                                                              ║
-    ║  SIGNAL: K crosses above D  →  INSTANT BUY                  ║
+    ║  STEP 1:  Detect OVERSOLD zone  (K < 20, D < 20)           ║
+    ║  STEP 2:  Wait for Price to CROSS ABOVE VWAP               ║
+    ║  STEP 3:  K crosses above D  →  CONFIRMED BUY              ║
     ║                                                              ║
-    ║  PATH A:  K×D cross in OVERSOLD  (K<20, D<20)  → Grade A   ║
-    ║  PATH B:  K×D cross in MID ZONE  (20<K,D<80)   → Grade B   ║
+    ║  PATH A:  Oversold → VWAP cross + K×D cross  → Grade A     ║
+    ║  PATH B:  Mid zone → VWAP cross + K×D cross  → Grade B     ║
     ║                                                              ║
+    ║  VWAP RULE:  Price must CROSS ABOVE VWAP (not just above)  ║
+    ║              Previous bar: Close <= VWAP                    ║
+    ║              Current  bar: Close >  VWAP                    ║
     ╚══════════════════════════════════════════════════════════════╝
     """
 
     print("=" * 60)
-    print(f"  ⚙️  INSTANT K×D CROSSOVER MACHINE — {symbol}")
+    print(f"  ⚙️  VWAP-FILTERED K×D CROSSOVER — {symbol}")
     print("=" * 60)
 
     # ═══════════════════════════════════════════════════════
     #  INDICATORS
     # ═══════════════════════════════════════════════════════
-    stoch           = ta.stoch(data['High'], data['Low'], data['Close'], 28, 3, 3)
-    data['Stoch_K'] = stoch['STOCHk_28_3_3']
-    data['Stoch_D'] = stoch['STOCHd_28_3_3']
+    stoch           = ta.stoch(data['High'], data['Low'], data['Close'], 14, 3, 3)
+    data['Stoch_K'] = stoch['STOCHk_14_3_3']
+    data['Stoch_D'] = stoch['STOCHd_14_3_3']
 
     K      = data['Stoch_K']
     D      = data['Stoch_D']
@@ -831,7 +836,42 @@ def super_trend(symbol, data, use_llm=False):
     k_vel = K - K.shift(1)
 
     # ═══════════════════════════════════════════════════════
-    #  INSTANT K×D CROSS  — THIS BAR ONLY
+    #  VWAP CALCULATION
+    #  Intraday rolling VWAP using cumulative method
+    #  Resets each trading day automatically
+    # ═══════════════════════════════════════════════════════
+    typical_price = (high + low + close) / 3
+    tp_vol        = typical_price * volume
+
+    # Group by date so VWAP resets each day
+    if isinstance(data.index, pd.DatetimeIndex):
+        date_group = data.index.date
+    else:
+        date_group = pd.to_datetime(data.index).date
+
+    date_series = pd.Series(date_group, index=data.index)
+
+    # Cumulative sum within each day
+    cum_tp_vol = tp_vol.groupby(date_series).cumsum()
+    cum_vol    = volume.groupby(date_series).cumsum()
+
+    data['VWAP'] = cum_tp_vol / cum_vol
+    vwap = data['VWAP']
+
+    print(f"\n  📐 VWAP (current): {vwap.iloc[-1]:.2f}")
+    print(f"  📐 Close (current): {close.iloc[-1]:.2f}")
+    print(f"  📐 Price vs VWAP : {'ABOVE ✅' if close.iloc[-1] > vwap.iloc[-1] else 'BELOW ❌'}")
+
+    # ═══════════════════════════════════════════════════════
+    #  VWAP CROSS DETECTION
+    #  Previous bar: Close <= VWAP  (price was at or below)
+    #  Current  bar: Close >  VWAP  (price just crossed above)
+    # ═══════════════════════════════════════════════════════
+    PRICE_ABOVE_VWAP     = close > vwap                          # price currently above VWAP
+    PRICE_CROSSED_VWAP   = (close.shift(1) <= vwap.shift(1)) & (close > vwap)  # fresh cross
+
+    # ═══════════════════════════════════════════════════════
+    #  STOCHASTIC K×D CROSS
     #  Previous bar: K <= D
     #  Current  bar: K >  D
     # ═══════════════════════════════════════════════════════
@@ -852,27 +892,99 @@ def super_trend(symbol, data, use_llm=False):
     TIME_OK = (time_mins >= 575) & (time_mins <= 910)
 
     # ═══════════════════════════════════════════════════════
-    #  PATH A — OVERSOLD CROSS
-    #  K & D were both below 20 just before the cross
+    #  OVERSOLD DETECTION
+    #  K & D were both below 20 in recent bars
     # ═══════════════════════════════════════════════════════
     oversold_now  = (K.shift(1) < 20) & (D.shift(1) < 20)
     oversold_prev = (K.shift(2) < 20) & (D.shift(2) < 20)
     WAS_OVERSOLD  = oversold_now | oversold_prev
 
-    PATH_A = TIME_OK & K_CROSS_D & WAS_OVERSOLD
+    # ═══════════════════════════════════════════════════════
+    #  OVERSOLD MEMORY WINDOW
+    #  Remember if we were oversold in last N bars
+    #  This handles the case where oversold happens first
+    #  then price crosses VWAP a few bars later
+    # ═══════════════════════════════════════════════════════
+    OVERSOLD_WINDOW = 10   # bars to remember oversold state
+
+    # Mark any bar where K < 20 and D < 20
+    raw_oversold = (K < 20) & (D < 20)
+
+    # Rolling window: was there ANY oversold bar in last N bars?
+    OVERSOLD_MEMORY = (
+        raw_oversold
+        .rolling(window=OVERSOLD_WINDOW, min_periods=1)
+        .max()
+        .fillna(0)
+        .astype(bool)
+    )
+
+    print(f"\n  📉 Oversold Memory Active : {'YES ✅' if OVERSOLD_MEMORY.iloc[-1] else 'NO ❌'}")
+    print(f"     (Looks back {OVERSOLD_WINDOW} bars for K<20 & D<20)")
 
     # ═══════════════════════════════════════════════════════
-    #  PATH B — MID-ZONE CROSS
-    #  K crosses D while both are between 20 and 80
+    #  PATH A — OVERSOLD CROSS + VWAP FILTER
+    #
+    #  Sequence required:
+    #    1. K & D were in oversold zone (memory window)
+    #    2. K crosses above D
+    #    3. Price crosses above VWAP (fresh cross)
+    #
+    #  Both (2) and (3) should happen on same bar or
+    #  VWAP cross can be the trigger if oversold was recent
+    # ═══════════════════════════════════════════════════════
+    PATH_A = (
+        TIME_OK         &
+        OVERSOLD_MEMORY &          # was oversold in last N bars
+        K_CROSS_D       &          # K just crossed above D
+        PRICE_ABOVE_VWAP           # price is above VWAP (confirmation)
+    )
+
+    # ═══════════════════════════════════════════════════════
+    #  PATH A VARIANT — VWAP CROSS IS THE TRIGGER
+    #  Oversold happened → K×D already crossed → now price
+    #  crosses VWAP → this is the actual entry bar
+    #
+    #  Useful when K×D cross happened 1-2 bars before VWAP
+    # ═══════════════════════════════════════════════════════
+    # Window to remember recent K×D cross
+    KD_CROSS_MEMORY = (
+        K_CROSS_D
+        .rolling(window=5, min_periods=1)
+        .max()
+        .fillna(0)
+        .astype(bool)
+    )
+
+    PATH_A_VWAP_TRIGGER = (
+        TIME_OK              &
+        OVERSOLD_MEMORY      &     # was oversold recently
+        KD_CROSS_MEMORY      &     # K×D cross happened recently
+        PRICE_CROSSED_VWAP         # PRICE just crossed above VWAP ← ENTRY TRIGGER
+    )
+
+    # Combine both Path A variants
+    PATH_A_FINAL = PATH_A | PATH_A_VWAP_TRIGGER
+
+    # ═══════════════════════════════════════════════════════
+    #  PATH B — MID-ZONE CROSS + VWAP FILTER
+    #
+    #  K×D cross in mid zone (20-80) + price above VWAP
     # ═══════════════════════════════════════════════════════
     in_mid_zone = (K > 20) & (K < 80) & (D > 20) & (D < 80)
 
-    PATH_B = TIME_OK & K_CROSS_D & in_mid_zone & ~WAS_OVERSOLD
+    PATH_B = (
+        TIME_OK          &
+        K_CROSS_D        &
+        in_mid_zone      &
+        ~OVERSOLD_MEMORY &          # NOT from oversold (that's Path A)
+        PRICE_ABOVE_VWAP            # must be above VWAP
+    )
 
     # ═══════════════════════════════════════════════════════
-    #  RAW SIGNAL  — fire the moment K crosses D
+    #  RAW SIGNAL
     # ═══════════════════════════════════════════════════════
-    long_raw = (PATH_A | PATH_B).astype(int)
+    long_raw = (PATH_A_FINAL | PATH_B).astype(int)
 
     # ═══════════════════════════════════════════════════════
     #  GRADE & PATH LABELS
@@ -880,10 +992,16 @@ def super_trend(symbol, data, use_llm=False):
     data['signal_path']  = ""
     data['signal_grade'] = ""
 
-    data.loc[(long_raw == 1) & PATH_A, 'signal_path']  = "OVERSOLD_CROSS"
+    # Path A: oversold + K×D same bar
+    data.loc[(long_raw == 1) & PATH_A, 'signal_path']  = "OVERSOLD_VWAP_CROSS"
     data.loc[(long_raw == 1) & PATH_A, 'signal_grade'] = "A"
 
-    data.loc[(long_raw == 1) & PATH_B, 'signal_path']  = "MIDZONE_CROSS"
+    # Path A variant: VWAP cross is the trigger (slightly lower grade)
+    data.loc[(long_raw == 1) & PATH_A_VWAP_TRIGGER & ~PATH_A, 'signal_path']  = "OVERSOLD_VWAP_TRIGGER"
+    data.loc[(long_raw == 1) & PATH_A_VWAP_TRIGGER & ~PATH_A, 'signal_grade'] = "A"
+
+    # Path B
+    data.loc[(long_raw == 1) & PATH_B, 'signal_path']  = "MIDZONE_VWAP_CROSS"
     data.loc[(long_raw == 1) & PATH_B, 'signal_grade'] = "B"
 
     # ═══════════════════════════════════════════════════════
@@ -892,19 +1010,24 @@ def super_trend(symbol, data, use_llm=False):
     data['signal_reason'] = ""
 
     data.loc[(long_raw == 1) & PATH_A, 'signal_reason'] = (
-        "BUY: K crossed above D from OVERSOLD zone"
+        "BUY: Oversold K×D cross + Price above VWAP"
+    )
+    data.loc[(long_raw == 1) & PATH_A_VWAP_TRIGGER & ~PATH_A, 'signal_reason'] = (
+        "BUY: Oversold bounce — Price just crossed VWAP (trigger)"
     )
     data.loc[(long_raw == 1) & PATH_B, 'signal_reason'] = (
-        "BUY: K crossed above D in MID zone"
+        "BUY: Midzone K×D cross + Price above VWAP"
     )
 
-    # Append live K/D values
+    # Append live indicator values
     mask_any = long_raw == 1
     data.loc[mask_any, 'signal_reason'] += (
-        "  K="   + K.round(1).astype(str) +
-        " D="    + D.round(1).astype(str) +
-        " K-D="  + (K - D).round(1).astype(str) +
-        " Kvel=" + k_vel.round(1).astype(str)
+        "  K="     + K.round(1).astype(str)          +
+        " D="      + D.round(1).astype(str)          +
+        " K-D="    + (K - D).round(1).astype(str)    +
+        " Kvel="   + k_vel.round(1).astype(str)      +
+        " VWAP="   + vwap.round(2).astype(str)       +
+        " Close="  + close.round(2).astype(str)
     )
 
     data.loc[data['signal_grade'] == "A", 'signal_reason'] += " [★★★★]"
@@ -928,35 +1051,73 @@ def super_trend(symbol, data, use_llm=False):
     last  = len(data) - 1
     k_now = K.iloc[last]
     d_now = D.iloc[last]
+    v_now = vwap.iloc[last]
+    c_now = close.iloc[last]
 
     print("\n" + "═" * 60)
-    print("  📟  INSTANT K×D — STATUS DASHBOARD")
+    print("  📟  VWAP-FILTERED K×D — STATUS DASHBOARD")
     print("═" * 60)
-    print(f"  Symbol      :  {symbol}")
-    print(f"  Close       :  {close.iloc[last]:.2f}")
-    print(f"  K           :  {k_now:.2f}")
-    print(f"  D           :  {d_now:.2f}")
-    print(f"  K - D       :  {(k_now - d_now):.2f}")
-    print(f"  K velocity  :  {k_vel.iloc[last]:.2f}")
+    print(f"  Symbol          :  {symbol}")
+    print(f"  Close           :  {c_now:.2f}")
+    print(f"  VWAP            :  {v_now:.2f}")
+    print(f"  Price vs VWAP   :  {c_now - v_now:+.2f}  "
+          f"({'ABOVE ✅' if c_now > v_now else 'BELOW ❌'})")
     print("─" * 60)
-    print(f"  ⚡ K crossed D (THIS bar) : {'✅ YES' if K_CROSS_D.iloc[last] else '❌ NO'}")
-    print(f"     Prev K={K.shift(1).iloc[last]:.2f}  Prev D={D.shift(1).iloc[last]:.2f}")
-    print(f"     Curr K={k_now:.2f}         Curr D={d_now:.2f}")
-    print("─" * 60)
-    print(f"  PATH A (Oversold cross) : {'🟢 ACTIVE' if PATH_A.iloc[last] else '⚪ INACTIVE'}")
-    print(f"  PATH B (Midzone cross)  : {'🟢 ACTIVE' if PATH_B.iloc[last] else '⚪ INACTIVE'}")
+    print(f"  K               :  {k_now:.2f}")
+    print(f"  D               :  {d_now:.2f}")
+    print(f"  K - D           :  {(k_now - d_now):.2f}")
+    print(f"  K velocity      :  {k_vel.iloc[last]:.2f}")
     print("─" * 60)
 
+    # VWAP cross status
+    prev_close = close.shift(1).iloc[last]
+    prev_vwap  = vwap.shift(1).iloc[last]
+    print(f"  📊 VWAP Cross (this bar)  : "
+          f"{'✅ YES' if PRICE_CROSSED_VWAP.iloc[last] else '❌ NO'}")
+    print(f"     Prev Close={prev_close:.2f}  Prev VWAP={prev_vwap:.2f}")
+    print(f"     Curr Close={c_now:.2f}  Curr VWAP={v_now:.2f}")
+    print("─" * 60)
+
+    # Stochastic cross status
+    print(f"  ⚡ K crossed D (this bar) : "
+          f"{'✅ YES' if K_CROSS_D.iloc[last] else '❌ NO'}")
+    print(f"     Prev K={K.shift(1).iloc[last]:.2f}  "
+          f"Prev D={D.shift(1).iloc[last]:.2f}")
+    print(f"     Curr K={k_now:.2f}  Curr D={d_now:.2f}")
+    print("─" * 60)
+
+    # Oversold memory
+    print(f"  📉 Oversold Memory        : "
+          f"{'🔴 ACTIVE (K<20 D<20 recent)' if OVERSOLD_MEMORY.iloc[last] else '⚪ NONE'}")
+    print(f"     Raw oversold now       : "
+          f"{'YES' if raw_oversold.iloc[last] else 'NO'} "
+          f"(K={k_now:.1f} D={d_now:.1f})")
+    print("─" * 60)
+
+    # Path status
+    print(f"  PATH A (Oversold+VWAP)         : "
+          f"{'🟢 ACTIVE' if PATH_A.iloc[last] else '⚪ INACTIVE'}")
+    print(f"  PATH A-VT (VWAP Trigger)       : "
+          f"{'🟢 ACTIVE' if PATH_A_VWAP_TRIGGER.iloc[last] else '⚪ INACTIVE'}")
+    print(f"  PATH B (Midzone+VWAP)          : "
+          f"{'🟢 ACTIVE' if PATH_B.iloc[last] else '⚪ INACTIVE'}")
+    print("─" * 60)
+
+    # Final signal
     if long_final.iloc[last] == 1:
-        print(f"  🔔 SIGNAL  : ✅ BUY  (INSTANT K×D CROSS)")
+        print(f"  🔔 SIGNAL  : ✅ BUY  (VWAP-FILTERED K×D CROSS)")
         print(f"     Grade   : {data['signal_grade'].iloc[last]}")
         print(f"     Path    : {data['signal_path'].iloc[last]}")
     elif long_raw.iloc[last] == 1:
         print(f"  ⏱️  SIGNAL  : BLOCKED BY COOLDOWN (too soon)")
-    elif K_CROSS_D.iloc[last]:
-        print(f"  ⚠️  SIGNAL  : K×D CROSS detected but outside trading hours")
+    elif K_CROSS_D.iloc[last] and not PRICE_ABOVE_VWAP.iloc[last]:
+        print(f"  ⚠️  SIGNAL  : K×D CROSS but price BELOW VWAP — waiting")
+    elif OVERSOLD_MEMORY.iloc[last] and not PRICE_ABOVE_VWAP.iloc[last]:
+        print(f"  👀 SIGNAL  : OVERSOLD detected — waiting for VWAP cross")
+    elif not TIME_OK.iloc[last]:
+        print(f"  🕐 SIGNAL  : OUTSIDE trading hours")
     else:
-        print(f"  💤 SIGNAL  : NO CROSS THIS BAR")
+        print(f"  💤 SIGNAL  : NO SETUP THIS BAR")
 
     print("═" * 60 + "\n")
 
@@ -977,7 +1138,7 @@ def super_trend(symbol, data, use_llm=False):
     #  NO LLM
     # ═══════════════════════════════════════════════════════
     if not use_llm:
-        print("📊 LLM Mode: OFF — Pure K×D cross signals")
+        print("📊 LLM Mode: OFF — Pure VWAP-filtered K×D signals")
         data['st_sig'] = long_final
         data.loc[data['st_sig'] == 1, 'signal_reason'] += " | 🔧 NO LLM"
         return data
@@ -998,9 +1159,10 @@ def super_trend(symbol, data, use_llm=False):
 
     if long_final.iloc[-1] == 1:
         print("=" * 60)
-        print(f"🔔 INSTANT K×D BUY → LLM: {symbol}")
+        print(f"🔔 VWAP-FILTERED BUY → LLM: {symbol}")
         print(f"   Grade  : {data['signal_grade'].iloc[-1]}")
         print(f"   Path   : {data['signal_path'].iloc[-1]}")
+        print(f"   VWAP   : {v_now:.2f}  Close: {c_now:.2f}")
         print("=" * 60)
 
         try:
@@ -1078,6 +1240,7 @@ def super_trend(symbol, data, use_llm=False):
             print(f"  ✅  TRADE CONFIRMED — {symbol}")
             print(f"      Grade  : {data['signal_grade'].iloc[-1]}")
             print(f"      Path   : {data['signal_path'].iloc[-1]}")
+            print(f"      VWAP   : {v_now:.2f}  Close: {c_now:.2f}")
             print(f"      Entry  : {llm_entry}   SL : {llm_stop_loss}")
             print(f"      T1 : {llm_target_1}   T2 : {llm_target_2}")
             print("🟢" * 15 + "\n")
@@ -1089,6 +1252,7 @@ def super_trend(symbol, data, use_llm=False):
             print("🔴" * 15 + "\n")
 
     return data
+
 
 
 
