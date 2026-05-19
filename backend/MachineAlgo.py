@@ -99,7 +99,7 @@ def scripcode_lookup(instrument=instrument_df, symbol='TCS'):
 
 
 
-def get_cash_market_data_3(timeframe='3m'):
+def get_cash_market_data_3(timeframe='5m'):
     df = pd.DataFrame(client.historical_data(Exch='N', ExchangeSegment='C', ScripCode=999920000, time=timeframe,
                                              From=dt.date.today() - dt.timedelta(5), To=dt.date.today()))
 
@@ -1912,7 +1912,7 @@ data_list = {}
 
 for h in Tickers:
 
-    data_fut = get_cash_market_data(h, '3m')
+    data_fut = get_cash_market_data(h, '5m')
     data_fut.drop(data_fut.tail(1).index, inplace=True)
 
     super_trend(h,data_fut)
