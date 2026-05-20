@@ -801,8 +801,6 @@ Return ONLY JSON:
 
 
 
-
-
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass
@@ -849,16 +847,10 @@ class PriceActionAnalyzer:
         true_range  = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         self.df['ATR'] = true_range.rolling(window=self.atr_period).mean()
 
-
     def _identify_zigzag_points(self) -> Tuple[List[int], List[float], List[int], List[float]]:
         """
         Non-repainting ZigZag with alternating swing structure.
-
-        Key features:
-        - Backward-looking only (no future data)
-        - Enforces alternating high/low pattern
-        - ATR-based noise filtering
-        - Updates last point if better extreme found
+        FIX: Now includes CURRENT (incomplete) bar for real-time signals.
         """
         high_indices, high_values = [], []
         low_indices, low_values = [], []
@@ -866,8 +858,8 @@ class PriceActionAnalyzer:
         lookback = self.zigzag_length
         trend = None  # None, 'high', or 'low'
 
-        # Start after we have enough data for ATR and lookback
-        for i in range(lookback, len(self.df)-1):
+        # CHANGE: Loop includes last bar (n-1) instead of stopping at (n-2)
+        for i in range(lookback, len(self.df)):
 
             current_high = self.df['High'].iloc[i]
             current_low = self.df['Low'].iloc[i]
@@ -902,7 +894,7 @@ class PriceActionAnalyzer:
                 # Switch from low to high (only if significant move)
                 elif trend == 'low':
                     last_low = low_values[-1]
-                    swing_size = current_high-last_low
+                    swing_size = current_high - last_low
 
                     if swing_size > atr * 0.5:  # Minimum swing threshold
                         high_indices.append(i)
@@ -930,7 +922,7 @@ class PriceActionAnalyzer:
                 # Switch from high to low (only if significant move)
                 elif trend == 'high':
                     last_high = high_values[-1]
-                    swing_size = last_high-current_low
+                    swing_size = last_high - current_low
 
                     if swing_size > atr * 0.5:  # Minimum swing threshold
                         low_indices.append(i)
@@ -939,15 +931,27 @@ class PriceActionAnalyzer:
 
         return high_indices, high_values, low_indices, low_values
 
-    def find_order_blocks(self, max_blocks: int = 20) -> List[OrderBlock]:
+    def find_order_blocks(self, max_blocks: int = 20, include_live: bool = True) -> List[OrderBlock]:
+        """
+        FIX: Added include_live parameter to control whether to include current bar.
+        For real-time: include_live=True (default)
+        For backtesting: include_live=False (excludes last/incomplete bar)
+        """
         order_blocks = []
         high_indices, high_values, low_indices, low_values = self._identify_zigzag_points()
 
-        # ✅ Exclude last pivot (it's still "live")
-        confirmed_high_indices = high_indices[:-1] if len(high_indices) > 1 else []
-        confirmed_low_indices = low_indices[:-1] if len(low_indices) > 1 else []
-        confirmed_high_values = high_values[:-1] if len(high_values) > 1 else []
-        confirmed_low_values = low_values[:-1] if len(low_values) > 1 else []
+        # Exclude last pivot only if NOT in real-time mode
+        if not include_live and len(high_indices) > 0:
+            confirmed_high_indices = high_indices[:-1]
+            confirmed_low_indices = low_indices[:-1]
+            confirmed_high_values = high_values[:-1]
+            confirmed_low_values = low_values[:-1]
+        else:
+            # Include all (for real-time)
+            confirmed_high_indices = high_indices
+            confirmed_low_indices = low_indices
+            confirmed_high_values = high_values
+            confirmed_low_values = low_values
 
         # Bearish order blocks
         for i in range(len(confirmed_high_indices)):
@@ -980,35 +984,47 @@ class PriceActionAnalyzer:
         # Remove duplicates and limit
         unique_blocks = {}
         for block in order_blocks:
-            key = (block.block_type, block.bar_start, block.value)  # ✅ Include bar_start in key
+            key = (block.block_type, block.bar_start, block.value)
             if key not in unique_blocks:
                 unique_blocks[key] = block
 
         sorted_blocks = sorted(unique_blocks.values(), key=lambda x: x.bar_start, reverse=True)
         return sorted_blocks[:max_blocks]
 
-    def find_trend_lines(self, trend_line_length: int = 20) -> List[TrendLine]:
+    def find_trend_lines(self, trend_line_length: int = 20, include_live: bool = True) -> List[TrendLine]:
+        """
+        FIX: Added include_live parameter to control whether to include current bar.
+        For real-time: include_live=True (default)
+        For backtesting: include_live=False
+        """
         trend_lines = []
         high_indices, high_values, low_indices, low_values = self._identify_zigzag_points()
 
-        # ✅ Exclude the LAST pivot (it may still be updating)
-        confirmed_low_indices = low_indices[:-1] if len(low_indices) > 1 else []
-        confirmed_high_indices = high_indices[:-1] if len(high_indices) > 1 else []
-        confirmed_low_values = low_values[:-1] if len(low_values) > 1 else []  # ✅ Add this
-        confirmed_high_values = high_values[:-1] if len(high_values) > 1 else []  # ✅ Add this
+        # Exclude last pivot only if NOT in real-time mode
+        if not include_live and len(high_indices) > 0:
+            confirmed_low_indices = low_indices[:-1]
+            confirmed_high_indices = high_indices[:-1]
+            confirmed_low_values = low_values[:-1]
+            confirmed_high_values = high_values[:-1]
+        else:
+            # Include all (for real-time)
+            confirmed_low_indices = low_indices
+            confirmed_high_indices = high_indices
+            confirmed_low_values = low_values
+            confirmed_high_values = high_values
 
         # Bullish trend lines
         if len(confirmed_low_indices) >= 2:
             for i in range(len(confirmed_low_indices)-1):
                 start_idx = confirmed_low_indices[i]
                 end_idx = confirmed_low_indices[i+1]
-                start_value = confirmed_low_values[i]  # ✅ Use confirmed
-                end_value = confirmed_low_values[i+1]  # ✅ Use confirmed
+                start_value = confirmed_low_values[i]
+                end_value = confirmed_low_values[i+1]
 
                 if end_idx == start_idx:
                     continue
 
-                slope = (end_value-start_value) / (end_idx-start_idx)
+                slope = (end_value - start_value) / (end_idx - start_idx)
                 if slope > 0:
                     trend_lines.append(TrendLine(
                         start_idx=start_idx, end_idx=end_idx,
@@ -1023,13 +1039,13 @@ class PriceActionAnalyzer:
             for i in range(len(confirmed_high_indices)-1):
                 start_idx = confirmed_high_indices[i]
                 end_idx = confirmed_high_indices[i+1]
-                start_value = confirmed_high_values[i]  # ✅ Use confirmed
-                end_value = confirmed_high_values[i+1]  # ✅ Use confirmed
+                start_value = confirmed_high_values[i]
+                end_value = confirmed_high_values[i+1]
 
                 if end_idx == start_idx:
                     continue
 
-                slope = (end_value-start_value) / (end_idx-start_idx)
+                slope = (end_value - start_value) / (end_idx - start_idx)
                 if slope < 0:
                     trend_lines.append(TrendLine(
                         start_idx=start_idx, end_idx=end_idx,
@@ -1040,7 +1056,6 @@ class PriceActionAnalyzer:
                     ))
 
         return trend_lines
-
 
     def extend_trend_line(self, trend_line: TrendLine, extend_to_idx: int) -> Tuple[int, float]:
         slope          = trend_line.slope
@@ -1070,12 +1085,6 @@ class PriceActionAnalyzer:
         return pd.DataFrame(lines)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  LIVE MARKET FIX — normalise a Timestamp to a minute-precision string
-#  that is TIMEZONE-AGNOSTIC and MICROSECOND-AGNOSTIC.
-#  Both cash-market and option-data timestamps go through this before
-#  any string comparison, so tz-aware vs tz-naive mismatches are gone.
-# ═══════════════════════════════════════════════════════════════════════════
 def _ts_to_min(ts) -> str:
     """
     Convert any timestamp (pd.Timestamp, str, datetime) → 'YYYY-MM-DD HH:MM'.
@@ -1083,10 +1092,8 @@ def _ts_to_min(ts) -> str:
     """
     t = pd.Timestamp(ts)
     if t.tzinfo is not None:
-        t = t.tz_localize(None)           # strip tz
-    return t.strftime('%Y-%m-%d %H:%M')   # minute-precision, no 'T'
-
-
+        t = t.tz_localize(None)
+    return t.strftime('%Y-%m-%d %H:%M')
 
 def super_trend(symbol, data, use_llm=False):
     """
