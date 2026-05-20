@@ -849,28 +849,93 @@ class PriceActionAnalyzer:
         true_range  = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         self.df['ATR'] = true_range.rolling(window=self.atr_period).mean()
 
+
     def _identify_zigzag_points(self) -> Tuple[List[int], List[float], List[int], List[float]]:
+        """
+        Non-repainting ZigZag with alternating swing structure.
+
+        Key features:
+        - Backward-looking only (no future data)
+        - Enforces alternating high/low pattern
+        - ATR-based noise filtering
+        - Updates last point if better extreme found
+        """
         high_indices, high_values = [], []
-        low_indices,  low_values  = [], []
-        trend = 1
+        low_indices, low_values = [], []
 
-        # ── FIX: exclude the last bar (may be incomplete in live market) ──
-        safe_end = len(self.df) - self.zigzag_length - 1
+        lookback = self.zigzag_length
+        trend = None  # None, 'high', or 'low'
 
-        for i in range(self.zigzag_length, safe_end):
-            if trend == 1:
-                window_high = self.df['High'].iloc[i - self.zigzag_length: i + self.zigzag_length + 1].max()
-                if self.df['High'].iloc[i] == window_high:
+        # Start after we have enough data for ATR and lookback
+        for i in range(lookback, len(self.df)-1):
+
+            current_high = self.df['High'].iloc[i]
+            current_low = self.df['Low'].iloc[i]
+
+            # Backward-looking window (NO FUTURE DATA)
+            prev_highs = self.df['High'].iloc[i-lookback:i]
+            prev_lows = self.df['Low'].iloc[i-lookback:i]
+
+            atr = self.df['ATR'].iloc[i]
+
+            if pd.isna(atr):
+                continue
+
+            # ─────────────────────────────────────────────────────
+            # DETECT HIGH (current bar is highest in lookback)
+            # ─────────────────────────────────────────────────────
+            is_pivot_high = current_high >= prev_highs.max()
+
+            if is_pivot_high:
+                # Initialize with first high
+                if trend is None:
                     high_indices.append(i)
-                    high_values.append(self.df['High'].iloc[i])
-                    trend = -1
+                    high_values.append(current_high)
+                    trend = 'high'
 
-            if trend == -1:
-                window_low = self.df['Low'].iloc[i - self.zigzag_length: i + self.zigzag_length + 1].min()
-                if self.df['Low'].iloc[i] == window_low:
+                # Update existing high if we're still in uptrend and found higher high
+                elif trend == 'high':
+                    if current_high > high_values[-1]:
+                        high_indices[-1] = i
+                        high_values[-1] = current_high
+
+                # Switch from low to high (only if significant move)
+                elif trend == 'low':
+                    last_low = low_values[-1]
+                    swing_size = current_high-last_low
+
+                    if swing_size > atr * 0.5:  # Minimum swing threshold
+                        high_indices.append(i)
+                        high_values.append(current_high)
+                        trend = 'high'
+
+            # ─────────────────────────────────────────────────────
+            # DETECT LOW (current bar is lowest in lookback)
+            # ─────────────────────────────────────────────────────
+            is_pivot_low = current_low <= prev_lows.min()
+
+            if is_pivot_low:
+                # Initialize with first low (if no high yet)
+                if trend is None:
                     low_indices.append(i)
-                    low_values.append(self.df['Low'].iloc[i])
-                    trend = 1
+                    low_values.append(current_low)
+                    trend = 'low'
+
+                # Update existing low if we're still in downtrend and found lower low
+                elif trend == 'low':
+                    if current_low < low_values[-1]:
+                        low_indices[-1] = i
+                        low_values[-1] = current_low
+
+                # Switch from high to low (only if significant move)
+                elif trend == 'high':
+                    last_high = high_values[-1]
+                    swing_size = last_high-current_low
+
+                    if swing_size > atr * 0.5:  # Minimum swing threshold
+                        low_indices.append(i)
+                        low_values.append(current_low)
+                        trend = 'low'
 
         return high_indices, high_values, low_indices, low_values
 
@@ -878,67 +943,72 @@ class PriceActionAnalyzer:
         order_blocks = []
         high_indices, high_values, low_indices, low_values = self._identify_zigzag_points()
 
-        if len(high_indices) < 2 or len(low_indices) < 1:
-            return order_blocks
+        # ✅ Exclude last pivot (it's still "live")
+        confirmed_high_indices = high_indices[:-1] if len(high_indices) > 1 else []
+        confirmed_low_indices = low_indices[:-1] if len(low_indices) > 1 else []
+        confirmed_high_values = high_values[:-1] if len(high_values) > 1 else []
+        confirmed_low_values = low_values[:-1] if len(low_values) > 1 else []
 
-        for i in range(len(high_indices) - 1):
-            high_idx     = high_indices[i]
-            next_low_idx = low_indices[i] if i < len(low_indices) else len(self.df) - 1
+        # Bearish order blocks
+        for i in range(len(confirmed_high_indices)):
+            high_idx = confirmed_high_indices[i]
+            high_value = confirmed_high_values[i]
 
-            if high_idx < next_low_idx:
-                slice_data    = self.df['High'].iloc[high_idx: next_low_idx + 1]
-                max_high_value = slice_data.max()
-                max_high_pos   = high_idx + slice_data.argmax()
+            order_blocks.append(OrderBlock(
+                value=high_value,
+                bar_start=high_idx,
+                bar_end=len(self.df)-1,
+                block_type='bearish',
+                start_datetime=self.df_with_datetime.index[high_idx],
+                end_datetime=self.df_with_datetime.index[-1]
+            ))
 
-                order_blocks.append(OrderBlock(
-                    value=max_high_value,
-                    bar_start=max_high_pos,
-                    bar_end=len(self.df) - 1,
-                    block_type='bearish',
-                    start_datetime=self.df_with_datetime.index[max_high_pos],
-                    end_datetime=self.df_with_datetime.index[-1]
-                ))
+        # Bullish order blocks
+        for i in range(len(confirmed_low_indices)):
+            low_idx = confirmed_low_indices[i]
+            low_value = confirmed_low_values[i]
 
-        for i in range(len(low_indices) - 1):
-            low_idx       = low_indices[i]
-            next_high_idx = high_indices[i + 1] if i + 1 < len(high_indices) else len(self.df) - 1
+            order_blocks.append(OrderBlock(
+                value=low_value,
+                bar_start=low_idx,
+                bar_end=len(self.df)-1,
+                block_type='bullish',
+                start_datetime=self.df_with_datetime.index[low_idx],
+                end_datetime=self.df_with_datetime.index[-1]
+            ))
 
-            if low_idx < next_high_idx:
-                slice_data    = self.df['Low'].iloc[low_idx: next_high_idx + 1]
-                min_low_value = slice_data.min()
-                min_low_pos   = low_idx + slice_data.argmin()
-
-                order_blocks.append(OrderBlock(
-                    value=min_low_value,
-                    bar_start=min_low_pos,
-                    bar_end=len(self.df) - 1,
-                    block_type='bullish',
-                    start_datetime=self.df_with_datetime.index[min_low_pos],
-                    end_datetime=self.df_with_datetime.index[-1]
-                ))
-
+        # Remove duplicates and limit
         unique_blocks = {}
         for block in order_blocks:
-            key = (block.block_type, block.value)
+            key = (block.block_type, block.bar_start, block.value)  # ✅ Include bar_start in key
             if key not in unique_blocks:
                 unique_blocks[key] = block
 
-        sorted_blocks = sorted(unique_blocks.values(), key=lambda x: x.bar_end, reverse=True)
-        return sorted_blocks[-max_blocks:] if len(sorted_blocks) > max_blocks else sorted_blocks
+        sorted_blocks = sorted(unique_blocks.values(), key=lambda x: x.bar_start, reverse=True)
+        return sorted_blocks[:max_blocks]
 
     def find_trend_lines(self, trend_line_length: int = 20) -> List[TrendLine]:
         trend_lines = []
         high_indices, high_values, low_indices, low_values = self._identify_zigzag_points()
 
-        if len(low_indices) >= 2:
-            for i in range(len(low_indices) - 1):
-                start_idx   = low_indices[i]
-                end_idx     = low_indices[i + 1]
-                start_value = low_values[i]
-                end_value   = low_values[i + 1]
+        # ✅ Exclude the LAST pivot (it may still be updating)
+        confirmed_low_indices = low_indices[:-1] if len(low_indices) > 1 else []
+        confirmed_high_indices = high_indices[:-1] if len(high_indices) > 1 else []
+        confirmed_low_values = low_values[:-1] if len(low_values) > 1 else []  # ✅ Add this
+        confirmed_high_values = high_values[:-1] if len(high_values) > 1 else []  # ✅ Add this
+
+        # Bullish trend lines
+        if len(confirmed_low_indices) >= 2:
+            for i in range(len(confirmed_low_indices)-1):
+                start_idx = confirmed_low_indices[i]
+                end_idx = confirmed_low_indices[i+1]
+                start_value = confirmed_low_values[i]  # ✅ Use confirmed
+                end_value = confirmed_low_values[i+1]  # ✅ Use confirmed
+
                 if end_idx == start_idx:
                     continue
-                slope = (end_value - start_value) / (end_idx - start_idx)
+
+                slope = (end_value-start_value) / (end_idx-start_idx)
                 if slope > 0:
                     trend_lines.append(TrendLine(
                         start_idx=start_idx, end_idx=end_idx,
@@ -948,15 +1018,18 @@ class PriceActionAnalyzer:
                         trend_type='bullish', slope=slope
                     ))
 
-        if len(high_indices) >= 2:
-            for i in range(len(high_indices) - 1):
-                start_idx   = high_indices[i]
-                end_idx     = high_indices[i + 1]
-                start_value = high_values[i]
-                end_value   = high_values[i + 1]
+        # Bearish trend lines
+        if len(confirmed_high_indices) >= 2:
+            for i in range(len(confirmed_high_indices)-1):
+                start_idx = confirmed_high_indices[i]
+                end_idx = confirmed_high_indices[i+1]
+                start_value = confirmed_high_values[i]  # ✅ Use confirmed
+                end_value = confirmed_high_values[i+1]  # ✅ Use confirmed
+
                 if end_idx == start_idx:
                     continue
-                slope = (end_value - start_value) / (end_idx - start_idx)
+
+                slope = (end_value-start_value) / (end_idx-start_idx)
                 if slope < 0:
                     trend_lines.append(TrendLine(
                         start_idx=start_idx, end_idx=end_idx,
@@ -967,6 +1040,7 @@ class PriceActionAnalyzer:
                     ))
 
         return trend_lines
+
 
     def extend_trend_line(self, trend_line: TrendLine, extend_to_idx: int) -> Tuple[int, float]:
         slope          = trend_line.slope
@@ -1011,6 +1085,7 @@ def _ts_to_min(ts) -> str:
     if t.tzinfo is not None:
         t = t.tz_localize(None)           # strip tz
     return t.strftime('%Y-%m-%d %H:%M')   # minute-precision, no 'T'
+
 
 
 def super_trend(symbol, data, use_llm=False):
