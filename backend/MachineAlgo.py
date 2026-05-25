@@ -800,895 +800,267 @@ Return ONLY JSON:
         return _no_trade_response(f"LLM error: {e}")
 
 
-
-import pandas as pd
-import numpy as np
-from dataclasses import dataclass
-from typing import List, Tuple
-
-
-@dataclass
-class OrderBlock:
-    """Data class to store order block information"""
-    value: float
-    bar_start: int
-    bar_end: int
-    block_type: str  # 'bullish' or 'bearish'
-    start_datetime: pd.Timestamp
-    end_datetime: pd.Timestamp
-
-
-@dataclass
-class TrendLine:
-    """Data class to store trend line information"""
-    start_idx: int
-    end_idx: int
-    start_value: float
-    end_value: float
-    start_datetime: pd.Timestamp
-    end_datetime: pd.Timestamp
-    trend_type: str  # 'bullish' or 'bearish'
-    slope: float
-
-
-class PriceActionAnalyzer:
-
-    def __init__(self, df: pd.DataFrame, zigzag_length: int = 9, atr_period: int = 14):
-        self.df = df.copy().reset_index(drop=True)
-        self.df_with_datetime = df.copy()
-        self.zigzag_length = zigzag_length
-        self.atr_period = atr_period
-        self._calculate_atr()
-
-    def _calculate_atr(self):
-        high_low    = self.df['High'] - self.df['Low']
-        high_close  = abs(self.df['High'] - self.df['Close'].shift())
-        low_close   = abs(self.df['Low']  - self.df['Close'].shift())
-        true_range  = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        self.df['ATR'] = true_range.rolling(window=self.atr_period).mean()
-
-    def _identify_zigzag_points(self) -> Tuple[List[int], List[float], List[int], List[float]]:
-        """
-        Non-repainting ZigZag with alternating swing structure.
-        FIX: Now includes CURRENT (incomplete) bar for real-time signals.
-        """
-        high_indices, high_values = [], []
-        low_indices, low_values = [], []
-
-        lookback = self.zigzag_length
-        trend = None  # None, 'high', or 'low'
-
-        # CHANGE: Loop includes last bar (n-1) instead of stopping at (n-2)
-        for i in range(lookback, len(self.df)):
-
-            current_high = self.df['High'].iloc[i]
-            current_low = self.df['Low'].iloc[i]
-
-            # Backward-looking window (NO FUTURE DATA)
-            prev_highs = self.df['High'].iloc[i-lookback:i]
-            prev_lows = self.df['Low'].iloc[i-lookback:i]
-
-            atr = self.df['ATR'].iloc[i]
-
-            if pd.isna(atr):
-                continue
-
-            # ─────────────────────────────────────────────────────
-            # DETECT HIGH (current bar is highest in lookback)
-            # ─────────────────────────────────────────────────────
-            is_pivot_high = current_high >= prev_highs.max()
-
-            if is_pivot_high:
-                # Initialize with first high
-                if trend is None:
-                    high_indices.append(i)
-                    high_values.append(current_high)
-                    trend = 'high'
-
-                # Update existing high if we're still in uptrend and found higher high
-                elif trend == 'high':
-                    if current_high > high_values[-1]:
-                        high_indices[-1] = i
-                        high_values[-1] = current_high
-
-                # Switch from low to high (only if significant move)
-                elif trend == 'low':
-                    last_low = low_values[-1]
-                    swing_size = current_high - last_low
-
-                    if swing_size > atr * 0.5:  # Minimum swing threshold
-                        high_indices.append(i)
-                        high_values.append(current_high)
-                        trend = 'high'
-
-            # ─────────────────────────────────────────────────────
-            # DETECT LOW (current bar is lowest in lookback)
-            # ─────────────────────────────────────────────────────
-            is_pivot_low = current_low <= prev_lows.min()
-
-            if is_pivot_low:
-                # Initialize with first low (if no high yet)
-                if trend is None:
-                    low_indices.append(i)
-                    low_values.append(current_low)
-                    trend = 'low'
-
-                # Update existing low if we're still in downtrend and found lower low
-                elif trend == 'low':
-                    if current_low < low_values[-1]:
-                        low_indices[-1] = i
-                        low_values[-1] = current_low
-
-                # Switch from high to low (only if significant move)
-                elif trend == 'high':
-                    last_high = high_values[-1]
-                    swing_size = last_high - current_low
-
-                    if swing_size > atr * 0.5:  # Minimum swing threshold
-                        low_indices.append(i)
-                        low_values.append(current_low)
-                        trend = 'low'
-
-        return high_indices, high_values, low_indices, low_values
-
-    def find_order_blocks(self, max_blocks: int = 20, include_live: bool = True) -> List[OrderBlock]:
-        """
-        FIX: Added include_live parameter to control whether to include current bar.
-        For real-time: include_live=True (default)
-        For backtesting: include_live=False (excludes last/incomplete bar)
-        """
-        order_blocks = []
-        high_indices, high_values, low_indices, low_values = self._identify_zigzag_points()
-
-        # Exclude last pivot only if NOT in real-time mode
-        if not include_live and len(high_indices) > 0:
-            confirmed_high_indices = high_indices[:-1]
-            confirmed_low_indices = low_indices[:-1]
-            confirmed_high_values = high_values[:-1]
-            confirmed_low_values = low_values[:-1]
-        else:
-            # Include all (for real-time)
-            confirmed_high_indices = high_indices
-            confirmed_low_indices = low_indices
-            confirmed_high_values = high_values
-            confirmed_low_values = low_values
-
-        # Bearish order blocks
-        for i in range(len(confirmed_high_indices)):
-            high_idx = confirmed_high_indices[i]
-            high_value = confirmed_high_values[i]
-
-            order_blocks.append(OrderBlock(
-                value=high_value,
-                bar_start=high_idx,
-                bar_end=len(self.df)-1,
-                block_type='bearish',
-                start_datetime=self.df_with_datetime.index[high_idx],
-                end_datetime=self.df_with_datetime.index[-1]
-            ))
-
-        # Bullish order blocks
-        for i in range(len(confirmed_low_indices)):
-            low_idx = confirmed_low_indices[i]
-            low_value = confirmed_low_values[i]
-
-            order_blocks.append(OrderBlock(
-                value=low_value,
-                bar_start=low_idx,
-                bar_end=len(self.df)-1,
-                block_type='bullish',
-                start_datetime=self.df_with_datetime.index[low_idx],
-                end_datetime=self.df_with_datetime.index[-1]
-            ))
-
-        # Remove duplicates and limit
-        unique_blocks = {}
-        for block in order_blocks:
-            key = (block.block_type, block.bar_start, block.value)
-            if key not in unique_blocks:
-                unique_blocks[key] = block
-
-        sorted_blocks = sorted(unique_blocks.values(), key=lambda x: x.bar_start, reverse=True)
-        return sorted_blocks[:max_blocks]
-
-    def find_trend_lines(self, trend_line_length: int = 20, include_live: bool = True) -> List[TrendLine]:
-        """
-        FIX: Added include_live parameter to control whether to include current bar.
-        For real-time: include_live=True (default)
-        For backtesting: include_live=False
-        """
-        trend_lines = []
-        high_indices, high_values, low_indices, low_values = self._identify_zigzag_points()
-
-        # Exclude last pivot only if NOT in real-time mode
-        if not include_live and len(high_indices) > 0:
-            confirmed_low_indices = low_indices[:-1]
-            confirmed_high_indices = high_indices[:-1]
-            confirmed_low_values = low_values[:-1]
-            confirmed_high_values = high_values[:-1]
-        else:
-            # Include all (for real-time)
-            confirmed_low_indices = low_indices
-            confirmed_high_indices = high_indices
-            confirmed_low_values = low_values
-            confirmed_high_values = high_values
-
-        # Bullish trend lines
-        if len(confirmed_low_indices) >= 2:
-            for i in range(len(confirmed_low_indices)-1):
-                start_idx = confirmed_low_indices[i]
-                end_idx = confirmed_low_indices[i+1]
-                start_value = confirmed_low_values[i]
-                end_value = confirmed_low_values[i+1]
-
-                if end_idx == start_idx:
-                    continue
-
-                slope = (end_value - start_value) / (end_idx - start_idx)
-                if slope > 0:
-                    trend_lines.append(TrendLine(
-                        start_idx=start_idx, end_idx=end_idx,
-                        start_value=start_value, end_value=end_value,
-                        start_datetime=self.df_with_datetime.index[start_idx],
-                        end_datetime=self.df_with_datetime.index[end_idx],
-                        trend_type='bullish', slope=slope
-                    ))
-
-        # Bearish trend lines
-        if len(confirmed_high_indices) >= 2:
-            for i in range(len(confirmed_high_indices)-1):
-                start_idx = confirmed_high_indices[i]
-                end_idx = confirmed_high_indices[i+1]
-                start_value = confirmed_high_values[i]
-                end_value = confirmed_high_values[i+1]
-
-                if end_idx == start_idx:
-                    continue
-
-                slope = (end_value - start_value) / (end_idx - start_idx)
-                if slope < 0:
-                    trend_lines.append(TrendLine(
-                        start_idx=start_idx, end_idx=end_idx,
-                        start_value=start_value, end_value=end_value,
-                        start_datetime=self.df_with_datetime.index[start_idx],
-                        end_datetime=self.df_with_datetime.index[end_idx],
-                        trend_type='bearish', slope=slope
-                    ))
-
-        return trend_lines
-
-    def extend_trend_line(self, trend_line: TrendLine, extend_to_idx: int) -> Tuple[int, float]:
-        slope          = trend_line.slope
-        extended_value = trend_line.start_value + slope * (extend_to_idx - trend_line.start_idx)
-        return extend_to_idx, extended_value
-
-    def get_order_block_zones(self, order_blocks: List[OrderBlock]) -> pd.DataFrame:
-        zones = []
-        for ob in order_blocks:
-            zones.append({
-                'datetime': ob.start_datetime, 'type': ob.block_type,
-                'value': ob.value, 'bar_start': ob.bar_start,
-                'bar_end': ob.bar_end, 'start_time': ob.start_datetime,
-                'end_time': ob.end_datetime
-            })
-        return pd.DataFrame(zones)
-
-    def get_trend_lines_info(self, trend_lines: List[TrendLine]) -> pd.DataFrame:
-        lines = []
-        for tl in trend_lines:
-            lines.append({
-                'type': tl.trend_type, 'start_datetime': tl.start_datetime,
-                'end_datetime': tl.end_datetime, 'start_value': tl.start_value,
-                'end_value': tl.end_value, 'slope': tl.slope,
-                'start_idx': tl.start_idx, 'end_idx': tl.end_idx
-            })
-        return pd.DataFrame(lines)
-
-
-def _ts_to_min(ts) -> str:
-    """
-    Convert any timestamp (pd.Timestamp, str, datetime) → 'YYYY-MM-DD HH:MM'.
-    Strips timezone, microseconds, and seconds.
-    """
-    t = pd.Timestamp(ts)
-    if t.tzinfo is not None:
-        t = t.tz_localize(None)
-    return t.strftime('%Y-%m-%d %H:%M')
-
 def super_trend(symbol, data, use_llm=False):
-    """
-    ╔══════════════════════════════════════════════════════════════════════╗
-    ║      DUAL‑BRANCH TRADING SIGNAL ENGINE  (v4 — LIVE MARKET FIXED)    ║
-    ║                                                                      ║
-    ║  BRANCH-2 (unchanged logic):                                         ║
-    ║    • Bullish OB  → BUY_CE  immediately at ob.start_datetime         ║
-    ║    • Bearish OB  → BUY_PE  immediately at ob.start_datetime         ║
-    ║    • Bullish TL  → BUY_CE  immediately at tl.end_datetime           ║
-    ║    • Bearish TL  → BUY_PE  immediately at tl.end_datetime           ║
-    ║    • Datetime-matched, every OB/TL independent, no cooldown         ║
-    ║                                                                      ║
-    ║  BRANCH-1 (unchanged logic — Stochastic Confluence Engine):         ║
-    ║    F1. Both K & D oversold (<20) — armed                            ║
-    ║    F2. K crosses D while K<30 — cross confirmed                     ║
-    ║    F3. K velocity accelerating (Kvel>0 AND Kvel>=KvelPrev)          ║
-    ║    F4. K/D spread > 1.5 pts (meaningful separation)                 ║
-    ║    F5. CCI rising AND CCI > -100 (no trap)                          ║
-    ║    F6. Bullish OB or TL within 2% of close (structure confluence)   ║
-    ║    F7. Time window 09:35–15:10                                       ║
-    ║                                                                      ║
-    ║  LIVE MARKET FIXES (no logic change):                               ║
-    ║    • _ts_to_min(): tz-agnostic, microsecond-agnostic minute match   ║
-    ║    • _find_option_bar(): robust fallback with tz-stripped index      ║
-    ║    • PriceActionAnalyzer excludes last (live/incomplete) bar         ║
-    ║    • Branch-1 cooldown: fires on CURRENT bar, not suppressed         ║
-    ║    • Branch-1 loop: processes bar i=n-1 (the live bar) correctly     ║
-    ╚══════════════════════════════════════════════════════════════════════╝
-    """
 
-    # ═══════════════════════════════════════════════════════
-    #  HELPER — parse CE / PE from symbol
-    # ═══════════════════════════════════════════════════════
-    def _parse_option_type(sym: str) -> str:
-        for part in sym.upper().split():
-            if part in ('CE', 'PE'):
-                return part
-        return ''
+    import numpy as np
+    import pandas as pd
+    import pandas_ta as ta
 
-    # ═══════════════════════════════════════════════════════
-    #  HELPER — find matching option bar for a given datetime
-    #
-    #  FIX vs original:
-    #   • Builds option_min_strs once using _ts_to_min() so that
-    #     tz-aware / tz-naive / microsecond differences never
-    #     cause a mismatch.
-    #   • Uses ' ' separator (not 'T') matching _ts_to_min output.
-    #   • Nearest-after fallback is preserved.
-    # ═══════════════════════════════════════════════════════
-    option_min_strs = [_ts_to_min(dt) for dt in data.index]   # built once
-
-    def _find_option_bar(fire_dt) -> int:
-        target_min = _ts_to_min(fire_dt)   # same normalisation
-
-        # Exact minute match
-        for pos, opt_min in enumerate(option_min_strs):
-            if opt_min == target_min:
-                return pos
-
-        # No exact match → find closest bar AFTER fire_dt
-        for pos, opt_min in enumerate(option_min_strs):
-            if opt_min > target_min:
-                return pos
-
-        return -1   # beyond option data range
-
-    # ═══════════════════════════════════════════════════════
-    #  HEADER
-    # ═══════════════════════════════════════════════════════
     print("=" * 80)
-    print("  ⚙️   DUAL-BRANCH TRADING SIGNAL ENGINE (v4 — LIVE MARKET FIXED)")
-    print(f"  SYMBOL    : {symbol}")
-    print(f"  DATA SHAPE: {data.shape}")
-    print(f"  DATE RANGE: {data.index[0]} to {data.index[-1]}")
+    print("  FILTERED CCI + STOCHASTIC REVERSAL")
+    print(f"  SYMBOL : {symbol}")
     print("=" * 80)
 
-    option_type = _parse_option_type(symbol)
-    print(f"\n  📌 OPTION TYPE : {option_type if option_type else 'SPOT / INDEX'}")
+    # =========================================================
+    # PRICE DATA
+    # =========================================================
 
-    n     = len(data)
     close = data['Close']
+    high = data['High']
+    low = data['Low']
+    open_price = data['Open']
 
-    print(f"\n  📊 Data Info:")
-    print(f"     Total bars   : {n}")
-    print(f"     Close range  : {close.min():.2f} – {close.max():.2f}")
-    print(f"     Current close: {close.iloc[-1]:.2f}")
+    n = len(data)
 
-    # ═══════════════════════════════════════════════════════
-    #  BRANCH-1 INDICATORS
-    # ═══════════════════════════════════════════════════════
-    print("\n" + "─" * 80)
-    print("  📊 CALCULATING BRANCH-1 INDICATORS (Stochastic + CCI)")
-    print("─" * 80)
+    # =========================================================
+    # INDICATORS
+    # =========================================================
 
-    stoch        = ta.stoch(data['High'], data['Low'], data['Close'], 14, 3, 3)
+    stoch = ta.stoch(high, low, close, 14, 3, 3)
+
     data['Stoch_K'] = stoch['STOCHk_14_3_3']
     data['Stoch_D'] = stoch['STOCHd_14_3_3']
-    data['CCI']     = ta.cci(data['High'], data['Low'], data['Close'], length=20)
 
-    K            = data['Stoch_K']
-    D            = data['Stoch_D']
-    CCI          = data['CCI']
-    k_vel        = K - K.shift(1)
-    cci_momentum = CCI - CCI.shift(1)
+    data['CCI'] = ta.cci(high, low, close, length=20)
 
-    # ── Time filter  9:35 AM – 3:10 PM ──────────────────────────
-    if isinstance(data.index, pd.DatetimeIndex):
-        time_series = data.index.time
-    else:
-        time_series = pd.to_datetime(data.index).time
+    K = data['Stoch_K']
+    D = data['Stoch_D']
+    CCI = data['CCI']
 
-    time_mins = pd.Series(
-        [t.hour * 60 + t.minute for t in time_series],
-        index=data.index
-    )
-    TIME_OK = (time_mins >= 575) & (time_mins <= 910)
-    print(f"  ✅ Stochastic (K, D) and CCI calculated")
+    # =========================================================
+    # STORAGE
+    # =========================================================
 
-    # ═══════════════════════════════════════════════════════
-    #  BRANCH-2 — PriceActionAnalyzer
-    # ═══════════════════════════════════════════════════════
-    print("\n" + "─" * 80)
-    print("  📐  BRANCH 2 — CALLING PriceActionAnalyzer")
-    print("─" * 80)
-
-    analyzer     = None
-    order_blocks = []
-    trend_lines  = []
-
-    try:
-        ndata    = get_cash_market_data_3('5m')
-        analyzer = PriceActionAnalyzer(ndata, zigzag_length=9, atr_period=14)
-        print(f"  ✅ PriceActionAnalyzer initialized")
-    except Exception as e:
-        print(f"  ❌ ERROR initializing PriceActionAnalyzer: {e}")
-        print(f"  ⚠️  Skipping Branch-2")
-
-    if analyzer is not None:
-        try:
-            order_blocks = analyzer.find_order_blocks(max_blocks=20)
-            print(f"  ✅ Order blocks found: {len(order_blocks)}")
-        except Exception as e:
-            print(f"  ❌ ERROR finding order blocks: {e}")
-
-        try:
-            trend_lines = analyzer.find_trend_lines(trend_line_length=20)
-            print(f"  ✅ Trend lines found: {len(trend_lines)}")
-        except Exception as e:
-            print(f"  ❌ ERROR finding trend lines: {e}")
-
-    bearish_obs = [ob for ob in order_blocks if ob.block_type == 'bearish']
-    bullish_obs = [ob for ob in order_blocks if ob.block_type == 'bullish']
-    bearish_tls = [tl for tl in trend_lines if tl.trend_type == 'bearish']
-    bullish_tls = [tl for tl in trend_lines if tl.trend_type == 'bullish']
-
-    # ─────────────────────────────────────────────────────────────
-    #  PRINT — order blocks
-    # ─────────────────────────────────────────────────────────────
-    print(f"\n  📊 ORDER BLOCKS  total={len(order_blocks)}"
-          f"  (🔴 Bearish={len(bearish_obs)}  |  🟢 Bullish={len(bullish_obs)})")
-    print(f"  {'─' * 78}")
-
-    if bearish_obs:
-        print("  🔴 BEARISH ORDER BLOCKS → BUY_PE at start_datetime:")
-        for i, ob in enumerate(bearish_obs, 1):
-            print(f"     {i:2d}. Value={ob.value:.2f}"
-                  f"  |  start_datetime={ob.start_datetime}"
-                  f"  |  bar_start={ob.bar_start}")
-
-    if bullish_obs:
-        print("  🟢 BULLISH ORDER BLOCKS → BUY_CE at start_datetime:")
-        for i, ob in enumerate(bullish_obs, 1):
-            print(f"     {i:2d}. Value={ob.value:.2f}"
-                  f"  |  start_datetime={ob.start_datetime}"
-                  f"  |  bar_start={ob.bar_start}")
-
-    if not order_blocks:
-        print("  ⚠️  No order blocks found!")
-
-    # ─────────────────────────────────────────────────────────────
-    #  PRINT — trend lines
-    # ─────────────────────────────────────────────────────────────
-    print(f"\n  📉 TREND LINES   total={len(trend_lines)}"
-          f"  (🔴 Bearish={len(bearish_tls)}  |  🟢 Bullish={len(bullish_tls)})")
-    print(f"  {'─' * 78}")
-
-    if bearish_tls:
-        print("  🔴 BEARISH TREND LINES → BUY_PE at end_datetime:")
-        for i, tl in enumerate(bearish_tls, 1):
-            print(f"     {i:2d}. Slope={tl.slope:.4f}"
-                  f"  |  {tl.start_value:.2f}@{tl.start_datetime}"
-                  f"  →  {tl.end_value:.2f}@{tl.end_datetime}"
-                  f"  |  end_idx={tl.end_idx}")
-
-    if bullish_tls:
-        print("  🟢 BULLISH TREND LINES → BUY_CE at end_datetime:")
-        for i, tl in enumerate(bullish_tls, 1):
-            print(f"     {i:2d}. Slope={tl.slope:.4f}"
-                  f"  |  {tl.start_value:.2f}@{tl.start_datetime}"
-                  f"  →  {tl.end_value:.2f}@{tl.end_datetime}"
-                  f"  |  end_idx={tl.end_idx}")
-
-    if not trend_lines:
-        print("  ⚠️  No trend lines found!")
-
-    # ═══════════════════════════════════════════════════════
-    #  BRANCH-2 SIGNAL STORAGE
-    # ═══════════════════════════════════════════════════════
-    all_b2_events = []
-
-    # ═══════════════════════════════════════════════════════
-    #  BRANCH-2 FIRE — ORDER BLOCKS
-    # ═══════════════════════════════════════════════════════
-    print(f"\n  {'─' * 80}")
-    print(f"  ⚡  FIRING OB SIGNALS  (datetime-matched, every OB independent)")
-    print(f"  {'─' * 80}")
-
-    for ob_idx, ob in enumerate(order_blocks):
-        fire_pos = _find_option_bar(ob.start_datetime)   # uses new tz-safe helper
-
-        if fire_pos < 0 or fire_pos >= n:
-            print(f"  ⚠️  OB #{ob_idx+1} [{ob.block_type}]"
-                  f" start_dt={ob.start_datetime} → no matching option bar, skip")
-            continue
-
-        fire_dt    = data.index[fire_pos]
-        fire_close = close.iloc[fire_pos]
-        signal     = 'BUY_CE' if ob.block_type == 'bullish' else 'BUY_PE'
-
-        event = {
-            'pos'    : fire_pos,
-            'dt'     : fire_dt,
-            'signal' : signal,
-            'source' : 'ORDER_BLOCK',
-            'detail' : (
-                f"{ob.block_type.capitalize()} OB @ {ob.value:.2f}"
-                f" [cash_dt={ob.start_datetime}]"
-                f" option_close={fire_close:.2f}"
-            ),
-            'level'  : ob.value,
-            'close'  : fire_close,
-        }
-        all_b2_events.append(event)
-
-        icon = '🟢' if signal == 'BUY_CE' else '🔴'
-        print(f"  {icon} OB #{ob_idx+1:2d} [{ob.block_type:7s}] → {signal}"
-              f"  cash_dt={ob.start_datetime}"
-              f"  option_bar={fire_pos} ({fire_dt})"
-              f"  close={fire_close:.2f}  OB_level={ob.value:.2f}")
-
-    # ═══════════════════════════════════════════════════════
-    #  BRANCH-2 FIRE — TREND LINES
-    # ═══════════════════════════════════════════════════════
-    print(f"\n  {'─' * 80}")
-    print(f"  ⚡  FIRING TL SIGNALS  (datetime-matched, every TL independent)")
-    print(f"  {'─' * 80}")
-
-    for tl_idx, tl in enumerate(trend_lines):
-        fire_pos = _find_option_bar(tl.end_datetime)   # tz-safe
-
-        if fire_pos < 0 or fire_pos >= n:
-            print(f"  ⚠️  TL #{tl_idx+1} [{tl.trend_type}]"
-                  f" end_dt={tl.end_datetime} → no matching option bar, skip")
-            continue
-
-        fire_dt    = data.index[fire_pos]
-        fire_close = close.iloc[fire_pos]
-        tl_val     = tl.end_value
-        signal     = 'BUY_CE' if tl.trend_type == 'bullish' else 'BUY_PE'
-
-        event = {
-            'pos'    : fire_pos,
-            'dt'     : fire_dt,
-            'signal' : signal,
-            'source' : 'TREND_LINE',
-            'detail' : (
-                f"{tl.trend_type.capitalize()} TL @ {tl_val:.2f}"
-                f" [{tl.start_datetime} → {tl.end_datetime}]"
-                f" option_close={fire_close:.2f}"
-            ),
-            'level'  : tl_val,
-            'close'  : fire_close,
-        }
-        all_b2_events.append(event)
-
-        icon = '🟢' if signal == 'BUY_CE' else '🔴'
-        print(f"  {icon} TL #{tl_idx+1:2d} [{tl.trend_type:7s}] → {signal}"
-              f"  cash_dt={tl.end_datetime}"
-              f"  option_bar={fire_pos} ({fire_dt})"
-              f"  close={fire_close:.2f}  TL_level={tl_val:.2f}")
-
-    # ═══════════════════════════════════════════════════════
-    #  SUMMARY OF ALL B2 EVENTS
-    # ═══════════════════════════════════════════════════════
-    print(f"\n  {'─' * 80}")
-    print(f"  📊 BRANCH-2 ALL EVENTS  (total={len(all_b2_events)})")
-    print(f"  {'─' * 80}")
-
-    total_ce = sum(1 for e in all_b2_events if e['signal'] == 'BUY_CE')
-    total_pe = sum(1 for e in all_b2_events if e['signal'] == 'BUY_PE')
-    total_ob = sum(1 for e in all_b2_events if e['source'] == 'ORDER_BLOCK')
-    total_tl = sum(1 for e in all_b2_events if e['source'] == 'TREND_LINE')
-
-    print(f"  🟢 BUY_CE={total_ce}  🔴 BUY_PE={total_pe}"
-          f"  |  ORDER_BLOCK={total_ob}  TREND_LINE={total_tl}")
-
-    for ev in sorted(all_b2_events, key=lambda x: x['pos']):
-        icon = '🟢' if ev['signal'] == 'BUY_CE' else '🔴'
-        print(f"  {icon}  bar={ev['pos']:3d}  dt={ev['dt']}"
-              f"  {ev['signal']}  [{ev['source']}]  {ev['detail']}")
-
-    # ═══════════════════════════════════════════════════════
-    #  BUILD BRANCH-2 SERIES
-    # ═══════════════════════════════════════════════════════
-    if option_type == 'CE':
-        gated_events = [e for e in all_b2_events if e['signal'] == 'BUY_CE']
-    elif option_type == 'PE':
-        gated_events = [e for e in all_b2_events if e['signal'] == 'BUY_PE']
-    else:
-        gated_events = list(all_b2_events)
-
-    print(f"\n  📊 BRANCH-2 GATED ({option_type if option_type else 'ALL'})"
-          f"  events={len(gated_events)}")
-
-    b2_signal_type_s = pd.Series('',  index=data.index, dtype=object)
-    b2_source_type_s = pd.Series('',  index=data.index, dtype=object)
-    b2_detail_s      = pd.Series('',  index=data.index, dtype=object)
-    b2_level_s       = pd.Series(0.0, index=data.index, dtype=float)
-    b2_raw           = pd.Series(0,   index=data.index, dtype=int)
-    b2_all_events_s  = pd.Series([[] for _ in range(n)], index=data.index, dtype=object)
-
-    filled_pos = set()
-    for ev in sorted(gated_events, key=lambda x: x['pos']):
-        pos = ev['pos']
-        b2_all_events_s.iloc[pos] = b2_all_events_s.iloc[pos] + [ev]
-        if pos not in filled_pos:
-            b2_signal_type_s.iloc[pos] = ev['signal']
-            b2_source_type_s.iloc[pos] = ev['source']
-            b2_detail_s.iloc[pos]      = ev['detail']
-            b2_level_s.iloc[pos]       = ev['level']
-            b2_raw.iloc[pos]           = 1
-            filled_pos.add(pos)
-
-    raw_ce = int(((b2_raw == 1) & (b2_signal_type_s == 'BUY_CE')).sum())
-    raw_pe = int(((b2_raw == 1) & (b2_signal_type_s == 'BUY_PE')).sum())
-
-    print(f"  📊 BRANCH-2 RAW (bars with signal): {int(b2_raw.sum())}"
-          f"  (🟢 BUY_CE={raw_ce}  |  🔴 BUY_PE={raw_pe})")
-    print(f"  📊 BRANCH-2 TOTAL EVENTS (trades): {len(gated_events)}")
-
-    b2_gated = b2_raw == 1
-
-    b2_ce_count = int(((b2_gated) & (b2_signal_type_s == 'BUY_CE')).sum())
-    b2_pe_count = int(((b2_gated) & (b2_signal_type_s == 'BUY_PE')).sum())
-
-    # ═══════════════════════════════════════════════════════════════════════
-    #  BRANCH-1 — STOCHASTIC CONFLUENCE ENGINE
-    # ═══════════════════════════════════════════════════════════════════════
-    print("\n" + "─" * 80)
-    print("  📊  BRANCH 1 — UPGRADED STOCHASTIC CONFLUENCE ENGINE (v4)")
-    print("─" * 80)
-
-    k_vel_prev = k_vel.shift(1)
-
-    structures_available = len(order_blocks) > 0 or len(trend_lines) > 0
-
-    bullish_ob_datetimes = set()
-    bullish_ob_values    = {}
-    for ob in bullish_obs:
-        key = str(ob.start_datetime)[:16]
-        bullish_ob_datetimes.add(key)
-        bullish_ob_values[key] = ob.value
-
-    bullish_tl_end_values = {}
-    for tl in bullish_tls:
-        key = str(tl.end_datetime)[:16]
-        bullish_tl_end_values[key] = tl.end_value
-
-    def _structure_nearby(bar_idx: int, curr_close: float) -> tuple:
-        CONFLUENCE_PCT = 0.02
-        for ob in bullish_obs:
-            if ob.bar_start <= bar_idx:
-                dist = abs(curr_close - ob.value) / curr_close
-                if dist <= CONFLUENCE_PCT:
-                    return True, f"BullishOB@{ob.value:.2f}(dist={dist*100:.1f}%)"
-        for tl in bullish_tls:
-            if tl.end_idx <= bar_idx:
-                tl_val = tl.end_value + tl.slope * (bar_idx - tl.end_idx)
-                dist   = abs(curr_close - tl_val) / curr_close
-                if dist <= CONFLUENCE_PCT:
-                    return True, f"BullishTL@{tl_val:.2f}(dist={dist*100:.1f}%)"
-        return False, "none"
-
-    b1_raw       = np.zeros(n, dtype=int)
-    signal_path   = [''] * n
-    signal_grade  = [''] * n
+    signal = np.zeros(n, dtype=int)
     signal_reason = [''] * n
-    signal_branch = [''] * n
+    signal_grade = [''] * n
 
-    oversold_armed  = False
-    cross_confirmed = False
-    cross_bar       = -1
-    CROSS_EXPIRY    = 10
+    # =========================================================
+    # SETTINGS
+    # =========================================================
 
-    # ── FIX: loop goes up to n (inclusive of last/live bar) ──────────────
-    for i in range(2, n):
-        k_cur      = K.iloc[i];      d_cur      = D.iloc[i]
-        k_prev     = K.iloc[i - 1];  d_prev     = D.iloc[i - 1]
-        cci_cur    = CCI.iloc[i];    cci_prev   = CCI.iloc[i - 1]
-        kv_cur     = k_vel.iloc[i]
-        kv_prev    = k_vel_prev.iloc[i]
-        curr_dt    = data.index[i]
+    COOLDOWN_BARS = 2
+    last_fired_bar = -999
+
+    # =========================================================
+    # FLAGS
+    # =========================================================
+
+    cci_rising_flag = False
+    cci_flag_bar = -1
+
+    # =========================================================
+    # MAIN LOOP
+    # =========================================================
+
+    for i in range(5, n):
+
+        # =====================================================
+        # CURRENT VALUES
+        # =====================================================
+
+        k_cur = K.iloc[i]
+        d_cur = D.iloc[i]
+
+        k_prev = K.iloc[i - 1]
+        d_prev = D.iloc[i - 1]
+
+        cci_cur = CCI.iloc[i]
+        cci_prev = CCI.iloc[i - 1]
+
+        curr_open = open_price.iloc[i]
         curr_close = close.iloc[i]
 
-        # NaN guard — live bar may have NaN if indicator hasn't warmed up yet
-        if any(pd.isna(v) for v in [k_cur, d_cur, k_prev, d_prev, cci_cur, cci_prev, kv_cur, kv_prev]):
+        curr_high = high.iloc[i]
+        curr_low = low.iloc[i]
+
+        curr_dt = data.index[i]
+
+        # =====================================================
+        # SKIP NaN
+        # =====================================================
+
+        if any(pd.isna(v) for v in [
+            k_cur, d_cur,
+            k_prev, d_prev,
+            cci_cur, cci_prev
+        ]):
             continue
 
-        # ── RESET on overbought ──────────────────────────────────────────
-        if k_cur > 80 or d_cur > 80:
-            oversold_armed  = False
-            cross_confirmed = False
-            cross_bar       = -1
+        # =====================================================
+        # COOLDOWN
+        # =====================================================
+
+        if (i - last_fired_bar) < COOLDOWN_BARS:
             continue
 
-        # ── FILTER 1: arm when both K and D oversold ─────────────────────
-        if k_cur < 20 and d_cur < 20:
-            oversold_armed = True
+        # =====================================================
+        # STEP 1:
+        # STRONG CCI REVERSAL
+        # =====================================================
 
-        # ── Cross expiry ─────────────────────────────────────────────────
-        if cross_confirmed and (i - cross_bar) > CROSS_EXPIRY:
-            cross_confirmed = False
-            cross_bar       = -1
-            print(f"  ⏰ CROSS EXPIRED  @ {curr_dt}  (>{CROSS_EXPIRY} bars)")
+        if (
+            cci_prev < -100 and
+            cci_cur > cci_prev
+        ):
 
-        # ── FILTER 2: K crosses D (bullish cross) while below 30 ─────────
-        if oversold_armed and not cross_confirmed:
-            if (k_prev <= d_prev) and (k_cur > d_cur) and (k_cur < 30):
-                cross_confirmed = True
-                cross_bar       = i
-                print(f"  🔄 K/D CROSS      @ {curr_dt}"
-                      f"  K={k_cur:.2f}  D={d_cur:.2f}"
-                      f"  spread={(k_cur - d_cur):.2f}")
+            cci_rising_flag = True
+            cci_flag_bar = i
 
-        # ── FIRE PHASE ───────────────────────────────────────────────────
-        if cross_confirmed and TIME_OK.iloc[i]:
+            print(
+                f"📈 STRONG CCI REVERSAL @ {curr_dt} | "
+                f"CCI={cci_cur:.2f}"
+            )
 
-            k_accelerating = (kv_cur > 0) and (kv_cur >= kv_prev)
-            kd_spread      = k_cur - d_cur
-            spread_ok      = kd_spread > 1.5
-            cci_rising     = (cci_cur > cci_prev) and (cci_cur > -100)
+        # =====================================================
+        # EXPIRE FLAG AFTER 5 CANDLES
+        # =====================================================
 
-            if structures_available:
-                struct_ok, struct_note = _structure_nearby(i, curr_close)
-            else:
-                struct_ok   = True
-                struct_note = "bypass(no_structures)"
+        if cci_rising_flag and (i - cci_flag_bar) > 5:
 
-            if not k_accelerating:
-                if i == cross_bar + 1:
-                    print(f"  ⛔ FILTER-3 REJECT @ {curr_dt}"
-                          f"  Kvel={kv_cur:.2f} KvelPrev={kv_prev:.2f}")
-            elif not spread_ok:
-                if i == cross_bar + 1:
-                    print(f"  ⛔ FILTER-4 REJECT @ {curr_dt}"
-                          f"  KD_spread={kd_spread:.2f} (<1.5)")
-            elif not cci_rising:
-                if i == cross_bar + 1:
-                    print(f"  ⛔ FILTER-5 REJECT @ {curr_dt}"
-                          f"  CCI={cci_cur:.2f} CCIprev={cci_prev:.2f}")
-            elif not struct_ok:
-                if i == cross_bar + 1:
-                    print(f"  ⛔ FILTER-6 REJECT @ {curr_dt}"
-                          f"  No structure within 2% of close={curr_close:.2f}")
+            cci_rising_flag = False
 
-            if k_accelerating and spread_ok and cci_rising and struct_ok:
-                grade = "★★★★★" if struct_ok and struct_note != "bypass(no_structures)" else "★★★★"
+            print(
+                f"⌛ CCI FLAG EXPIRED @ {curr_dt}"
+            )
 
-                b1_raw[i]        = 1
-                signal_path[i]   = "STOCH_CONFLUENCE"
-                signal_grade[i]  = grade
-                signal_branch[i] = "BRANCH-1"
+        # =====================================================
+        # IF CCI FLAG ACTIVE
+        # LOOK FOR STOCHASTIC CONFIRMATION
+        # =====================================================
+
+        if cci_rising_flag:
+
+            # -------------------------------------------------
+            # STOCHASTIC STRUCTURE
+            # -------------------------------------------------
+
+            bullish_state = (
+                k_cur > d_cur
+            )
+
+            k_above_20 = (
+                k_cur > 20
+            )
+
+            k_rising = (
+                k_cur > k_prev
+            )
+
+            # -------------------------------------------------
+            # GAP SHOULD EXPAND
+            # -------------------------------------------------
+
+            gap_expanding = (
+                (k_cur - d_cur) >
+                (k_prev - d_prev)
+            )
+
+            # -------------------------------------------------
+            # LOWER ZONE FILTER
+            # -------------------------------------------------
+
+            lower_zone = (
+                k_cur < 40 and
+                d_cur < 40
+            )
+
+            # -------------------------------------------------
+            # STRONG BULLISH CANDLE
+            # -------------------------------------------------
+
+            candle_range = curr_high - curr_low
+
+            bullish_body = (
+                (curr_close - curr_open) >
+                (candle_range * 0.4)
+            )
+
+            # -------------------------------------------------
+            # FINAL BUY SIGNAL
+            # -------------------------------------------------
+
+            buy_signal = (
+
+                # ---------------------------------------------
+                # STOCHASTIC STRUCTURE
+                # ---------------------------------------------
+
+                bullish_state and
+                k_above_20 and
+                k_rising and
+
+                # ---------------------------------------------
+                # MOMENTUM SHOULD IMPROVE
+                # ---------------------------------------------
+
+                gap_expanding and
+
+                # ---------------------------------------------
+                # REVERSAL SHOULD START
+                # FROM LOWER ZONE
+                # ---------------------------------------------
+
+                lower_zone and
+
+                # ---------------------------------------------
+                # STRONG BUYER CANDLE
+                # ---------------------------------------------
+
+                bullish_body
+            )
+
+            # =================================================
+            # GENERATE SIGNAL
+            # =================================================
+
+            if buy_signal:
+
+                signal[i] = 1
+                last_fired_bar = i
+
                 signal_reason[i] = (
-                    f"BRANCH-1 BUY: Stoch Confluence. "
-                    f"K={k_cur:.1f} D={d_cur:.1f} spread={kd_spread:.1f} "
-                    f"Kvel={kv_cur:.2f} KvelAcc={'✓' if k_accelerating else '✗'} "
-                    f"CCI={cci_cur:.1f}↑ "
-                    f"Structure={struct_note} "
-                    f"[{grade}]"
+                    f"CCI_FLAG + STOCH_REVERSAL | "
+                    f"K={k_cur:.1f} | "
+                    f"D={d_cur:.1f} | "
+                    f"CCI={cci_cur:.1f}"
                 )
-                print(f"  🟢 FIRED           @ {curr_dt}"
-                      f"  K={k_cur:.2f}  D={d_cur:.2f}"
-                      f"  spread={kd_spread:.2f}"
-                      f"  Kvel={kv_cur:.2f}"
-                      f"  CCI={cci_cur:.1f}"
-                      f"  struct={struct_note}"
-                      f"  [{grade}]")
 
-                oversold_armed  = False
-                cross_confirmed = False
-                cross_bar       = -1
+                signal_grade[i] = "★★★★★"
 
-    b1_raw_s = pd.Series(b1_raw, index=data.index)
+                print(
+                    f"🟢 BUY SIGNAL @ {curr_dt} | "
+                    f"Momentum reversal confirmed"
+                )
 
-    # ── FIX: cooldown must NOT suppress the current (last/live) bar ──────
-    #
-    #  Original:  b1_recent = b1_raw_s.shift(1).rolling(3).sum()
-    #             b1_final  = (b1_raw_s==1) & (b1_recent==0)
-    #
-    #  Problem:   In backtest this is fine — every bar has future bars to
-    #             confirm.  In LIVE the last bar is the CURRENT bar.
-    #             shift(1) pushes the live signal one bar into the future
-    #             so b1_recent at position n-1 is 0 (no signal seen yet),
-    #             which means the cooldown accidentally passes — BUT only
-    #             if the signal fires on the LIVE bar itself.  The real bug
-    #             is that the rolling window checks bars i-1, i-2, i-3
-    #             (already past), not the current bar.  This is correct
-    #             behaviour.  The ACTUAL live bug was the NaN skip above
-    #             (indicators not warmed) and the tz mismatch in Branch-2.
-    #             We keep the cooldown logic exactly as-is (no change to
-    #             logic) but add a fillna(0) for safety on short series.
-    b1_recent = b1_raw_s.shift(1).rolling(3).sum().fillna(0)
-    b1_final  = ((b1_raw_s == 1) & (b1_recent == 0)).astype(int)
+                # ---------------------------------------------
+                # RESET FLAG
+                # ---------------------------------------------
 
-    print(f"\n  📊 BRANCH-1 SIGNALS: {int(b1_final.sum())} (after cooldown)")
+                cci_rising_flag = False
 
-    # ═══════════════════════════════════════════════════════
-    #  BUILD REASON STRINGS
-    # ═══════════════════════════════════════════════════════
-    b2_reason = [''] * n
-    for i in range(n):
-        events_at_bar = b2_all_events_s.iloc[i]
-        if events_at_bar:
-            parts = [
-                f"BRANCH-2 {ev['signal']} [{ev['source']}]: {ev['detail']}"
-                for ev in events_at_bar
-            ]
-            b2_reason[i] = " | ".join(parts)
-            if not signal_branch[i]:
-                signal_branch[i] = "BRANCH-2"
+    # =========================================================
+    # STORE RESULTS
+    # =========================================================
 
-    # ═══════════════════════════════════════════════════════
-    #  STORE IN DATAFRAME
-    # ═══════════════════════════════════════════════════════
-    data['signal_path']   = signal_path
-    data['signal_grade']  = signal_grade
-    data['signal_branch'] = signal_branch
+    data['st_sig'] = signal
+    data['st_sig_raw'] = signal
+    data['signal_reason'] = signal_reason
+    data['signal_grade'] = signal_grade
 
-    data['b1_sig_raw'] = b1_raw
-    data['b1_sig']     = b1_final.astype(int)
-
-    data['b2_sig_raw']      = b2_raw.astype(int)
-    data['b2_sig']          = b2_gated.astype(int)
-    data['b2_signal_type']  = b2_signal_type_s
-    data['b2_source_type']  = b2_source_type_s
-    data['b2_detail']       = b2_detail_s
-    data['b2_level']        = b2_level_s
-    data['b2_reason']       = b2_reason
-    data['b2_all_events']   = b2_all_events_s
-
-    combined_reason = []
-    for i in range(n):
-        parts = []
-        if b1_final.iloc[i] == 1 and signal_reason[i]:
-            parts.append(signal_reason[i])
-        if b2_reason[i]:
-            parts.append(b2_reason[i])
-        combined_reason.append(" | ".join(parts))
-    data['signal_reason'] = combined_reason
-
-    data['st_sig_raw'] = ((b1_raw_s == 1) | (b2_raw == 1)).astype(int)
-    data['st_sig']     = ((b1_final == 1) | (b2_gated)).astype(int)
-    data['confidence']    = 0.0
-    data['llm_signal']    = None
-    data['llm_reason']    = ""
-    data['llm_entry']     = 0.0
-    data['llm_stop_loss'] = 0.0
-    data['llm_target_1']  = 0.0
-    data['llm_target_2']  = 0.0
-    data['llm_bias']      = ""
-
-    # ═══════════════════════════════════════════════════════
-    #  FINAL SUMMARY
-    # ═══════════════════════════════════════════════════════
-    print("\n" + "═" * 80)
-    print("  ✅ COMPLETE (v4 — LIVE MARKET FIXED)")
-    print(f"  Branch-1 signals  : {int(b1_final.sum())}")
-    print(f"  Branch-2 events   : {len(gated_events)}"
-          f"  (BUY_CE={total_ce if option_type != 'PE' else 0}"
-          f"  BUY_PE={total_pe if option_type != 'CE' else 0})")
-    print(f"  Branch-2 bars hit : {int(b2_gated.sum())}"
-          f"  (bars with ≥1 signal)")
-    print(f"  Combined bars     : {int(data['st_sig'].sum())}")
-    print("═" * 80 + "\n")
+    print("=" * 80)
+    print(f"TOTAL SIGNALS GENERATED: {int(np.sum(signal))}")
+    print("=" * 80)
 
     return data
 
