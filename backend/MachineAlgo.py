@@ -1277,557 +1277,213 @@ time.sleep(5)
 
 endTime = dt.datetime.now(pytz.timezone('Asia/Kolkata')).replace(hour=EXIT_TIME[0], minute=EXIT_TIME[1],
                                                                  second=EXIT_TIME[2])
+# ── track processed candle minutes to avoid double-fire ──────
+last_processed_minute = {}  # {ticker: (hour, minute)}
+
+
+
 while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
     try:
 
         for i in Tickers:
 
+            now_ist = dt.datetime.now(pytz.timezone('Asia/Kolkata'))
+            current_minute = (now_ist.hour, now_ist.minute)
+
             print("###################################################################")
             print('Spot prices of', i, ' ', spot_prices1[i])
-            print(dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p"))
+            print(now_ist.strftime("%d-%b-%Y %I:%M:%S%p"))
             print("###################################################################")
+
+            if spot_prices1[i] is None:
+                time.sleep(0.5)
+                continue
+
             send_to_ui(i, spot_prices1[i])
-            
             time.sleep(0.5)
 
+            # ════════════════════════════════════════════════════
+            # BLOCK A — SIGNAL + ENTRY
+            # Runs only once per 5-min candle per ticker
+            # ════════════════════════════════════════════════════
+            if is_required_time() and last_processed_minute.get(i) != current_minute:
 
-            if is_required_time():
-                
+                last_processed_minute[i] = current_minute  # mark this candle done
+
                 try:
                     data_fut = get_cash_market_data(i, '5m')
                 except Exception as e:
                     print(f"⚠️ Skipping {i}: {e}")
                     continue
-                #data_fut = get_cash_market_data(i, '3m')
-                data_fut.drop(data_fut.tail(1).index, inplace=True)
-                super_trend(i,data_fut)
 
+                data_fut.drop(data_fut.tail(1).index, inplace=True)
+                super_trend(i, data_fut)
                 data_list[i] = data_fut
 
                 super_Trend_Long = pd.read_excel(Long_Trade_File)
-                Long_Open_Position = super_Trend_Long[(super_Trend_Long['Trade Status'] == 'OPEN')]
-
+                Long_Open_Position = super_Trend_Long[super_Trend_Long['Trade Status'] == 'OPEN']
                 super_Trend_Short = pd.read_excel(Short_Trade_File)
-                Short_Open_Position = super_Trend_Short[(super_Trend_Short['Trade Status'] == 'OPEN')]
+                Short_Open_Position = super_Trend_Short[super_Trend_Short['Trade Status'] == 'OPEN']
 
-                # Checking For SuperTrend Long
-                # Checking For SuperTrend Long
-                trail_sl=0
+                # ── LONG ENTRY ────────────────────────────────
                 if data_list[i]['st_sig'].iloc[-1] == 1:
 
-
                     all_trade_files()
                     open_trades_df = pd.read_excel('All_Trades.xlsx')
-                    open_trades_df = open_trades_df[(open_trades_df['Trade Status'] == 'OPEN')]
+                    open_trade_count = len(open_trades_df[open_trades_df['Trade Status'] == 'OPEN'])
 
-                    open_trade_count = len(open_trades_df)
-
-                    # Check the Maximum Position
                     if open_trade_count >= Max_Position:
-                        print("Maximum Position is Reached.No New Position Will Take")
-
+                        print("Maximum Position Reached. No New Position.")
                         continue
 
-                    # Check if ticker is already in Long_Open_Position
                     if i in Long_Open_Position['Symbol'].values:
-
-                        print(f"{i} is already in Long Open Position. Skipping trade.")
-
+                        print(f"{i} already in Long Open Position. Skipping.")
                         continue
 
-                    # Take the Long Trade
-                    else:
-                        trail_sl = 0
-
-                        current_price = float(spot_prices1[i])
-
-                        Trade_quantity =75# int(math.floor(Total_Cash_per_position / current_price))
-
-                        Target_Price = current_price+Take_Profit
-                        Sprice = current_price-10
-
-                        # Sending Buy orders to the API
-
-                        # For Real Money
-
-                        # For Buy Order
-
-                        # order_response = client.place_order(OrderType='B',Exchange='N',ExchangeType='C', ScripCode = int(scripcode_lookup(instrument=instrument_df, symbol= i), Qty=Trade_quantity, Price=current_price)
-
-                        # # Check if the message is not 'Success'
-                        # if order_response['Message'] != 'Success':
-                        #     with open("error_log.txt", "a") as error_log_file:
-                        #         error_log_file.write(ct +' - ' + order_response['Message'] +' '+i+ "\n")
-
-                        #     tele_msg(order_response['Message']+' '+ i )
-
-                        # position_df = pd.DataFrame(client.positions())
-
-                        # BuyPrice = position_df[position_df.ScripName==i].BuyAvgRate.values[0]
-
-                        entry_time = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
-
-                        BuyPrice = current_price
-
-                        update_long_trades(i, entry_time, BuyPrice, Target_Price, Sprice, Trade_quantity,
-                                           Long_Trade_File)
-
-                        tele_msg("Long Entry Taken For "+i+" Total Quantity "+str(
-                            Trade_quantity)+" and the BUY Price is "+str(BuyPrice)+"And the Target Price is "+str(Target_Price))
-
-                        # After the new Entry We are Updating The Variables
-
-                        super_Trend_Long = pd.read_excel(Long_Trade_File)
-
-                        Long_Open_Position = super_Trend_Long[(super_Trend_Long['Trade Status'] == 'OPEN')]
-
-                    # Stop Loss Check (Exit Long Trade)
-                    # Checking Open Long Position
-                if i in Long_Open_Position['Symbol'].values:
-
-                    # Checking SuperTrend Signal Change
-                    # Stop loss condition
-                    if data_list[i]['st_sig'].iloc[-1] == -1:
-                        print(f"Long Entry Stop Loss Hit for {i}. Closing position.")
-
-                        # Fetch the Buy Price and Quantity
-                        trade_row = Long_Open_Position[Long_Open_Position['Symbol'] == i]
-
-                        BuyPrice = trade_row['Buy Price'].values[0]
-
-                        Trade_quantity = 75  # int(trade_row['Qty'].values[0])
-
-                        Exit_Time = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
-
-                        # For Real Money
-
-                        # Sending Sell Order to The API
-
-                        # For Sell Order
-
-                        # order_response = client.place_order(OrderType='S',Exchange='N',ExchangeType='C', ScripCode = int(scripcode_lookup(instrument=instrument_df, symbol= i), Qty=Trade_quantity, Price=0)
-
-                        # # Check if the message is not 'Success'
-                        # if order_response['Message'] != 'Success':
-                        #     with open("error_log.txt", "a") as error_log_file:
-                        #         error_log_file.write(ct +' - ' + order_response['Message'] +' '+i+ "\n")
-
-                        #     tele_msg(order_response['Message']+' '+i)
-
-                        # position_df = pd.DataFrame(client.positions())
-
-                        # Sell_Price = position_df[position_df.ScripName==i].SellAvgRate.values[0]
-
-                        # For Paper Trade
-
-                        Sell_Price = float(spot_prices1[i])  # Selling at current market price
-
-                        Points = Sell_Price-BuyPrice
-
-                        Brokerage = ((BuyPrice * Trade_quantity)+(Sell_Price * Trade_quantity)) * 0.00015
-
-                        Profit_Loss = (Points * Trade_quantity)-Brokerage
-
-                        Trade_Status = "Stop Loss Hit"
-
-                        close_long_trade(i, Exit_Time, Sell_Price, Points, Brokerage, Profit_Loss, Trade_Status,
-                                         Long_Trade_File)
-
-                        tele_msg(f"Long Entry Stop Loss Hit for {i}. Exit Price: {Sell_Price}, P/L: {Profit_Loss}")
-
-                    # Target Hit Check (Exit Long Trade)
-                # Target Hit Check (Exit Long Trade)
-                if i in Long_Open_Position['Symbol'].values:
-                    print("Find the Target Price")
-                    trade_row = Long_Open_Position[Long_Open_Position['Symbol'] == i]
-                    BuyPrice = trade_row['Buy Price'].values[0]
-                    Target_Price = trade_row['Target Price'].values[0]
-                    Trail_Step = 10  # Move trailing target by 10 points
-                    Trade_quantity = trade_row['Qty'].values[0]
-
-                    current_price = spot_prices1[i]
-                    profit_from_entry = current_price-BuyPrice
-
-                    # Calculate how many steps of 10 points we've moved
-                    step_count = int(profit_from_entry // Trail_Step)
-                    new_trailing_target = BuyPrice+(step_count * Trail_Step)
-                    
-
-                    if profit_from_entry>10:
-                        #BuyPrice=BuyPrice+10
-                        update_buy_price(i,BuyPrice,Long_Trade_File)
-                        print(f"Long Entry buy price trail for {BuyPrice}. Open position.")
-                        #tele_msg(f"Long Entry buy price trail for {BuyPrice}.{profit_from_entry},{current_price},{current_price-BuyPrice} Open position.")
-                        trail_sl=1
-
-
-                    # Update the target if price moved significantly
-                    if new_trailing_target > Target_Price:
-                        Target_Price=new_trailing_target
-                        Long_Open_Position.loc[Long_Open_Position['Symbol'] == i, 'Target Price'] = new_trailing_target
-                        print(f"Updated Trailing Target for {i}: {new_trailing_target}")
-                        tele_msg(f"Updated Trailing Target for {i}: {new_trailing_target}")
-                        update_buy_price(i, new_trailing_target, Long_Trade_File)
-                        update_target_price(i, new_trailing_target+10, Long_Trade_File)
-                        continue  # Do not close trade yet; wait for next iteration
-
-                    # Exit condition: current price exceeds latest target
-                    if float(spot_prices1[i]) >= float(Target_Price):
-                        print(f"Long Entry Target Hit for {i}. Closing position.")
-                        # --- Exit logic as in your existing code ---
-                        Exit_Time = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
-                        Sell_Price = float(current_price)
-                        Points = Sell_Price-BuyPrice
-                        Brokerage = ((BuyPrice * Trade_quantity)+(Sell_Price * Trade_quantity)) * 0.00015
-                        Profit_Loss = (Points * Trade_quantity)-Brokerage
-                        Trade_Status = "Target Hit"
-
-                        close_long_trade(i, Exit_Time, Sell_Price, Points, Brokerage, Profit_Loss, Trade_Status,
-                                         Long_Trade_File)
-                        tele_msg(f"Long Entry Target Hit for {i}. Exit Price: {Sell_Price}, P/L: {Profit_Loss}")
-
-                        # Refresh open positions after closing trade
-                        super_Trend_Long = pd.read_excel(Long_Trade_File)
-                        Long_Open_Position = super_Trend_Long[(super_Trend_Long['Trade Status'] == 'OPEN')]
-
-                if i in Long_Open_Position['Symbol'].values:
-
-                    # Find the SL Price
-                    trade_row = Long_Open_Position[Long_Open_Position['Symbol'] == i]
-                    S_Price = trade_row['Sprice'].values[0]
-                    # S_Price = max(S_Price + (float(spot_prices1[i]) - trade_row['Buy Price']), S_Price)
-                    print(S_Price)
-
-                    # Check if current price exceeds target price
-                    if float(spot_prices1[i]) <= float(S_Price):
-                        print(f"Long Entry SL Hit for {i}. Closing position.")
-
-                        # Fetch trade details
-                        BuyPrice = trade_row['Buy Price'].values[0]
-                        Trade_quantity = trade_row['Qty'].values[0]
-
-                        # For Paper Trade
-                        Exit_Time = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
-                        Sell_Price = float(spot_prices1[i])  # Selling at market price
-                        Points = Sell_Price-BuyPrice
-                        Brokerage = ((BuyPrice * Trade_quantity)+(Sell_Price * Trade_quantity)) * 0.00015
-                        Profit_Loss = (Points * Trade_quantity)-Brokerage
-                        Trade_Status = "SL Hit"
-
-                        close_long_trade(i, Exit_Time, Sell_Price, Points, Brokerage, Profit_Loss, Trade_Status,
-                                         Long_Trade_File)
-
-                        tele_msg(f"Long Entry SL Hit for {i}. Exit Price: {Sell_Price}, P/L: {Profit_Loss}")
-
-                        # Refresh open positions after closing trade
-                        super_Trend_Long = pd.read_excel(Long_Trade_File)
-                        Long_Open_Position = super_Trend_Long[(super_Trend_Long['Trade Status'] == 'OPEN')]
-
-                    # Exit 5 Min Before the Exit Time
-                if i in Long_Open_Position['Symbol'].values:
-
-                    # Check the Exit Time and The Exit Condition Exit 5 Min Before the Exit Time
-
-                    if dt.datetime.now(pytz.timezone('Asia/Kolkata')) > dt.datetime.now(
-                            pytz.timezone('Asia/Kolkata')).replace(hour=EXIT_TIME[0], minute=EXIT_TIME[1]-5,
-                                                                   second=EXIT_TIME[2]):
-                        print(f"Long Entry Exit Time Out for {i}. Closing position.")
-
-                        # Fetch trade details
-                        BuyPrice = trade_row['Buy Price'].values[0]
-                        Trade_quantity = trade_row['Qty'].values[0]
-
-                        # For Real Money
-
-                        # Sending Sell Order to The API
-
-                        # For Sell Order
-
-                        # order_response = client.place_order(OrderType='S',Exchange='N',ExchangeType='C', ScripCode = int(scripcode_lookup(instrument=instrument_df, symbol= i), Qty=Trade_quantity, Price=0)
-
-                        # # Check if the message is not 'Success'
-                        # if order_response['Message'] != 'Success':
-                        #     with open("error_log.txt", "a") as error_log_file:
-                        #         error_log_file.write(ct +' - ' + order_response['Message'] +' '+i+ "\n")
-
-                        #     tele_msg(order_response['Message']+' '+i)
-
-                        # position_df = pd.DataFrame(client.positions())
-
-                        # Sell_Price = position_df[position_df.ScripName==i].SellAvgRate.values[0]
-
-                        # For Paper Trade
-                        Exit_Time = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
-                        Sell_Price = float(spot_prices1[i])  # Selling at market price
-                        Points = Sell_Price-BuyPrice
-                        Brokerage = ((BuyPrice * Trade_quantity)+(Sell_Price * Trade_quantity)) * 0.00015
-                        Profit_Loss = (Points * Trade_quantity)-Brokerage
-                        Trade_Status = "Exit Time Out"
-
-                        close_long_trade(i, Exit_Time, Sell_Price, Points, Brokerage, Profit_Loss, Trade_Status,
-                                         Long_Trade_File)
-
-                        tele_msg(f"Long Entry Exit Time Out for {i}. Exit Price: {Sell_Price}, P/L: {Profit_Loss}")
-
-                        # Refresh open positions after closing trade
-                        super_Trend_Long = pd.read_excel(Long_Trade_File)
-                        Long_Open_Position = super_Trend_Long[(super_Trend_Long['Trade Status'] == 'OPEN')]
-
-                        continue
-
-                # Checking For Short Position
-                if data_list[i]['st_sig'].iloc[-1] == -1:
-
-                    all_trade_files()
-                    open_trades_df = pd.read_excel('All_Trades.xlsx')
-                    open_trades_df = open_trades_df[(open_trades_df['Trade Status'] == 'OPEN')]
-
-                    open_trade_count = len(open_trades_df)
-
-                    # Check the Maximum Position
-                    if open_trade_count >= Max_Position:
-                        print("Maximum Position is Reached.No New Position Will Take")
-
-                        continue
-
-                    # Check if ticker is already in Long_Open_Position
-                    if i in Short_Open_Position['Symbol'].values:
-
-                        print(f"{i} is already in Long Open Position. Skipping trade.")
-
-                        continue
-
-                    # Take the Long Trade
-                    else:
-
-                        current_price = float(spot_prices1[i])
-
-                        Trade_quantity = int(math.floor(Total_Cash_per_position / current_price))
-
-                        Target_Price = current_price-(current_price * Take_Profit)
-
-                        # Sending Sell orders to the API
-
-                        # For Real Money
-
-                        # For Sell Order
-
-                        # order_response = client.place_order(OrderType='S',Exchange='N',ExchangeType='C', ScripCode = int(scripcode_lookup(instrument=instrument_df, symbol= i), Qty=Trade_quantity, Price=current_price)
-
-                        # # Check if the message is not 'Success'
-                        # if order_response['Message'] != 'Success':
-                        #     with open("error_log.txt", "a") as error_log_file:
-                        #         error_log_file.write(ct +' - ' + order_response['Message'] +' '+i+ "\n")
-
-                        #     tele_msg(order_response['Message']+' '+ i )
-
-                        # position_df = pd.DataFrame(client.positions())
-
-                        # SellPrice = position_df[position_df.ScripName==i].SellAvgRate.values[0]
-
-                        entry_time = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
-
-                        SellPrice = current_price
-                        Sprice = current_price
-
-                        update_Short_trades(i, entry_time, SellPrice, Target_Price, Sprice, Trade_quantity, Short_Trade_File)
-
-                        tele_msg("Short Entry Taken For "+i+" Total Quantity "+str(
-                            Trade_quantity)+" And the Target Price is "+str(Target_Price))
-
-                        # After the new Entry We are Updating The Variables
-
-                        super_Trend_Short = pd.read_excel(Short_Trade_File)
-
-                        Short_Open_Position = super_Trend_Short[(super_Trend_Short['Trade Status'] == 'OPEN')]
-
-                if i in Short_Open_Position['Symbol'].values:
-
-                    # Checking SuperTrend Signal Change
-                    # Stop loss condition
-                    if data_list[i]['st_sig'].iloc[-1] == 1:
-                        print(f"Short Entry Stop Loss Hit for {i}. Closing position.")
-
-                        # Fetch the Buy Price and Quantity
-                        trade_row = Short_Open_Position[Short_Open_Position['Symbol'] == i]
-
-                        SellPrice = trade_row['Sell Price'].values[0]
-
-                        Trade_quantity = int(trade_row['Qty'].values[0])
-
-                        Exit_Time = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
-
-                        # For Real Money
-
-                        # Sending Buy Order to The API
-
-                        # For Buy Order
-
-                        # order_response = client.place_order(OrderType='B',Exchange='N',ExchangeType='C', ScripCode = int(scripcode_lookup(instrument=instrument_df, symbol= i), Qty=Trade_quantity, Price=0)
-
-                        # # Check if the message is not 'Success'
-                        # if order_response['Message'] != 'Success':
-                        #     with open("error_log.txt", "a") as error_log_file:
-                        #         error_log_file.write(ct +' - ' + order_response['Message'] +' '+i+ "\n")
-
-                        #     tele_msg(order_response['Message']+' '+i)
-
-                        # position_df = pd.DataFrame(client.positions())
-
-                        # Buy_Price = position_df[position_df.ScripName==i].BuyAvgRate.values[0]
-
-                        # For Paper Trade
-
-                        Buy_Price = float(spot_prices1[i])  # Selling at current market price
-
-                        Points = SellPrice-Buy_Price
-
-                        Brokerage = ((Buy_Price * Trade_quantity)+(SellPrice * Trade_quantity)) * 0.00015
-
-                        Profit_Loss = (Points * Trade_quantity)-Brokerage
-
-                        Trade_Status = "Stop Loss Hit"
-
-                        close_short_trade(i, Exit_Time, Buy_Price, Points, Brokerage, Profit_Loss, Trade_Status,
-                                          Short_Trade_File)
-
-                        tele_msg(f"Short Entry Stop Loss Hit for {i}. Exit Price: {Sell_Price}, P/L: {Profit_Loss}")
-
-                        super_Trend_Short = pd.read_excel(Short_Trade_File)
-
-                        Short_Open_Position = super_Trend_Short[(super_Trend_Short['Trade Status'] == 'OPEN')]
-
-                # Target Hit Check (Exit Long Trade)
-                if i in Short_Open_Position['Symbol'].values:
-
-                    # Find the Target Price
-                    trade_row = Short_Open_Position[Short_Open_Position['Symbol'] == i]
-                    Target_Price = trade_row['Target Price'].values[0]
-
-                    # Check if current price exceeds target price
-                    if spot_prices1[i] > Target_Price:
-                        print(f"Short Entry Target Hit for {i}. Closing position.")
-
-                        # Fetch the Buy Price and Quantity
-                        trade_row = Short_Open_Position[Short_Open_Position['Symbol'] == i]
-
-                        SellPrice = trade_row['Sell Price'].values[0]
-
-                        Trade_quantity = int(trade_row['Qty'].values[0])
-
-                        Exit_Time = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
-
-                        # For Real Money
-
-                        # Sending Buy Order to The API
-
-                        # For Buy Order
-
-                        # order_response = client.place_order(OrderType='B',Exchange='N',ExchangeType='C', ScripCode = int(scripcode_lookup(instrument=instrument_df, symbol= i), Qty=Trade_quantity, Price=0)
-
-                        # # Check if the message is not 'Success'
-                        # if order_response['Message'] != 'Success':
-                        #     with open("error_log.txt", "a") as error_log_file:
-                        #         error_log_file.write(ct +' - ' + order_response['Message'] +' '+i+ "\n")
-
-                        #     tele_msg(order_response['Message']+' '+i)
-
-                        # position_df = pd.DataFrame(client.positions())
-
-                        # Buy_Price = position_df[position_df.ScripName==i].BuyAvgRate.values[0]
-
-                        # For Paper Trade
-
-                        Buy_Price = float(spot_prices1[i])  # Selling at current market price
-
-                        Points = SellPrice-Buy_Price
-
-                        Brokerage = ((Buy_Price * Trade_quantity)+(SellPrice * Trade_quantity)) * 0.00015
-
-                        Profit_Loss = (Points * Trade_quantity)-Brokerage
-
-                        Trade_Status = "Target Hit"
-
-                        tele_msg(f"Short Entry Target Hit for {i}. Exit Price: {Sell_Price}, P/L: {Profit_Loss}")
-
-                        close_short_trade(i, Exit_Time, Buy_Price, Points, Brokerage, Profit_Loss, Trade_Status,
-                                          Short_Trade_File)
-
-                        super_Trend_Short = pd.read_excel(Short_Trade_File)
-
-                        Short_Open_Position = super_Trend_Short[(super_Trend_Short['Trade Status'] == 'OPEN')]
-
-                # Exit 5 Min Before the Exit Time
-                if i in Long_Open_Position['Symbol'].values:
-
-                    # Check the Exit Time and The Exit Condition Exit 5 Min Before the Exit Time
-
-                    if dt.datetime.now(pytz.timezone('Asia/Kolkata')) > dt.datetime.now(
-                            pytz.timezone('Asia/Kolkata')).replace(hour=EXIT_TIME[0], minute=EXIT_TIME[1],
-                                                                   second=EXIT_TIME[2]):
-                        print(f"Short Entry Exit Time Out for {i}. Closing position.")
-
-                        # Fetch the Buy Price and Quantity
-                        trade_row = Short_Open_Position[Short_Open_Position['Symbol'] == i]
-
-                        SellPrice = trade_row['Sell Price'].values[0]
-
-                        Trade_quantity = int(trade_row['Qty'].values[0])
-
-                        Exit_Time = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
-
-                        # For Real Money
-
-                        # Sending Buy Order to The API
-
-                        # For Buy Order
-
-                        # order_response = client.place_order(OrderType='B',Exchange='N',ExchangeType='C', ScripCode = int(scripcode_lookup(instrument=instrument_df, symbol= i), Qty=Trade_quantity, Price=0)
-
-                        # # Check if the message is not 'Success'
-                        # if order_response['Message'] != 'Success':
-                        #     with open("error_log.txt", "a") as error_log_file:
-                        #         error_log_file.write(ct +' - ' + order_response['Message'] +' '+i+ "\n")
-
-                        #     tele_msg(order_response['Message']+' '+i)
-
-                        # position_df = pd.DataFrame(client.positions())
-
-                        # Buy_Price = position_df[position_df.ScripName==i].BuyAvgRate.values[0]
-
-                        # For Paper Trade
-
-                        Buy_Price = float(spot_prices1[i])  # Selling at current market price
-
-                        Points = SellPrice-Buy_Price
-
-                        Brokerage = ((Buy_Price * Trade_quantity)+(SellPrice * Trade_quantity)) * 0.00015
-
-                        Profit_Loss = (Points * Trade_quantity)-Brokerage
-
-                        Trade_Status = "Exit Time Out"
-
-                        tele_msg(f"Short Entry Exit Time Out for {i}. Exit Price: {Sell_Price}, P/L: {Profit_Loss}")
-
-                        close_short_trade(i, Exit_Time, Buy_Price, Points, Brokerage, Profit_Loss, Trade_Status,
-                                          Short_Trade_File)
-
-                        super_Trend_Short = pd.read_excel(Short_Trade_File)
-
-                        Short_Open_Position = super_Trend_Short[(super_Trend_Short['Trade Status'] == 'OPEN')]
-
-                        continue
-
+                    current_price  = float(spot_prices1[i])
+                    Trade_quantity = 75
+                    Target_Price   = current_price + Take_Profit
+                    Sprice         = current_price - 10
+                    entry_time     = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
+                    BuyPrice       = current_price
+
+                    update_long_trades(i, entry_time, BuyPrice, Target_Price, Sprice, Trade_quantity, Long_Trade_File)
+                    tele_msg(
+                        f"Long Entry: {i} | Qty: {Trade_quantity} | "
+                        f"Buy: {BuyPrice} | Target: {Target_Price} | SL: {Sprice}"
+                    )
+
+                    super_Trend_Long   = pd.read_excel(Long_Trade_File)
+                    Long_Open_Position = super_Trend_Long[super_Trend_Long['Trade Status'] == 'OPEN']
+
+            # ════════════════════════════════════════════════════
+            # BLOCK B — SL / TARGET / TRAILING / TIMEOUT
+            # Runs EVERY loop iteration (~every 0.5s)
+            # NOT inside is_required_time — fires in real time
+            # ════════════════════════════════════════════════════
+
+            # Re-read positions fresh for exit checks
+            super_Trend_Long   = pd.read_excel(Long_Trade_File)
+            Long_Open_Position = super_Trend_Long[super_Trend_Long['Trade Status'] == 'OPEN']
+
+            if i not in Long_Open_Position['Symbol'].values:
+                continue  # nothing open, skip all exit checks
+
+            trade_row      = Long_Open_Position[Long_Open_Position['Symbol'] == i]
+            BuyPrice       = float(trade_row['Buy Price'].values[0])
+            Target_Price   = float(trade_row['Target Price'].values[0])
+            S_Price        = float(trade_row['Sprice'].values[0])
+            Trade_quantity = int(trade_row['Qty'].values[0])
+            current_price  = float(spot_prices1[i])
+
+            profit_from_entry = current_price - BuyPrice
+
+            print(f"  📊 {i} | Buy:{BuyPrice} | Now:{current_price} | "
+                  f"Target:{Target_Price} | SL:{S_Price} | PnL:{round(profit_from_entry,2)}")
+
+            # ── B1: TRAILING SL + TRAILING TARGET ────────────
+            # Logic:
+            #   Every 10 points of profit → move SL up by 10 (lock-in)
+            #   Every 10 points → move Target up by 10 (trail target)
+            Trail_Step = 10
+
+            if profit_from_entry >= Trail_Step:
+                # How many full steps have we moved
+                steps = int(profit_from_entry // Trail_Step)
+
+                # New SL = entry + (steps-1)*10  → always one step behind price
+                # This locks in profit but gives room to breathe
+                new_sl     = BuyPrice + ((steps - 1) * Trail_Step)
+                new_sl     = max(new_sl, S_Price)   # never move SL down
+
+                # New Target = entry + (steps+1)*10  → one step ahead of price
+                new_target = BuyPrice + ((steps + 1) * Trail_Step)
+                new_target = max(new_target, Target_Price)  # never move Target down
+
+                if new_sl > S_Price:
+                    print(f"  📈 TRAILING SL: {S_Price} → {new_sl}  |  TARGET: {Target_Price} → {new_target}  [{i}]")
+                    tele_msg(f"📈 Trail Update: {i} | SL: {S_Price}→{new_sl} | Target: {Target_Price}→{new_target}")
+
+                    # Update Sprice (SL column) in Excel
+                    update_buy_price(i, new_sl, Long_Trade_File)      # updates Sprice column
+                    # Update Target Price column in Excel
+                    update_target_price(i, new_target, Long_Trade_File)
+
+                    # Refresh local variables after update
+                    super_Trend_Long   = pd.read_excel(Long_Trade_File)
+                    Long_Open_Position = super_Trend_Long[super_Trend_Long['Trade Status'] == 'OPEN']
+                    trade_row          = Long_Open_Position[Long_Open_Position['Symbol'] == i]
+                    S_Price            = float(trade_row['Sprice'].values[0])
+                    Target_Price       = float(trade_row['Target Price'].values[0])
+
+            # ── B2: HARD SL HIT ──────────────────────────────
+            # Check SL BEFORE target so trailing SL fires first
+            if current_price <= S_Price:
+                print(f"  🔴 SL HIT → {i} | Price:{current_price} | SL:{S_Price}")
+                Exit_Time   = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
+                Sell_Price  = current_price
+                Points      = Sell_Price - BuyPrice
+                Brokerage   = ((BuyPrice * Trade_quantity) + (Sell_Price * Trade_quantity)) * 0.00015
+                Profit_Loss = (Points * Trade_quantity) - Brokerage
+                Trade_Status = "SL Hit"
+
+                close_long_trade(i, Exit_Time, Sell_Price, Points, Brokerage, Profit_Loss, Trade_Status, Long_Trade_File)
+                tele_msg(f"🔴 SL Hit: {i} | Exit: {Sell_Price} | P/L: {Profit_Loss}")
+
+                super_Trend_Long   = pd.read_excel(Long_Trade_File)
+                Long_Open_Position = super_Trend_Long[super_Trend_Long['Trade Status'] == 'OPEN']
+                continue
+
+            # ── B3: TARGET HIT ────────────────────────────────
+            if current_price >= Target_Price:
+                print(f"  🎯 TARGET HIT → {i} | Price:{current_price} | Target:{Target_Price}")
+                Exit_Time   = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
+                Sell_Price  = current_price
+                Points      = Sell_Price - BuyPrice
+                Brokerage   = ((BuyPrice * Trade_quantity) + (Sell_Price * Trade_quantity)) * 0.00015
+                Profit_Loss = (Points * Trade_quantity) - Brokerage
+                Trade_Status = "Target Hit"
+
+                close_long_trade(i, Exit_Time, Sell_Price, Points, Brokerage, Profit_Loss, Trade_Status, Long_Trade_File)
+                tele_msg(f"🎯 Target Hit: {i} | Exit: {Sell_Price} | P/L: {Profit_Loss}")
+
+                super_Trend_Long   = pd.read_excel(Long_Trade_File)
+                Long_Open_Position = super_Trend_Long[super_Trend_Long['Trade Status'] == 'OPEN']
+                continue
+
+            # ── B4: EXIT TIME OUT ─────────────────────────────
+            # Exit 5 minutes before end time
+            exit_cutoff = now_ist.replace(
+                hour=EXIT_TIME[0],
+                minute=max(EXIT_TIME[1] - 5, 0),
+                second=EXIT_TIME[2]
+            )
+            if now_ist >= exit_cutoff:
+                print(f"  ⏰ TIME OUT → {i}")
+                Exit_Time   = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
+                Sell_Price  = current_price
+                Points      = Sell_Price - BuyPrice
+                Brokerage   = ((BuyPrice * Trade_quantity) + (Sell_Price * Trade_quantity)) * 0.00015
+                Profit_Loss = (Points * Trade_quantity) - Brokerage
+                Trade_Status = "Exit Time Out"
+
+                close_long_trade(i, Exit_Time, Sell_Price, Points, Brokerage, Profit_Loss, Trade_Status, Long_Trade_File)
+                tele_msg(f"⏰ Time Out: {i} | Exit: {Sell_Price} | P/L: {Profit_Loss}")
+
+                super_Trend_Long   = pd.read_excel(Long_Trade_File)
+                Long_Open_Position = super_Trend_Long[super_Trend_Long['Trade Status'] == 'OPEN']
+                continue
 
     except Exception as e:
-        print("Error:", e)
-        print("Oops!", e.__class__, "occurred.")
-
         ct = dt.datetime.now().strftime("%d-%b-%Y %I:%M%p")
         error_message = f"{ct} - An error occurred: {e}"
+        print("Error:", e)
+        print("Oops!", e.__class__, "occurred.")
         tele_msg(error_message)
-
         with open("error_log.txt", "a") as error_log_file:
+            error_log_file.write(error_message + "\n")
+        # ✅ NO raise — bot stays alive on any error
+        time.sleep(2)
             error_log_file.write(error_message+"\n")
         raise ValueError("I have raised an Exception in main")
