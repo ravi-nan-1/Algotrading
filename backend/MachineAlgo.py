@@ -811,258 +811,147 @@ def super_trend(symbol, data, use_llm=False):
     print(f"  SYMBOL : {symbol}")
     print("=" * 80)
 
-    # =========================================================
-    # PRICE DATA
-    # =========================================================
+    close  = data['Close']
+    high   = data['High']
+    low    = data['Low']
+    open_  = data['Open']
+    n      = len(data)
 
-    close = data['Close']
-    high = data['High']
-    low = data['Low']
-    open_price = data['Open']
-
-    n = len(data)
-
-    # =========================================================
-    # INDICATORS
-    # =========================================================
-
+    # ── indicators ────────────────────────────────────────────
     stoch = ta.stoch(high, low, close, 14, 3, 3)
-
     data['Stoch_K'] = stoch['STOCHk_14_3_3']
     data['Stoch_D'] = stoch['STOCHd_14_3_3']
+    data['CCI']     = ta.cci(high, low, close, length=20)
 
-    data['CCI'] = ta.cci(high, low, close, length=20)
-
-    K = data['Stoch_K']
-    D = data['Stoch_D']
+    K   = data['Stoch_K']
+    D   = data['Stoch_D']
     CCI = data['CCI']
 
-    # =========================================================
-    # STORAGE
-    # =========================================================
-
-    signal = np.zeros(n, dtype=int)
+    # ── storage ───────────────────────────────────────────────
+    signal        = np.zeros(n, dtype=int)
     signal_reason = [''] * n
-    signal_grade = [''] * n
+    signal_grade  = [''] * n
 
-    # =========================================================
-    # SETTINGS
-    # =========================================================
+    # ── settings ──────────────────────────────────────────────
+    CCI_ARM_LEVEL        = -100   # arm when CCI below this
+    CCI_EXTREME_LEVEL    = -200   # extreme oversold: allow same-bar fire
+    CCI_FLAG_TTL         =  12    # bars (12 × 5min = 60 min window)
+    STOCH_BUY_LEVEL      =  15    # K must be above this
+    STOCH_OB_LEVEL       =  70    # tightened from 80 → avoids late entries
+    COOLDOWN_BARS        =   3
 
-    COOLDOWN_BARS = 2
     last_fired_bar = -999
 
-    # =========================================================
-    # FLAGS
-    # =========================================================
+    # ── arm state ─────────────────────────────────────────────
+    armed      = False
+    armed_bar  = -1
+    armed_date = None
+    armed_cci  = 0.0             # store CCI level at arm time
 
-    cci_rising_flag = False
-    cci_flag_bar = -1
+    # ── main loop ─────────────────────────────────────────────
+    for i in range(10, n):
 
-    # =========================================================
-    # MAIN LOOP
-    # =========================================================
-
-    for i in range(5, n):
-
-        # =====================================================
-        # CURRENT VALUES
-        # =====================================================
-
-        k_cur = K.iloc[i]
-        d_cur = D.iloc[i]
-
-        k_prev = K.iloc[i - 1]
-        d_prev = D.iloc[i - 1]
-
-        cci_cur = CCI.iloc[i]
-        cci_prev = CCI.iloc[i - 1]
-
-        curr_open = open_price.iloc[i]
-        curr_close = close.iloc[i]
-
-        curr_high = high.iloc[i]
-        curr_low = low.iloc[i]
-
-        curr_dt = data.index[i]
-
-        # =====================================================
-        # SKIP NaN
-        # =====================================================
+        k_cur   = K.iloc[i];    k_prev   = K.iloc[i - 1]
+        d_cur   = D.iloc[i];    d_prev   = D.iloc[i - 1]
+        cci_cur = CCI.iloc[i];  cci_prev = CCI.iloc[i - 1]
+        dt_cur  = data.index[i]
 
         if any(pd.isna(v) for v in [
-            k_cur, d_cur,
-            k_prev, d_prev,
-            cci_cur, cci_prev
+            k_cur, d_cur, k_prev, d_prev, cci_cur, cci_prev
         ]):
             continue
 
-        # =====================================================
-        # COOLDOWN
-        # =====================================================
+        # ── current session date ──────────────────────────────
+        if hasattr(dt_cur, 'date'):
+            curr_date = dt_cur.date()
+        else:
+            curr_date = pd.Timestamp(dt_cur).date()
 
+        # ── RESET FLAG AT SESSION OPEN ────────────────────────
+        if armed and armed_date is not None and curr_date != armed_date:
+            armed = False
+            print(f"🌅 SESSION RESET @ {dt_cur} | armed flag cleared (new day)")
+
+        # ── cooldown ──────────────────────────────────────────
         if (i - last_fired_bar) < COOLDOWN_BARS:
             continue
 
         # =====================================================
-        # STEP 1:
-        # STRONG CCI REVERSAL
+        # STEP 1 — ARM
         # =====================================================
-
         if (
-            cci_prev < -100 and
-            cci_cur > cci_prev
+            not armed and
+            cci_prev < CCI_ARM_LEVEL and
+            cci_cur  > cci_prev and
+            (cci_cur-cci_prev) >= 10 and
+            cci_prev < -120
         ):
-
-            cci_rising_flag = True
-            cci_flag_bar = i
-
-            print(
-                f"📈 STRONG CCI REVERSAL @ {curr_dt} | "
-                f"CCI={cci_cur:.2f}"
-            )
-
-        # =====================================================
-        # EXPIRE FLAG AFTER 5 CANDLES
-        # =====================================================
-
-        if cci_rising_flag and (i - cci_flag_bar) > 5:
-
-            cci_rising_flag = False
+            armed      = True
+            armed_bar  = i
+            armed_date = curr_date
+            armed_cci  = cci_prev   # save the CCI at arm point
 
             print(
-                f"⌛ CCI FLAG EXPIRED @ {curr_dt}"
+                f"🔔 ARMED  @ {dt_cur} | "
+                f"CCI {cci_prev:.1f} → {cci_cur:.1f}"
             )
+
+        # ── expire TTL ────────────────────────────────────────
+        if armed and (i - armed_bar) > CCI_FLAG_TTL:
+            armed = False
+            print(f"⌛ EXPIRED @ {dt_cur} | no stoch confirm in time")
 
         # =====================================================
-        # IF CCI FLAG ACTIVE
-        # LOOK FOR STOCHASTIC CONFIRMATION
+        # STEP 2 — CONFIRM
+        #
+        # Same-bar allowed ONLY when CCI was extreme (<-200)
+        # at arm time — gap-open reversals are genuine.
+        # Normal arms require at least 1 bar separation.
         # =====================================================
+        if armed:
 
-        if cci_rising_flag:
+            extreme_arm      = armed_cci < CCI_EXTREME_LEVEL
+            min_bar_ok       = (i > armed_bar) or extreme_arm
 
-            # -------------------------------------------------
-            # STOCHASTIC STRUCTURE
-            # -------------------------------------------------
+            k_crossed_above_d = (k_prev <= d_prev) and (k_cur > d_cur)
+            k_above_buy_level = k_cur > STOCH_BUY_LEVEL
+            k_not_overbought  = k_cur < STOCH_OB_LEVEL   # tightened to 70
 
-            bullish_state = (
-                k_cur > d_cur
-            )
-
-            k_above_20 = (
-                k_cur > 20
-            )
-
-            k_rising = (
-                k_cur > k_prev
-            )
-
-            # -------------------------------------------------
-            # GAP SHOULD EXPAND
-            # -------------------------------------------------
-
-            gap_expanding = (
-                (k_cur - d_cur) >
-                (k_prev - d_prev)
-            )
-
-            # -------------------------------------------------
-            # LOWER ZONE FILTER
-            # -------------------------------------------------
-
-            lower_zone = (
-                k_cur < 40 and
-                d_cur < 40
-            )
-
-            # -------------------------------------------------
-            # STRONG BULLISH CANDLE
-            # -------------------------------------------------
-
-            candle_range = curr_high - curr_low
-
-            bullish_body = (
-                (curr_close - curr_open) >
-                (candle_range * 0.4)
-            )
-
-            # -------------------------------------------------
-            # FINAL BUY SIGNAL
-            # -------------------------------------------------
-
-            buy_signal = (
-
-                # ---------------------------------------------
-                # STOCHASTIC STRUCTURE
-                # ---------------------------------------------
-
-                bullish_state and
-                k_above_20 and
-                k_rising and
-
-                # ---------------------------------------------
-                # MOMENTUM SHOULD IMPROVE
-                # ---------------------------------------------
-
-                gap_expanding and
-
-                # ---------------------------------------------
-                # REVERSAL SHOULD START
-                # FROM LOWER ZONE
-                # ---------------------------------------------
-
-                lower_zone and
-
-                # ---------------------------------------------
-                # STRONG BUYER CANDLE
-                # ---------------------------------------------
-
-                bullish_body
-            )
-
-            # =================================================
-            # GENERATE SIGNAL
-            # =================================================
-
-            if buy_signal:
-
-                signal[i] = 1
-                last_fired_bar = i
-
+            if (
+                min_bar_ok        and
+                k_crossed_above_d and
+                k_above_buy_level and
+                k_not_overbought
+            ):
+                signal[i]        = 1
                 signal_reason[i] = (
-                    f"CCI_FLAG + STOCH_REVERSAL | "
-                    f"K={k_cur:.1f} | "
-                    f"D={d_cur:.1f} | "
+                    f"CCI_ARMED({armed_cci:.0f}) + K_CROSS_D | "
+                    f"K={k_cur:.1f} D={d_cur:.1f} "
                     f"CCI={cci_cur:.1f}"
                 )
+                signal_grade[i]  = "★★★★★"
+                last_fired_bar   = i
+                armed            = False
 
-                signal_grade[i] = "★★★★★"
-
+                flag = "EXTREME" if extreme_arm else "NORMAL"
                 print(
-                    f"🟢 BUY SIGNAL @ {curr_dt} | "
-                    f"Momentum reversal confirmed"
+                    f"🟢 BUY    @ {dt_cur} | "
+                    f"[{flag}] K crossed D · "
+                    f"K={k_cur:.1f} · CCI={cci_cur:.1f}"
                 )
 
-                # ---------------------------------------------
-                # RESET FLAG
-                # ---------------------------------------------
-
-                cci_rising_flag = False
-
-    # =========================================================
-    # STORE RESULTS
-    # =========================================================
-
-    data['st_sig'] = signal
-    data['st_sig_raw'] = signal
+    # ── store results ─────────────────────────────────────────
+    data['st_sig']        = signal
+    data['st_sig_raw']    = signal
     data['signal_reason'] = signal_reason
-    data['signal_grade'] = signal_grade
+    data['signal_grade']  = signal_grade
 
     print("=" * 80)
     print(f"TOTAL SIGNALS GENERATED: {int(np.sum(signal))}")
     print("=" * 80)
 
     return data
+
 
 
 
