@@ -1485,5 +1485,5 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
             error_log_file.write(error_message + "\n")
         # ✅ NO raise — bot stays alive on any error
         time.sleep(2)
-            error_log_file.write(error_message+"\n")
+           # error_log_file.write(error_message+"\n")
         raise ValueError("I have raised an Exception in main")
