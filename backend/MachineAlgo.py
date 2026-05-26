@@ -800,6 +800,76 @@ Return ONLY JSON:
         return _no_trade_response(f"LLM error: {e}")
 
 
+
+
+def calculate_cci(high, low, close, length=20, clamp=True):
+
+    import numpy as np
+    import pandas as pd
+
+    # =====================================================
+    # TYPICAL PRICE
+    # =====================================================
+
+    tp = (high + low + close) / 3.0
+
+    # =====================================================
+    # SMA OF TYPICAL PRICE
+    # =====================================================
+
+    sma_tp = tp.rolling(window=length).mean()
+
+    # =====================================================
+    # MEAN DEVIATION
+    # =====================================================
+
+    mean_dev = pd.Series(index=tp.index, dtype=float)
+
+    for i in range(len(tp)):
+
+        if i < length - 1:
+            mean_dev.iloc[i] = np.nan
+            continue
+
+        window_tp = tp.iloc[i - length + 1 : i + 1]
+
+        sma_value = sma_tp.iloc[i]
+
+        deviation = np.abs(window_tp - sma_value)
+
+        mean_dev.iloc[i] = deviation.mean()
+
+    # =====================================================
+    # PREVENT DIVISION BY VERY SMALL VALUES
+    # =====================================================
+
+    mean_dev = mean_dev.replace(0, np.nan)
+
+    # =====================================================
+    # CCI FORMULA
+    # =====================================================
+
+    cci = (
+        (tp - sma_tp) /
+        (0.015 * mean_dev)
+    )
+
+    # =====================================================
+    # CLEAN EXTREME / BROKEN VALUES
+    # =====================================================
+
+    cci = cci.replace([np.inf, -np.inf], np.nan)
+
+    # =====================================================
+    # OPTIONAL CLAMP
+    # =====================================================
+
+    if clamp:
+        cci = cci.clip(-300, 300)
+
+    return cci
+
+
 def super_trend(symbol, data, use_llm=False):
 
     import numpy as np
@@ -821,7 +891,7 @@ def super_trend(symbol, data, use_llm=False):
     stoch = ta.stoch(high, low, close, 14, 3, 3)
     data['Stoch_K'] = stoch['STOCHk_14_3_3']
     data['Stoch_D'] = stoch['STOCHd_14_3_3']
-    data['CCI']     = ta.cci(data['High'], data['Low'], data['Close'], length=20)
+    data['CCI']     =data['CCI'] = calculate_cci(data['High'],data['Low'],data['Close'], length=20)
 
     K   = data['Stoch_K']
     D   = data['Stoch_D']
