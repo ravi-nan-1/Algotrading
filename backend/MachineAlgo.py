@@ -821,7 +821,7 @@ def super_trend(symbol, data, use_llm=False):
     stoch = ta.stoch(high, low, close, 14, 3, 3)
     data['Stoch_K'] = stoch['STOCHk_14_3_3']
     data['Stoch_D'] = stoch['STOCHd_14_3_3']
-    data['CCI']     = ta.cci(high, low, close, length=20)
+    data['CCI']     = ta.cci(data['High'], data['Low'], data['Close'], length=20)
 
     K   = data['Stoch_K']
     D   = data['Stoch_D']
