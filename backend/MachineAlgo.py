@@ -1255,7 +1255,7 @@ data_list = {}
 
 for h in Tickers:
 
-    data_fut = get_cash_market_data(h, '5m')
+    data_fut = get_cash_market_data(h, '3m')
     data_fut.drop(data_fut.tail(1).index, inplace=True)
 
     super_trend(h,data_fut)
