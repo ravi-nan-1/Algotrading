@@ -905,7 +905,7 @@ def super_trend(symbol, data, use_llm=False):
     # ── settings ──────────────────────────────────────────────
     CCI_ARM_LEVEL        = -100   # arm when CCI below this
     CCI_EXTREME_LEVEL    = -200   # extreme oversold: allow same-bar fire
-    CCI_FLAG_TTL         =  12    # bars (12 × 5min = 60 min window)
+    CCI_FLAG_TTL         =  5    # bars (12 × 5min = 60 min window)
     STOCH_BUY_LEVEL      =  15    # K must be above this
     STOCH_OB_LEVEL       =  70    # tightened from 80 → avoids late entries
     COOLDOWN_BARS        =   3
@@ -919,7 +919,7 @@ def super_trend(symbol, data, use_llm=False):
     armed_cci  = 0.0             # store CCI level at arm time
 
     # ── main loop ─────────────────────────────────────────────
-    for i in range(10, n):
+    for i in range(5, n):
 
         k_cur   = K.iloc[i];    k_prev   = K.iloc[i - 1]
         d_cur   = D.iloc[i];    d_prev   = D.iloc[i - 1]
@@ -954,7 +954,7 @@ def super_trend(symbol, data, use_llm=False):
             cci_prev < CCI_ARM_LEVEL and
             cci_cur  > cci_prev and
             (cci_cur-cci_prev) >= 10 and
-            cci_prev < -120
+            cci_prev < -100
         ):
             armed      = True
             armed_bar  = i
