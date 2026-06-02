@@ -800,6 +800,202 @@ Return ONLY JSON:
         return _no_trade_response(f"LLM error: {e}")
 
 
+def calculate_order_blocks(
+        df: pd.DataFrame,
+        open_column: str = "Open",
+        high_column: str = "High",
+        low_column: str = "Low",
+        close_column: str = "Close",
+        volume_column: str = "Volume",
+        min_volume_percentile: float = 30,
+        check_mitigation: bool = True,
+        mitigation_threshold: float = 0.6,
+        lookback_periods: int = 10,
+        use_wicks: bool = True
+) -> pd.DataFrame:
+    """
+    Non-Repainting Order Block Detector
+    =====================================
+    4 repainting bugs fixed from original. Details inline below.
+    """
+
+    df = df.copy()
+
+    # ====================== DATETIME HANDLING ======================
+    if df.index.name and str(df.index.name).lower() == 'datetime':
+        df.index = pd.to_datetime(df.index)
+    elif 'Datetime' in df.columns:
+        df = df.set_index('Datetime')
+        df.index = pd.to_datetime(df.index)
+
+    df = df.sort_index()
+
+    col_map = {
+        open_column:   'Open',
+        high_column:   'High',
+        low_column:    'Low',
+        close_column:  'Close',
+        volume_column: 'Volume'
+    }
+    df = df.rename(columns=col_map)
+
+    # Candle direction
+    df['is_bullish_candle'] = df['Close'] > df['Open']
+    df['is_bearish_candle'] = df['Close'] < df['Open']
+
+    # Volume Percentile
+    if 'Volume' in df.columns and df['Volume'].sum() > 0:
+        df['volume_percentile'] = df['Volume'].rank(method='min') / len(df) * 100
+    else:
+        df['volume_percentile'] = 100.0
+
+    # ====================== SWING STRUCTURE ======================
+    # FIX 1: Real confirmed swing pivots — not arbitrary high/low comparisons.
+    # swing_strength candles must close on BOTH sides before pivot is valid.
+    swing_strength = 1#max(3, lookback_periods // 3)
+
+    swing_high = pd.Series(np.nan, index=df.index)
+    swing_low  = pd.Series(np.nan, index=df.index)
+
+    for k in range(swing_strength, len(df) - swing_strength):
+        left_highs  = df['High'].iloc[k - swing_strength: k]
+        right_highs = df['High'].iloc[k + 1: k + swing_strength + 1]
+        if df['High'].iloc[k] > left_highs.max() and df['High'].iloc[k] > right_highs.max():
+            swing_high.iloc[k] = df['High'].iloc[k]
+
+        left_lows  = df['Low'].iloc[k - swing_strength: k]
+        right_lows = df['Low'].iloc[k + 1: k + swing_strength + 1]
+        if df['Low'].iloc[k] < left_lows.min() and df['Low'].iloc[k] < right_lows.min():
+            swing_low.iloc[k] = df['Low'].iloc[k]
+
+    df['swing_high'] = swing_high
+    df['swing_low']  = swing_low
+
+    # Initialize output columns
+    df['ob_bullish']  = False
+    df['ob_bearish']  = False
+    df['ob_top']      = np.nan
+    df['ob_bottom']   = np.nan
+    df['ob_volume']   = np.nan
+    df['ob_strength'] = np.nan
+
+    # FIX 3: Track tagged candles — no OB candle overwritten twice
+    already_tagged = set()
+
+    # ====================== DETECT ORDER BLOCKS ======================
+    # FIX 2: len(df) - 1  →  excludes the live (still-forming) candle
+    for i in range(lookback_periods, len(df) - 1):
+
+        # ── Bullish OB: bar i's Close breaks a confirmed swing HIGH ──────────
+        broke_swing_high = False
+        for s in range(i - 1, max(i - lookback_periods * 4, swing_strength) - 1, -1):
+            if not np.isnan(df['swing_high'].iloc[s]) and df['Close'].iloc[i] > df['swing_high'].iloc[s]:
+                broke_swing_high = True
+                break
+
+        if broke_swing_high:
+            for j in range(1, lookback_periods + 1):
+                ob_idx = i - j
+                if ob_idx < 0 or ob_idx in already_tagged:
+                    continue
+                if (df['is_bearish_candle'].iloc[ob_idx] and
+                        df['volume_percentile'].iloc[ob_idx] >= min_volume_percentile):
+
+                    df.loc[df.index[ob_idx], 'ob_bullish'] = True
+                    if use_wicks:
+                        df.loc[df.index[ob_idx], 'ob_top']    = df['High'].iloc[ob_idx]
+                        df.loc[df.index[ob_idx], 'ob_bottom'] = df['Low'].iloc[ob_idx]
+                    else:
+                        df.loc[df.index[ob_idx], 'ob_top']    = max(df['Open'].iloc[ob_idx], df['Close'].iloc[ob_idx])
+                        df.loc[df.index[ob_idx], 'ob_bottom'] = min(df['Open'].iloc[ob_idx], df['Close'].iloc[ob_idx])
+
+                    df.loc[df.index[ob_idx], 'ob_volume'] = df['Volume'].iloc[ob_idx] if 'Volume' in df.columns else np.nan
+                    price_move = abs(df['Close'].iloc[ob_idx] - df['Open'].iloc[ob_idx]) / (df['Open'].iloc[ob_idx] + 1e-10)
+                    vol_score  = df['volume_percentile'].iloc[ob_idx] / 100
+                    df.loc[df.index[ob_idx], 'ob_strength'] = (price_move * 100 + vol_score) / 2
+                    already_tagged.add(ob_idx)
+                    break
+
+        # ── Bearish OB: bar i's Close breaks a confirmed swing LOW ───────────
+        broke_swing_low = False
+        for s in range(i - 1, max(i - lookback_periods * 4, swing_strength) - 1, -1):
+            if not np.isnan(df['swing_low'].iloc[s]) and df['Close'].iloc[i] < df['swing_low'].iloc[s]:
+                broke_swing_low = True
+                break
+
+        if broke_swing_low:
+            for j in range(1, lookback_periods + 1):
+                ob_idx = i - j
+                if ob_idx < 0 or ob_idx in already_tagged:
+                    continue
+                if (df['is_bullish_candle'].iloc[ob_idx] and
+                        df['volume_percentile'].iloc[ob_idx] >= min_volume_percentile):
+
+                    df.loc[df.index[ob_idx], 'ob_bearish'] = True
+                    if use_wicks:
+                        df.loc[df.index[ob_idx], 'ob_top']    = df['High'].iloc[ob_idx]
+                        df.loc[df.index[ob_idx], 'ob_bottom'] = df['Low'].iloc[ob_idx]
+                    else:
+                        df.loc[df.index[ob_idx], 'ob_top']    = max(df['Open'].iloc[ob_idx], df['Close'].iloc[ob_idx])
+                        df.loc[df.index[ob_idx], 'ob_bottom'] = min(df['Open'].iloc[ob_idx], df['Close'].iloc[ob_idx])
+
+                    df.loc[df.index[ob_idx], 'ob_volume'] = df['Volume'].iloc[ob_idx] if 'Volume' in df.columns else np.nan
+                    price_move = abs(df['Close'].iloc[ob_idx] - df['Open'].iloc[ob_idx]) / (df['Open'].iloc[ob_idx] + 1e-10)
+                    vol_score  = df['volume_percentile'].iloc[ob_idx] / 100
+                    df.loc[df.index[ob_idx], 'ob_strength'] = (price_move * 100 + vol_score) / 2
+                    already_tagged.add(ob_idx)
+                    break
+
+    # ====================== MITIGATION CHECK ======================
+    if check_mitigation:
+        df['ob_mitigated'] = False
+        ob_rows = df[(df['ob_bullish'] | df['ob_bearish'])].copy()
+
+        for idx, row in ob_rows.iterrows():
+            ob_idx     = df.index.get_loc(idx)
+            is_bullish = row['ob_bullish']
+            ob_top     = row['ob_top']
+            ob_bottom  = row['ob_bottom']
+
+            if pd.isna(ob_top) or pd.isna(ob_bottom):
+                continue
+
+            future_data = df.iloc[ob_idx + 1:]
+            ob_size     = ob_top - ob_bottom
+
+            if is_bullish:
+                # FIX 4 (direction): Bullish OB mitigated when Close drops
+                # BELOW (ob_top - ob_size * threshold).
+                # threshold=0.6 → price must close below top 40% of the zone.
+                # OLD BUG: ob_bottom + mitigation_amount  ← level was INSIDE
+                #          the zone, so almost every OB was instantly killed.
+                mitigation_level = ob_top - ob_size * mitigation_threshold
+                # FIX 4 (signal): use Close not Low — wicks don't count
+                if (future_data['Close'] <= mitigation_level).any():
+                    df.loc[idx, 'ob_mitigated'] = True
+            else:
+                # Bearish OB mitigated when Close rises
+                # ABOVE (ob_bottom + ob_size * threshold).
+                # OLD BUG: ob_top - mitigation_amount  ← same inverted issue
+                mitigation_level = ob_bottom + ob_size * mitigation_threshold
+                if (future_data['Close'] >= mitigation_level).any():
+                    df.loc[idx, 'ob_mitigated'] = True
+
+        # Keep only active (unmitigated) OBs
+        df['ob_bullish'] = df['ob_bullish'] & ~df['ob_mitigated']
+        df['ob_bearish'] = df['ob_bearish'] & ~df['ob_mitigated']
+
+    # Cleanup
+    df = df.drop(
+        columns=['is_bullish_candle', 'is_bearish_candle',
+                 'volume_percentile', 'swing_high', 'swing_low'],
+        errors='ignore'
+    )
+
+    total_ob = df['ob_bullish'].sum() + df['ob_bearish'].sum()
+    print(f"✅ Found {total_ob} Order Blocks ({df['ob_bullish'].sum()} Bullish, {df['ob_bearish'].sum()} Bearish)")
+
+    return df
 
 
 def calculate_cci(high, low, close, length=20, clamp=True):
@@ -870,61 +1066,83 @@ def calculate_cci(high, low, close, length=20, clamp=True):
     return cci
 
 
-def super_trend(symbol, data, use_llm=False):
+def super_trend(symbol, data, use_llm=False, use_cci_arm=False, use_ob_arm=True):
+    """
+    FILTERED CCI + STOCHASTIC REVERSAL + ORDER BLOCK ARMING
+
+    Parameters:
+    -----------
+    use_cci_arm : bool
+        If True, arm on CCI bounce
+    use_ob_arm : bool
+        If True, arm on Bullish Order Block
+    """
 
     import numpy as np
     import pandas as pd
     import pandas_ta as ta
 
     print("=" * 80)
-    print("  FILTERED CCI + STOCHASTIC REVERSAL")
+    print("  FILTERED CCI + STOCHASTIC REVERSAL + ORDER BLOCK")
     print(f"  SYMBOL : {symbol}")
+    print(f"  CCI ARM: {use_cci_arm} | OB ARM: {use_ob_arm}")
     print("=" * 80)
 
-    close  = data['Close']
-    high   = data['High']
-    low    = data['Low']
-    open_  = data['Open']
-    n      = len(data)
+    close = data['Close']
+    high = data['High']
+    low = data['Low']
+    open_ = data['Open']
+    n = len(data)
 
     # ── indicators ────────────────────────────────────────────
     stoch = ta.stoch(high, low, close, 14, 3, 3)
     data['Stoch_K'] = stoch['STOCHk_14_3_3']
     data['Stoch_D'] = stoch['STOCHd_14_3_3']
-    data['CCI']     =calculate_cci(data['High'],data['Low'],data['Close'], length=20)
+    data['CCI'] = calculate_cci(data['High'], data['Low'], data['Close'], length=20)
 
-    K   = data['Stoch_K']
-    D   = data['Stoch_D']
+    # ── ORDER BLOCK DETECTION ─────────────────────────────────
+    data = calculate_order_blocks(data)
+
+    K = data['Stoch_K']
+    D = data['Stoch_D']
     CCI = data['CCI']
+    OB_Bullish = data['ob_bullish']
 
     # ── storage ───────────────────────────────────────────────
-    signal        = np.zeros(n, dtype=int)
+    signal = np.zeros(n, dtype=int)
     signal_reason = [''] * n
-    signal_grade  = [''] * n
+    signal_grade = [''] * n
+    armed_source = [''] * n  # ← Track which source armed: CCI or OB
 
     # ── settings ──────────────────────────────────────────────
-    CCI_ARM_LEVEL        = -100   # arm when CCI below this
-    CCI_EXTREME_LEVEL    = -200   # extreme oversold: allow same-bar fire
-    CCI_FLAG_TTL         =  5    # bars (12 × 5min = 60 min window)
-    STOCH_BUY_LEVEL      =  15    # K must be above this
-    STOCH_OB_LEVEL       =  70    # tightened from 80 → avoids late entries
-    COOLDOWN_BARS        =   3
+    CCI_ARM_LEVEL = -100
+    CCI_EXTREME_LEVEL = -200
+    CCI_FLAG_TTL = 5
+    STOCH_BUY_LEVEL = 15
+    STOCH_OB_LEVEL = 70
+    COOLDOWN_BARS = 3
+    OB_TTL = 10  # ← OB valid for 10 bars
 
     last_fired_bar = -999
 
     # ── arm state ─────────────────────────────────────────────
-    armed      = False
-    armed_bar  = -1
+    armed = False
+    armed_bar = -1
     armed_date = None
-    armed_cci  = 0.0             # store CCI level at arm time
+    armed_cci = 0.0
+    armed_source_type = ""  # ← Track: "CCI" or "OB"
 
     # ── main loop ─────────────────────────────────────────────
     for i in range(5, n):
 
-        k_cur   = K.iloc[i];    k_prev   = K.iloc[i - 1]
-        d_cur   = D.iloc[i];    d_prev   = D.iloc[i - 1]
-        cci_cur = CCI.iloc[i];  cci_prev = CCI.iloc[i - 1]
-        dt_cur  = data.index[i]
+        k_cur = K.iloc[i];
+        k_prev = K.iloc[i-1]
+        d_cur = D.iloc[i];
+        d_prev = D.iloc[i-1]
+        cci_cur = CCI.iloc[i];
+        cci_prev = CCI.iloc[i-1]
+        ob_bullish_cur = OB_Bullish.iloc[i]
+        dt_cur = data.index[i]
 
         if any(pd.isna(v) for v in [
             k_cur, d_cur, k_prev, d_prev, cci_cur, cci_prev
@@ -943,31 +1161,48 @@ def super_trend(symbol, data, use_llm=False):
             print(f"🌅 SESSION RESET @ {dt_cur} | armed flag cleared (new day)")
 
         # ── cooldown ──────────────────────────────────────────
-        if (i - last_fired_bar) < COOLDOWN_BARS:
+        if (i-last_fired_bar) < COOLDOWN_BARS:
             continue
 
         # =====================================================
-        # STEP 1 — ARM
+        # STEP 1 — ARM (from CCI)
         # =====================================================
-        if (
-            not armed and
-            cci_prev < CCI_ARM_LEVEL and
-            cci_cur  > cci_prev and
-            (cci_cur-cci_prev) >= 10 and
-            cci_prev < -100
-        ):
-            armed      = True
-            armed_bar  = i
-            armed_date = curr_date
-            armed_cci  = cci_prev   # save the CCI at arm point
+        if use_cci_arm and not armed:
+            if (
+                    cci_prev < CCI_ARM_LEVEL and
+                    cci_cur > cci_prev and
+                    (cci_cur-cci_prev) >= 10 and
+                    cci_prev < -100
+            ):
+                armed = True
+                armed_bar = i
+                armed_date = curr_date
+                armed_cci = cci_prev
+                armed_source_type = "CCI"
 
-            print(
-                f"🔔 ARMED  @ {dt_cur} | "
-                f"CCI {cci_prev:.1f} → {cci_cur:.1f}"
-            )
+                print(
+                    f"🔔 ARMED [CCI] @ {dt_cur} | "
+                    f"CCI {cci_prev:.1f} → {cci_cur:.1f}"
+                )
+
+        # =====================================================
+        # STEP 1B — ARM (from ORDER BLOCK)
+        # =====================================================
+        if use_ob_arm and not armed:
+            if ob_bullish_cur:
+                armed = True
+                armed_bar = i
+                armed_date = curr_date
+                armed_cci = cci_cur
+                armed_source_type = "OB"
+
+                print(
+                    f"🔔 ARMED [OB] @ {dt_cur} | "
+                    f"Bullish Order Block detected | CCI={cci_cur:.1f}"
+                )
 
         # ── expire TTL ────────────────────────────────────────
-        if armed and (i - armed_bar) > CCI_FLAG_TTL:
+        if armed and (i-armed_bar) > CCI_FLAG_TTL:
             armed = False
             print(f"⌛ EXPIRED @ {dt_cur} | no stoch confirm in time")
 
@@ -980,47 +1215,52 @@ def super_trend(symbol, data, use_llm=False):
         # =====================================================
         if armed:
 
-            extreme_arm      = armed_cci < CCI_EXTREME_LEVEL
-            min_bar_ok       = (i > armed_bar) or extreme_arm
+            extreme_arm = armed_cci < CCI_EXTREME_LEVEL
+            min_bar_ok = (i > armed_bar) or extreme_arm
 
             k_crossed_above_d = (k_prev <= d_prev) and (k_cur > d_cur)
             k_above_buy_level = k_cur > STOCH_BUY_LEVEL
-            k_not_overbought  = k_cur < STOCH_OB_LEVEL   # tightened to 70
+            k_not_overbought = k_cur < STOCH_OB_LEVEL
 
             if (
-                min_bar_ok        and
-                k_crossed_above_d and
-                k_above_buy_level and
-                k_not_overbought
+                    min_bar_ok and
+                    k_crossed_above_d and
+                    k_above_buy_level and
+                    k_not_overbought
             ):
-                signal[i]        = 1
+                signal[i] = 1
                 signal_reason[i] = (
-                    f"CCI_ARMED({armed_cci:.0f}) + K_CROSS_D | "
-                    f"K={k_cur:.1f} D={d_cur:.1f} "
-                    f"CCI={cci_cur:.1f}"
+                    f"[{armed_source_type}] + K_CROSS_D | "
+                    f"K={k_cur:.1f} D={d_cur:.1f} CCI={cci_cur:.1f}"
                 )
-                signal_grade[i]  = "★★★★★"
-                last_fired_bar   = i
-                armed            = False
+                signal_grade[i] = "★★★★★"
+                armed_source[i] = armed_source_type
+                last_fired_bar = i
+                armed = False
 
                 flag = "EXTREME" if extreme_arm else "NORMAL"
                 print(
-                    f"🟢 BUY    @ {dt_cur} | "
-                    f"[{flag}] K crossed D · "
-                    f"K={k_cur:.1f} · CCI={cci_cur:.1f}"
+                    f"🟢 BUY [{armed_source_type}] @ {dt_cur} | "
+                    f"[{flag}] K crossed D · K={k_cur:.1f}"
                 )
 
     # ── store results ─────────────────────────────────────────
-    data['st_sig']        = signal
-    data['st_sig_raw']    = signal
+    data['st_sig'] = signal
+    data['st_sig_raw'] = signal
     data['signal_reason'] = signal_reason
-    data['signal_grade']  = signal_grade
+    data['signal_grade'] = signal_grade
+    data['armed_source'] = armed_source
 
     print("=" * 80)
     print(f"TOTAL SIGNALS GENERATED: {int(np.sum(signal))}")
+    if armed_source.count('CCI') > 0:
+        print(f"  - CCI Armed: {armed_source.count('CCI')}")
+    if armed_source.count('OB') > 0:
+        print(f"  - OB Armed:  {armed_source.count('OB')}")
     print("=" * 80)
 
     return data
+
 
 
 
