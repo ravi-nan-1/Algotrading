@@ -1258,6 +1258,8 @@ def super_trend(symbol, data, use_llm=False, use_cci_arm=False, use_ob_arm=True)
     if armed_source.count('OB') > 0:
         print(f"  - OB Armed:  {armed_source.count('OB')}")
     print("=" * 80)
+    print("SUPER TREND RETURNING")
+    print(data.columns)
 
     return data
 
