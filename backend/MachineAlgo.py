@@ -1066,27 +1066,26 @@ def calculate_cci(high, low, close, length=20, clamp=True):
     return cci
 
 
-def super_trend(symbol, data, use_llm=False, use_cci_arm=False, use_ob_arm=True):
+def super_trend(symbol, data, use_llm=False, use_cci_arm=True, use_ob_arm=True):
     """
-    FILTERED CCI + STOCHASTIC REVERSAL + ORDER BLOCK ARMING
+    FILTERED CCI + STOCHASTIC REVERSAL + ORDER BLOCK ARMING (v4.0 - CCI IMPROVED)
 
-    Parameters:
-    -----------
-    use_cci_arm : bool
-        If True, arm on CCI bounce
-    use_ob_arm : bool
-        If True, arm on Bullish Order Block
+    KEY IMPROVEMENT IN CCI ARM:
+    - Check for Lower Highs/Lows (reject strong downtrends)
+    - Price must be at support level
+    - Stochastic must confirm oversold
+    - Don't bounce twice at same level (whipsaw protection)
     """
 
     import numpy as np
     import pandas as pd
     import pandas_ta as ta
 
-    print("=" * 80)
-    print("  FILTERED CCI + STOCHASTIC REVERSAL + ORDER BLOCK")
+    print("=" * 100)
+    print("  FILTERED CCI + STOCHASTIC REVERSAL + ORDER BLOCK ARMING (v4.0 - CCI IMPROVED)")
     print(f"  SYMBOL : {symbol}")
     print(f"  CCI ARM: {use_cci_arm} | OB ARM: {use_ob_arm}")
-    print("=" * 80)
+    print("=" * 100)
 
     close = data['Close']
     high = data['High']
@@ -1094,174 +1093,463 @@ def super_trend(symbol, data, use_llm=False, use_cci_arm=False, use_ob_arm=True)
     open_ = data['Open']
     n = len(data)
 
-    # ── indicators ────────────────────────────────────────────
+    # ────────────────────────────────────────────────────────────
+    # CALCULATE INDICATORS
+    # ────────────────────────────────────────────────────────────
     stoch = ta.stoch(high, low, close, 14, 3, 3)
     data['Stoch_K'] = stoch['STOCHk_14_3_3']
     data['Stoch_D'] = stoch['STOCHd_14_3_3']
     data['CCI'] = calculate_cci(data['High'], data['Low'], data['Close'], length=20)
 
-    # ── ORDER BLOCK DETECTION ─────────────────────────────────
-    data = calculate_order_blocks(data)
+    # ────────────────────────────────────────────────────────────
+    # ORDER BLOCK DETECTION
+    # ────────────────────────────────────────────────────────────
+    ob_df = calculate_order_blocks(data)
+
+    ob_cols = [
+        'ob_bullish',
+        'ob_bearish',
+        'ob_top',
+        'ob_bottom',
+        'ob_volume',
+        'ob_strength',
+        'ob_mitigated'
+    ]
+
+    for col in ob_cols:
+        if col in ob_df.columns:
+            data[col] = ob_df[col]
 
     K = data['Stoch_K']
     D = data['Stoch_D']
     CCI = data['CCI']
-    OB_Bullish = data['ob_bullish']
+    OB_Bullish = data.get('ob_bullish', pd.Series(False, index=data.index))
 
-    # ── storage ───────────────────────────────────────────────
-    signal = np.zeros(n, dtype=int)
-    signal_reason = [''] * n
-    signal_grade = [''] * n
-    armed_source = [''] * n  # ← Track which source armed: CCI or OB
-
-    # ── settings ──────────────────────────────────────────────
+    # ────────────────────────────────────────────────────────────
+    # SETTINGS & PARAMETERS
+    # ────────────────────────────────────────────────────────────
     CCI_ARM_LEVEL = -100
     CCI_EXTREME_LEVEL = -200
     CCI_FLAG_TTL = 5
     STOCH_BUY_LEVEL = 15
-    STOCH_OB_LEVEL = 70
+    STOCH_UPTREND_THRESHOLD = 50
     COOLDOWN_BARS = 3
-    OB_TTL = 10  # ← OB valid for 10 bars
 
-    last_fired_bar = -999
+    # ✅ NEW PARAMETERS FOR CCI TREND FILTERING
+    DOWNTREND_LOOKBACK = 10  # Check last 10 bars for trend
+    MIN_BOUNCE_AFTER_LL = 5  # Bars since lower low before we can buy
 
-    # ── arm state ─────────────────────────────────────────────
+    # ────────────────────────────────────────────────────────────
+    # STORAGE ARRAYS
+    # ────────────────────────────────────────────────────────────
+    signal = np.zeros(n, dtype=int)
+    signal_reason = [''] * n
+    signal_grade = [''] * n
+    armed_source = [''] * n
+
+    ob_attempts = []
+    signal_confirmations = []
+    ob_skipped = []
+    cci_skipped_reasons = []  # ✅ Track CCI rejections
+
+    # ────────────────────────────────────────────────────────────
+    # STATE VARIABLES
+    # ────────────────────────────────────────────────────────────
     armed = False
     armed_bar = -1
     armed_date = None
     armed_cci = 0.0
-    armed_source_type = ""  # ← Track: "CCI" or "OB"
+    armed_source_type = ""
+    armed_k = 0.0
+    armed_d = 0.0
 
-    # ── main loop ─────────────────────────────────────────────
+    last_fired_bar = -999
+    last_cci_bounce_bar = -999  # ✅ Track CCI bounces to avoid whipsaws
+
+    # ────────────────────────────────────────────────────────────
+    # MAIN LOOP
+    # ────────────────────────────────────────────────────────────
     for i in range(5, n):
 
-        k_cur = K.iloc[i];
+        # Get current values
+        k_cur = K.iloc[i]
         k_prev = K.iloc[i-1]
-        d_cur = D.iloc[i];
+        d_cur = D.iloc[i]
         d_prev = D.iloc[i-1]
-        cci_cur = CCI.iloc[i];
+        cci_cur = CCI.iloc[i]
         cci_prev = CCI.iloc[i-1]
         ob_bullish_cur = OB_Bullish.iloc[i]
         dt_cur = data.index[i]
+        price_cur = close.iloc[i]
 
-        if any(pd.isna(v) for v in [
-            k_cur, d_cur, k_prev, d_prev, cci_cur, cci_prev
-        ]):
+        # Skip if any NaN values
+        if any(pd.isna(v) for v in [k_cur, d_cur, k_prev, d_prev, cci_cur, cci_prev]):
             continue
 
-        # ── current session date ──────────────────────────────
+        # Get current date
         if hasattr(dt_cur, 'date'):
             curr_date = dt_cur.date()
         else:
             curr_date = pd.Timestamp(dt_cur).date()
 
-        # ── RESET FLAG AT SESSION OPEN ────────────────────────
+        # ────────────────────────────────────────────────────────
+        # SESSION RESET (new trading day)
+        # ────────────────────────────────────────────────────────
         if armed and armed_date is not None and curr_date != armed_date:
+            print(f"  🌅 SESSION RESET @ {dt_cur} | Armed flag cleared (new day)")
             armed = False
-            print(f"🌅 SESSION RESET @ {dt_cur} | armed flag cleared (new day)")
 
-        # ── cooldown ──────────────────────────────────────────
-        if (i-last_fired_bar) < COOLDOWN_BARS:
+        # ────────────────────────────────────────────────────────
+        # COOLDOWN CHECK
+        # ────────────────────────────────────────────────────────
+        bars_since_signal = i-last_fired_bar
+        if bars_since_signal < COOLDOWN_BARS:
             continue
 
-        # =====================================================
-        # STEP 1 — ARM (from CCI)
-        # =====================================================
+        # ════════════════════════════════════════════════════════
+        # STEP 1A: ARM FROM CCI (IMPROVED WITH TREND FILTERS)
+        # ════════════════════════════════════════════════════════
         if use_cci_arm and not armed:
-            if (
+
+            # ✅ CHECK 1: Basic CCI bounce condition
+            cci_bounce_condition = (
                     cci_prev < CCI_ARM_LEVEL and
                     cci_cur > cci_prev and
                     (cci_cur-cci_prev) >= 10 and
                     cci_prev < -100
-            ):
+            )
+
+            if cci_bounce_condition:
+
+                # ✅ CHECK 2: Is stock making lower highs/lows? (strong downtrend)
+                recent_lows = low.iloc[max(0, i-DOWNTREND_LOOKBACK):i].min()
+                recent_highs = high.iloc[max(0, i-DOWNTREND_LOOKBACK):i].max()
+
+                is_making_lower_high = (
+                        low.iloc[i] < recent_lows and
+                        high.iloc[i] < recent_highs
+                )
+
+                if is_making_lower_high:
+                    cci_skipped_reasons.append({
+                        'time': dt_cur,
+                        'reason': 'Making lower high/low (strong downtrend)',
+                        'price': price_cur,
+                        'cci': cci_cur,
+                        'k': k_cur
+                    })
+                    print(
+                        f"  ⏭️  SKIP [CCI] @ {dt_cur} "
+                        f"| Making LOWER HIGH/LOW (downtrend) "
+                        f"| Price={price_cur:.2f}, CCI={cci_cur:.1f}"
+                    )
+                    continue
+
+                # ✅ CHECK 3: Is price at support/reversal point?
+                price_breaking_above = price_cur > recent_highs
+                price_near_support = price_cur < (recent_lows+(recent_lows * 0.02))
+
+                if not (price_breaking_above or price_near_support):
+                    cci_skipped_reasons.append({
+                        'time': dt_cur,
+                        'reason': 'Price not at support or breaking above',
+                        'price': price_cur,
+                        'cci': cci_cur,
+                        'k': k_cur
+                    })
+                    print(
+                        f"  ⏭️  SKIP [CCI] @ {dt_cur} "
+                        f"| Price not at reversal point "
+                        f"| Price={price_cur:.2f} vs Support={recent_lows:.2f}"
+                    )
+                    continue
+
+                # ✅ CHECK 4: Stochastic also oversold?
+                stoch_oversold = k_cur < 30 and d_cur < 30
+                stoch_bouncing = k_cur > k_prev
+
+                if not (stoch_oversold and stoch_bouncing):
+                    cci_skipped_reasons.append({
+                        'time': dt_cur,
+                        'reason': 'Stochastic not confirming oversold',
+                        'price': price_cur,
+                        'cci': cci_cur,
+                        'k': k_cur,
+                        'd': d_cur
+                    })
+                    print(
+                        f"  ⏭️  SKIP [CCI] @ {dt_cur} "
+                        f"| Stoch not oversold (K={k_cur:.1f}, D={d_cur:.1f})"
+                    )
+                    continue
+
+                # ✅ CHECK 5: Don't bounce twice at same level (whipsaw protection)
+                bars_since_last_bounce = i-last_cci_bounce_bar
+                if bars_since_last_bounce < 10:
+                    cci_skipped_reasons.append({
+                        'time': dt_cur,
+                        'reason': f'Bounced {bars_since_last_bounce} bars ago (too soon)',
+                        'price': price_cur,
+                        'cci': cci_cur,
+                        'k': k_cur
+                    })
+                    print(
+                        f"  ⏭️  SKIP [CCI] @ {dt_cur} "
+                        f"| Already bounced {bars_since_last_bounce} bars ago"
+                    )
+                    continue
+
+                # ✅ ALL CHECKS PASSED - ARM!
                 armed = True
                 armed_bar = i
                 armed_date = curr_date
                 armed_cci = cci_prev
                 armed_source_type = "CCI"
+                armed_k = k_cur
+                armed_d = d_cur
+                last_cci_bounce_bar = i
 
                 print(
-                    f"🔔 ARMED [CCI] @ {dt_cur} | "
-                    f"CCI {cci_prev:.1f} → {cci_cur:.1f}"
+                    f"  🔔 ARMED [CCI] @ {dt_cur} "
+                    f"| CCI: {cci_prev:.1f} → {cci_cur:.1f} "
+                    f"| Price: {price_cur:.2f} (at support) "
+                    f"| K={k_cur:.1f}, D={d_cur:.1f} (oversold) "
+                    f"| [TREND-FILTERED]"
                 )
 
-        # =====================================================
-        # STEP 1B — ARM (from ORDER BLOCK)
-        # =====================================================
+        # ════════════════════════════════════════════════════════
+        # STEP 1B: ARM FROM ORDER BLOCK (UNCHANGED)
+        # ════════════════════════════════════════════════════════
         if use_ob_arm and not armed:
             if ob_bullish_cur:
-                armed = True
-                armed_bar = i
-                armed_date = curr_date
-                armed_cci = cci_cur
-                armed_source_type = "OB"
 
-                print(
-                    f"🔔 ARMED [OB] @ {dt_cur} | "
-                    f"Bullish Order Block detected | CCI={cci_cur:.1f}"
+                # ✅ CHECK: Is K already in uptrend? (skip if yes)
+                k_in_uptrend = (k_cur > d_cur) and (k_cur > STOCH_UPTREND_THRESHOLD)
+
+                # ✅ CHECK: Is K too low? (dead zone)
+                k_valid_range = k_cur > 5
+
+                can_arm = (not k_in_uptrend) and k_valid_range
+
+                if can_arm:
+                    armed = True
+                    armed_bar = i
+                    armed_date = curr_date
+                    armed_cci = cci_cur
+                    armed_source_type = "OB"
+                    armed_k = k_cur
+                    armed_d = d_cur
+
+                    # Store OB attempt
+                    ob_attempts.append({
+                        'bar': i,
+                        'time': dt_cur,
+                        'price': price_cur,
+                        'cci': cci_cur,
+                        'k': k_cur,
+                        'd': d_cur,
+                        'status': 'ARMED'
+                    })
+
+                    print(
+                        f"  🔔 ARMED [OB] @ {dt_cur} "
+                        f"| Price: {price_cur:.2f} "
+                        f"| CCI: {cci_cur:.1f} "
+                        f"| K={k_cur:.1f}, D={d_cur:.1f}"
+                    )
+                else:
+                    # ✅ Log why we skipped
+                    skip_reasons = []
+                    if k_in_uptrend:
+                        skip_reasons.append(
+                            f"K in uptrend ({k_cur:.1f} > {STOCH_UPTREND_THRESHOLD}, above D={d_cur:.1f})"
+                        )
+                    if not k_valid_range:
+                        skip_reasons.append(f"K too low ({k_cur:.1f})")
+
+                    reason = " | ".join(skip_reasons)
+
+                    ob_skipped.append({
+                        'time': dt_cur,
+                        'price': price_cur,
+                        'k': k_cur,
+                        'd': d_cur,
+                        'reason': reason
+                    })
+
+                    print(
+                        f"  ⏭️  SKIPPED [OB] @ {dt_cur} "
+                        f"| {reason}"
+                    )
+
+        # ────────────────────────────────────────────────────────
+        # CHECK IF ARM EXPIRED (TTL)
+        # ────────────────────────────────────────────────────────
+        bars_since_arm = i-armed_bar
+
+        if armed and bars_since_arm > CCI_FLAG_TTL:
+
+            # ✅ SIMPLIFIED: Just check if K > D and K > BUY_LEVEL
+            k_above_d = k_cur > d_cur
+            k_level_ok = k_cur > STOCH_BUY_LEVEL
+
+            expire_reasons = []
+
+            if not k_above_d:
+                expire_reasons.append(
+                    f"K below D (K={k_cur:.1f} < D={d_cur:.1f})"
+                )
+            if not k_level_ok:
+                expire_reasons.append(
+                    f"K too low ({k_cur:.1f} < {STOCH_BUY_LEVEL})"
                 )
 
-        # ── expire TTL ────────────────────────────────────────
-        if armed and (i-armed_bar) > CCI_FLAG_TTL:
-            armed = False
-            print(f"⌛ EXPIRED @ {dt_cur} | no stoch confirm in time")
+            reason_str = " | ".join(expire_reasons) if expire_reasons else "Stoch didn't confirm"
 
-        # =====================================================
-        # STEP 2 — CONFIRM
-        #
-        # Same-bar allowed ONLY when CCI was extreme (<-200)
-        # at arm time — gap-open reversals are genuine.
-        # Normal arms require at least 1 bar separation.
-        # =====================================================
+            armed = False
+            print(
+                f"  ⌛ EXPIRED [TTL] @ {dt_cur} (armed for {bars_since_arm} bars) "
+                f"| {reason_str}"
+            )
+
+        # ════════════════════════════════════════════════════════
+        # STEP 2: CONFIRM WITH STOCHASTIC
+        # ════════════════════════════════════════════════════════
         if armed:
 
+            # Check if same-bar confirmation allowed
             extreme_arm = armed_cci < CCI_EXTREME_LEVEL
             min_bar_ok = (i > armed_bar) or extreme_arm
 
-            k_crossed_above_d = (k_prev <= d_prev) and (k_cur > d_cur)
+            # ✅ SIMPLIFIED CONFIRMATION:
+            # Just need K > D and K > STOCH_BUY_LEVEL
+            # (Removed overbought condition)
+            k_above_d = k_cur > d_cur
             k_above_buy_level = k_cur > STOCH_BUY_LEVEL
-            k_not_overbought = k_cur < STOCH_OB_LEVEL
 
-            if (
+            all_confirmed = (
                     min_bar_ok and
-                    k_crossed_above_d and
-                    k_above_buy_level and
-                    k_not_overbought
-            ):
+                    k_above_d and
+                    k_above_buy_level
+            )
+
+            if all_confirmed:
+                # ════════════════════════════════════════════════════
+                # SIGNAL FIRED! 🟢
+                # ════════════════════════════════════════════════════
                 signal[i] = 1
                 signal_reason[i] = (
-                    f"[{armed_source_type}] + K_CROSS_D | "
+                    f"[{armed_source_type}] + K>D | "
                     f"K={k_cur:.1f} D={d_cur:.1f} CCI={cci_cur:.1f}"
                 )
                 signal_grade[i] = "★★★★★"
                 armed_source[i] = armed_source_type
                 last_fired_bar = i
-                armed = False
+
+                # Store confirmation
+                signal_confirmations.append({
+                    'bar': armed_bar,
+                    'confirm_bar': i,
+                    'time_armed': data.index[armed_bar],
+                    'time_confirmed': dt_cur,
+                    'bars_to_confirm': bars_since_arm,
+                    'source': armed_source_type,
+                    'k': k_cur,
+                    'd': d_cur
+                })
 
                 flag = "EXTREME" if extreme_arm else "NORMAL"
                 print(
-                    f"🟢 BUY [{armed_source_type}] @ {dt_cur} | "
-                    f"[{flag}] K crossed D · K={k_cur:.1f}"
+                    f"  🟢 BUY [{armed_source_type}] @ {dt_cur} "
+                    f"| [{flag}] K > D "
+                    f"| K={k_cur:.1f}, D={d_cur:.1f}, CCI={cci_cur:.1f} "
+                    f"| Confirmed in {bars_since_arm} bar(s)"
                 )
 
-    # ── store results ─────────────────────────────────────────
+                armed = False
+
+    # ────────────────────────────────────────────────────────────
+    # STORE RESULTS IN DATAFRAME
+    # ────────────────────────────────────────────────────────────
+    if 'st_sig' not in data.columns:
+        data['st_sig'] = 0
+
     data['st_sig'] = signal
     data['st_sig_raw'] = signal
     data['signal_reason'] = signal_reason
     data['signal_grade'] = signal_grade
     data['armed_source'] = armed_source
 
-    print("=" * 80)
-    print(f"TOTAL SIGNALS GENERATED: {int(np.sum(signal))}")
-    if armed_source.count('CCI') > 0:
-        print(f"  - CCI Armed: {armed_source.count('CCI')}")
-    if armed_source.count('OB') > 0:
-        print(f"  - OB Armed:  {armed_source.count('OB')}")
-    print("=" * 80)
-    print("SUPER TREND RETURNING")
-    print(data.columns)
+    # ────────────────────────────────────────────────────────────
+    # SUMMARY REPORT
+    # ────────────────────────────────────────────────────────────
+    print("\n"+"=" * 100)
+    print("  SUMMARY REPORT")
+    print("=" * 100)
+
+    total_signals = int(np.sum(signal))
+    total_cci_arms = armed_source.count('CCI')
+    total_ob_arms = armed_source.count('OB')
+
+    print(f"\n📊 SIGNALS GENERATED: {total_signals}")
+    if total_cci_arms > 0:
+        print(f"   • CCI Armed & Confirmed: {total_cci_arms}")
+    if total_ob_arms > 0:
+        print(f"   • OB Armed & Confirmed:  {total_ob_arms}")
+
+    print(f"\n📋 CCI STATISTICS:")
+    print(f"   • CCI Skipped (downtrend filters): {len(cci_skipped_reasons)}")
+
+    if len(cci_skipped_reasons) > 0:
+        print(f"\n⏭️  WHY CCI SIGNALS WERE REJECTED:")
+        reasons_count = {}
+        for skip in cci_skipped_reasons:
+            reason = skip['reason']
+            reasons_count[reason] = reasons_count.get(reason, 0)+1
+
+        for reason, count in sorted(reasons_count.items(), key=lambda x: x[1], reverse=True):
+            print(f"   • {reason}: {count} times")
+
+    print(f"\n📋 ORDER BLOCK STATISTICS:")
+    total_ob_detected = len(ob_attempts)+len(ob_skipped)
+    print(f"   • Total OB Detected: {total_ob_detected}")
+    print(f"   • OB Skipped (uptrend): {len(ob_skipped)}")
+    print(f"   • OB Armed: {len(ob_attempts)}")
+    print(f"   • OB Confirmed: {len([x for x in signal_confirmations if x['source'] == 'OB'])}")
+
+    if len(ob_attempts) > 0:
+        confirm_rate = (len([x for x in signal_confirmations if x['source'] == 'OB']) / len(ob_attempts)) * 100
+        print(f"   • OB Armed-to-Confirmed Rate: {confirm_rate:.1f}%")
+
+    if total_ob_detected > 0:
+        overall_rate = (len([x for x in signal_confirmations if x['source'] == 'OB']) / total_ob_detected) * 100
+        print(f"   • OB Overall Success Rate: {overall_rate:.1f}%")
+
+    if len(signal_confirmations) > 0:
+        print(f"\n📈 CONFIRMED SIGNALS:")
+        for conf in signal_confirmations[:15]:
+            print(
+                f"   • {conf['time_armed']} → {conf['time_confirmed']} "
+                f"| Source: {conf['source']} | Bars: {conf['bars_to_confirm']} "
+                f"| K={conf['k']:.1f}, D={conf['d']:.1f}"
+            )
+        if len(signal_confirmations) > 15:
+            print(f"   ... and {len(signal_confirmations)-15} more")
+
+    if len(ob_skipped) > 0:
+        print(f"\n⏭️  SKIPPED OB ATTEMPTS (Not Valid):")
+        for skip in ob_skipped[:10]:
+            print(
+                f"   • {skip['time']} | K={skip['k']:.1f}, D={skip['d']:.1f} "
+                f"| {skip['reason']}"
+            )
+        if len(ob_skipped) > 10:
+            print(f"   ... and {len(ob_skipped)-10} more")
+
+    print("\n"+"=" * 100)
 
     return data
+
 
 
 
