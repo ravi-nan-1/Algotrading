@@ -1558,7 +1558,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     continue
 
                 data_fut.drop(data_fut.tail(1).index, inplace=True)
-                super_trend(i, data_fut)
+                data_fut =super_trend(i, data_fut)
                 data_list[i] = data_fut
 
                 super_Trend_Long = pd.read_excel(Long_Trade_File)
