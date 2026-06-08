@@ -1177,7 +1177,8 @@ def super_trend(symbol, data, use_llm=False, use_ob_arm=True):
             armed_source[i] = "OB"
             last_fired_bar = i
             armed = False
-
+    if 'st_sig' not in data.columns:
+        data['st_sig'] = 0
     data['st_sig'] = signal
     data['st_sig_raw'] = signal
     data['signal_reason'] = signal_reason
