@@ -860,6 +860,14 @@ def calculate_order_blocks(
             else:
                 df[col] = np.nan
 
+    if 'ob_detected_time' in df.columns:
+     df['ob_detected_time'] = pd.to_datetime(
+        df['ob_detected_time'],
+        errors='coerce'
+     )
+    else:
+       df['ob_detected_time'] = pd.NaT
+
     # ====================== FIX-1: Volume percentile frozen via expanding window ======================
     # Each bar's percentile is its rank within [bar_0 .. bar_i] — the only history
     # visible at that moment.  Previously rank() used the full df, so the same bar
