@@ -1160,8 +1160,24 @@ def super_trend(symbol, data, use_llm=False, use_ob_arm=True):
             continue
 
         if use_ob_arm and not armed and ob_bullish_cur:
-            k_in_uptrend = (k_cur > d_cur) and (k_cur > STOCH_UPTREND_THRESHOLD)
-            if not k_in_uptrend and k_cur > 5:
+
+            k_in_uptrend = (
+                k_cur > d_cur and
+                k_cur > STOCH_UPTREND_THRESHOLD
+            )
+        
+            # Buy immediately if stochastic already bullish
+            if k_in_uptrend:
+                signal[i] = 1
+                signal_reason[i] = (
+                    f"[OB DIRECT] K={k_cur:.1f} D={d_cur:.1f}"
+                )
+                signal_grade[i] = "★★★★★"
+                armed_source[i] = "OB_DIRECT"
+                last_fired_bar = i
+        
+            # Otherwise arm and wait for confirmation
+            elif k_cur > 5:
                 armed = True
                 armed_bar = i
                 armed_date = curr_date
