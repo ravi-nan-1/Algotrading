@@ -1129,7 +1129,7 @@ def super_trend(symbol, data, use_llm=False, use_ob_arm=True):
     OB_Bullish = data.get('ob_bullish', pd.Series(False, index=data.index))
 
     STOCH_BUY_LEVEL = 15
-    STOCH_UPTREND_THRESHOLD = 90
+    STOCH_UPTREND_THRESHOLD = 20
     COOLDOWN_BARS = 3
     OB_FLAG_TTL = 5
 
