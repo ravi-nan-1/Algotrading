@@ -1127,11 +1127,15 @@ def super_trend(symbol, data, use_llm=False, use_ob_arm=True):
     K = data['Stoch_K']
     D = data['Stoch_D']
     OB_Bullish = data.get('ob_bullish', pd.Series(False, index=data.index))
+    OB_Bearish = data.get('ob_bearish', pd.Series(False, index=data.index))  # ✅ Added
+    OB_Top = data.get('ob_top', pd.Series(np.nan, index=data.index))  # ✅ Added
+    OB_Bottom = data.get('ob_bottom', pd.Series(np.nan, index=data.index))  # ✅ Added
 
     STOCH_BUY_LEVEL = 15
     STOCH_UPTREND_THRESHOLD = 20
     COOLDOWN_BARS = 3
     OB_FLAG_TTL = 5
+    K_OVERBOUGHT = 80
 
     signal = np.zeros(n, dtype=int)
     signal_reason = [''] * n
@@ -1147,12 +1151,30 @@ def super_trend(symbol, data, use_llm=False, use_ob_arm=True):
         k_cur = K.iloc[i]
         d_cur = D.iloc[i]
         ob_bullish_cur = OB_Bullish.iloc[i]
+        ob_bearish_cur = OB_Bearish.iloc[i]  # ✅ Added
+        ob_top = OB_Top.iloc[i]  # ✅ Added
+        ob_bottom = OB_Bottom.iloc[i]  # ✅ Added
         dt_cur = data.index[i]
+        price_cur = close.iloc[i]  # ✅ Get current price
 
         if pd.isna(k_cur) or pd.isna(d_cur):
             continue
 
+        # Skip if K > 80 (OVERBOUGHT)
+        if k_cur > K_OVERBOUGHT:
+            continue
+
         curr_date = dt_cur.date() if hasattr(dt_cur, 'date') else pd.Timestamp(dt_cur).date()
+
+        # ✅ LOG BULLISH OB FOUND
+        if ob_bullish_cur and not pd.isna(ob_bottom):
+            tele_msg(
+                f"✅ BULLISH OB FOUND | Symbol: {symbol} | Price: {price_cur:.2f} | OB Level: {ob_bottom:.2f} | DateTime: {dt_cur}")
+
+        # ✅ LOG BEARISH OB FOUND
+        if ob_bearish_cur and not pd.isna(ob_top):
+            tele_msg(
+                f"⚠️ BEARISH OB FOUND | Symbol: {symbol} | Price: {price_cur:.2f} | OB Level: {ob_top:.2f} | DateTime: {dt_cur}")
 
         if armed and armed_date and curr_date != armed_date:
             armed = False
@@ -1162,10 +1184,10 @@ def super_trend(symbol, data, use_llm=False, use_ob_arm=True):
         if use_ob_arm and not armed and ob_bullish_cur:
 
             k_in_uptrend = (
-                k_cur > d_cur and
-                k_cur > STOCH_UPTREND_THRESHOLD
+                    k_cur > d_cur and
+                    k_cur > STOCH_UPTREND_THRESHOLD
             )
-        
+
             # Buy immediately if stochastic already bullish
             if k_in_uptrend:
                 signal[i] = 1
@@ -1175,7 +1197,10 @@ def super_trend(symbol, data, use_llm=False, use_ob_arm=True):
                 signal_grade[i] = "★★★★★"
                 armed_source[i] = "OB_DIRECT"
                 last_fired_bar = i
-        
+                # ✅ LOG TRADE SIGNAL
+                print(
+                    f"🔔 BUY SIGNAL GENERATED | Symbol: {symbol} | Price: {price_cur:.2f} | DateTime: {dt_cur} | Reason: {signal_reason[i]}")
+
             # Otherwise arm and wait for confirmation
             elif k_cur > 5:
                 armed = True
@@ -1193,8 +1218,10 @@ def super_trend(symbol, data, use_llm=False, use_ob_arm=True):
             armed_source[i] = "OB"
             last_fired_bar = i
             armed = False
+            # ✅ LOG TRADE SIGNAL
+            print(
+                f"🔔 BUY SIGNAL GENERATED | Symbol: {symbol} | Price: {price_cur:.2f} | DateTime: {dt_cur} | Reason: {signal_reason[i]}")
 
-   
     data['st_sig'] = signal
     data['st_sig_raw'] = signal
     data['signal_reason'] = signal_reason
@@ -1206,7 +1233,6 @@ def super_trend(symbol, data, use_llm=False, use_ob_arm=True):
         data['st_sig'] = 0
 
     return data
-
 
 
 
