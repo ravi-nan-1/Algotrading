@@ -1168,12 +1168,12 @@ def super_trend(symbol, data, use_llm=False, use_ob_arm=True):
 
         # ✅ LOG BULLISH OB FOUND
         if ob_bullish_cur and not pd.isna(ob_bottom):
-            print(
+            tele_msg(
                 f"✅ BULLISH OB FOUND | Symbol: {symbol} | Price: {price_cur:.2f} | OB Level: {ob_bottom:.2f} | DateTime: {dt_cur}")
 
         # ✅ LOG BEARISH OB FOUND
         if ob_bearish_cur and not pd.isna(ob_top):
-            print(
+            tele_msg(
                 f"⚠️ BEARISH OB FOUND | Symbol: {symbol} | Price: {price_cur:.2f} | OB Level: {ob_top:.2f} | DateTime: {dt_cur}")
 
         if armed and armed_date and curr_date != armed_date:
@@ -1233,6 +1233,7 @@ def super_trend(symbol, data, use_llm=False, use_ob_arm=True):
         data['st_sig'] = 0
 
     return data
+
 
 
 
