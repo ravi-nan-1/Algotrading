@@ -1173,7 +1173,7 @@ def super_trend(symbol, data, use_llm=False, use_ob_arm=True):
 
         # ✅ LOG BEARISH OB FOUND
         if ob_bearish_cur and not pd.isna(ob_top):
-            Peint(
+            Print(
                 f"⚠️ BEARISH OB FOUND | Symbol: {symbol} | Price: {price_cur:.2f} | OB Level: {ob_top:.2f} | DateTime: {dt_cur}")
 
         if armed and armed_date and curr_date != armed_date:
