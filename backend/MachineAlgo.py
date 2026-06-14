@@ -807,7 +807,7 @@ def calculate_order_blocks(
         low_column: str = "Low",
         close_column: str = "Close",
         volume_column: str = "Volume",
-        min_volume_percentile: float = 70,
+        min_volume_percentile: float = 30,
         check_mitigation: bool = True,
         mitigation_threshold: float = 0.6,
         lookback_periods: int = 10,
@@ -816,7 +816,7 @@ def calculate_order_blocks(
         displacement_atr_multiplier: float = 1.5,
         bos_lookahead: int = 10,
         ema_fast_period: int = 9,
-        ema_slow_period: int = 21,
+        ema_slow_period: int = 15,
         use_ema_filter: bool = True,
         use_stoch_filter: bool = False,
         stoch_length: int = 14,
@@ -1148,6 +1148,7 @@ def calculate_order_blocks(
     df = df.drop(columns=drop_cols, errors='ignore')
 
     return df
+
 
 
 
