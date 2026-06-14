@@ -807,24 +807,40 @@ def calculate_order_blocks(
         low_column: str = "Low",
         close_column: str = "Close",
         volume_column: str = "Volume",
-        min_volume_percentile: float = 60,
+        min_volume_percentile: float = 70,
         check_mitigation: bool = True,
         mitigation_threshold: float = 0.6,
         lookback_periods: int = 10,
-        use_wicks: bool = True
+        use_wicks: bool = True,
+        atr_length: int = 14,
+        displacement_atr_multiplier: float = 1.5,
+        bos_lookahead: int = 10,
+        ema_fast_period: int = 9,
+        ema_slow_period: int = 21,
+        use_ema_filter: bool = True,
+        use_stoch_filter: bool = False,
+        stoch_length: int = 14,
+        stoch_smooth: int = 3,
+        stoch_threshold: float = 30.0
 ) -> pd.DataFrame:
     """
-    TRUE NON-REPAINTING ORDER BLOCK DETECTOR - LIVE CANDLE-BY-CANDLE FIXED
-    Same detection logic & accuracy. Fixed mitigation + frozen percentile.
+    NON-REPAINTING ORDER BLOCK DETECTOR
+    ----------------------------------
+    Core logic:
+      1. Detect confirmed swings
+      2. Detect displacement candles
+      3. Build impulse legs from consecutive displacement candles
+      4. Determine impulse direction from whole leg:
+            Close[last_displacement] - Open[first_displacement]
+      5. For each impulse, check whether price breaks the latest confirmed
+         swing available AS OF each candle in the BOS window
+      6. If BOS occurs, mark the last opposite candle before impulse start as OB
 
-    Fixes vs previous version (detection logic unchanged):
-      FIX-1: Volume percentile now computed as expanding-window rank so each
-              bar's percentile is frozen to the history visible AT that bar,
-              not the full dataset — eliminates live/backtest divergence.
-      FIX-2: already_tagged stores datetime labels (not positional ints) so
-              it stays correct when df is re-indexed or appended incrementally.
-      FIX-3: Swing detection skips the last `swing_strength` bars entirely to
-              avoid partial right-window confirmation on live tail candles.
+    Live-safe fixes:
+      - Expanding/frozen volume percentile
+      - No future leakage in swing usage
+      - No duplicate re-evaluation of the same impulse in one run
+      - Skip unfinished impulse on the right edge
     """
 
     df = df.copy()
@@ -838,18 +854,25 @@ def calculate_order_blocks(
 
     df = df.sort_index()
 
-    col_map = {open_column: 'Open', high_column: 'High', low_column: 'Low',
-               close_column: 'Close', volume_column: 'Volume'}
+    col_map = {
+        open_column: 'Open',
+        high_column: 'High',
+        low_column: 'Low',
+        close_column: 'Close',
+        volume_column: 'Volume'
+    }
     df = df.rename(columns=col_map)
 
     df['is_bullish_candle'] = df['Close'] > df['Open']
     df['is_bearish_candle'] = df['Close'] < df['Open']
 
-    # ====================== STATE PRESERVATION (Live Safe) ======================
-    state_cols = ['volume_percentile_static', 'swing_high', 'swing_low',
-                  'ob_bullish_detected', 'ob_bearish_detected',
-                  'ob_bullish_mitigated', 'ob_bearish_mitigated',
-                  'ob_top', 'ob_bottom', 'ob_volume', 'ob_strength', 'ob_detected_time']
+    # ====================== STATE PRESERVATION ======================
+    state_cols = [
+        'volume_percentile_static', 'swing_high', 'swing_low',
+        'ob_bullish_detected', 'ob_bearish_detected',
+        'ob_bullish_mitigated', 'ob_bearish_mitigated',
+        'ob_top', 'ob_bottom', 'ob_volume', 'ob_strength', 'ob_detected_time'
+    ]
 
     for col in state_cols:
         if col not in df.columns:
@@ -860,131 +883,220 @@ def calculate_order_blocks(
             else:
                 df[col] = np.nan
 
-    if 'ob_detected_time' in df.columns:
-     df['ob_detected_time'] = pd.to_datetime(
-        df['ob_detected_time'],
-        errors='coerce'
-     )
-    else:
-       df['ob_detected_time'] = pd.NaT
+    df['ob_detected_time'] = pd.to_datetime(df['ob_detected_time'], errors='coerce')
 
-    # ====================== FIX-1: Volume percentile frozen via expanding window ======================
-    # Each bar's percentile is its rank within [bar_0 .. bar_i] — the only history
-    # visible at that moment.  Previously rank() used the full df, so the same bar
-    # would get a different percentile as new candles arrived → live/backtest gap.
+    # ====================== FROZEN VOLUME PERCENTILE ======================
     unprocessed_mask = pd.isna(df['volume_percentile_static'])
     if unprocessed_mask.any() and df['Volume'].sum() > 0:
         vol = df['Volume']
-        for i in df.index[unprocessed_mask]:
-            loc = df.index.get_loc(i)
+        for idx in df.index[unprocessed_mask]:
+            loc = df.index.get_loc(idx)
             hist = vol.iloc[:loc + 1]
-            # percentile = fraction of historical bars with volume <= current bar
-            df.loc[i, 'volume_percentile_static'] = (hist <= hist.iloc[-1]).mean() * 100
+            df.loc[idx, 'volume_percentile_static'] = (hist <= hist.iloc[-1]).mean() * 100
+
+    # ====================== DISPLACEMENT FILTER ======================
+    df['atr'] = ta.atr(df['High'], df['Low'], df['Close'], length=atr_length)
+    df['body_size'] = (df['Close'] - df['Open']).abs()
+
+    df['is_displacement'] = (
+        (df['body_size'] > df['atr'] * displacement_atr_multiplier) &
+        (df['volume_percentile_static'] >= min_volume_percentile)
+    )
+
+    # ====================== EMA TREND FILTER ======================
+    if use_ema_filter:
+        df['ema_fast'] = df['Close'].ewm(span=ema_fast_period, adjust=False).mean()
+        df['ema_slow'] = df['Close'].ewm(span=ema_slow_period, adjust=False).mean()
+        df['bullish_trend'] = df['ema_fast'] > df['ema_slow']
+        df['bearish_trend'] = df['ema_fast'] < df['ema_slow']
+    else:
+        df['bullish_trend'] = True
+        df['bearish_trend'] = True
+
+    # ====================== STOCH FILTER ======================
+    if use_stoch_filter:
+        rolling_low = df['Low'].rolling(stoch_length).min()
+        rolling_high = df['High'].rolling(stoch_length).max()
+        df['stoch_raw'] = 100 * (df['Close'] - rolling_low) / (rolling_high - rolling_low + 1e-10)
+        df['stoch_k'] = df['stoch_raw'].rolling(stoch_smooth).mean()
+        df['stoch_oversold'] = df['stoch_k'] < stoch_threshold
+        df['stoch_overbought'] = df['stoch_k'] > (100 - stoch_threshold)
+    else:
+        df['stoch_oversold'] = True
+        df['stoch_overbought'] = True
 
     # ====================== SWING STRUCTURE ======================
     swing_strength = max(3, lookback_periods // 3)
-
-    # FIX-3: Never process the last swing_strength bars — they lack a full
-    # right window and would get confirmed prematurely in live mode.
-    safe_end = len(df) - swing_strength  # exclusive upper bound
+    safe_end = len(df) - swing_strength  # exclusive
 
     for k in range(swing_strength, safe_end):
-        if pd.isna(df['swing_high'].iloc[k]) and pd.isna(df['swing_low'].iloc[k]):
+        if pd.isna(df['swing_high'].iloc[k]):
             left_highs = df['High'].iloc[k - swing_strength:k]
             right_highs = df['High'].iloc[k + 1:k + swing_strength + 1]
             if (df['High'].iloc[k] > left_highs.max() and
                     df['High'].iloc[k] >= right_highs.max()):
                 df.loc[df.index[k], 'swing_high'] = df['High'].iloc[k]
 
+        if pd.isna(df['swing_low'].iloc[k]):
             left_lows = df['Low'].iloc[k - swing_strength:k]
             right_lows = df['Low'].iloc[k + 1:k + swing_strength + 1]
             if (df['Low'].iloc[k] < left_lows.min() and
                     df['Low'].iloc[k] <= right_lows.min()):
                 df.loc[df.index[k], 'swing_low'] = df['Low'].iloc[k]
 
-    # ====================== FIX-2: already_tagged uses datetime labels ======================
-    # Previously stored positional ints — these silently shift when df is
-    # appended or re-indexed between live calls.
+    # ====================== NON-LEAKY "LATEST CONFIRMED SWING AS OF BAR i" ======================
+    # A swing at index s only becomes knowable once bar s + swing_strength has closed.
+    df['latest_confirmed_swing_high_asof'] = np.nan
+    df['latest_confirmed_swing_low_asof'] = np.nan
+
+    last_confirmed_high = np.nan
+    last_confirmed_low = np.nan
+
+    high_asof_col = df.columns.get_loc('latest_confirmed_swing_high_asof')
+    low_asof_col = df.columns.get_loc('latest_confirmed_swing_low_asof')
+
+    for i in range(len(df)):
+        available_swing_idx = i - swing_strength
+        if available_swing_idx >= 0:
+            if not np.isnan(df['swing_high'].iloc[available_swing_idx]):
+                last_confirmed_high = df['swing_high'].iloc[available_swing_idx]
+            if not np.isnan(df['swing_low'].iloc[available_swing_idx]):
+                last_confirmed_low = df['swing_low'].iloc[available_swing_idx]
+
+        df.iat[i, high_asof_col] = last_confirmed_high
+        df.iat[i, low_asof_col] = last_confirmed_low
+
+    # ====================== EXISTING TAGS ======================
     already_tagged = set(
         df.index[df['ob_bullish_detected'] | df['ob_bearish_detected']]
     )
 
-    # ====================== DETECT ORDER BLOCKS (logic unchanged) ======================
-    for i in range(lookback_periods, len(df)):
+    # ====================== HELPER ======================
+    def tag_order_block(ob_idx: int, bos_idx: int, side: str):
+        ob_label = df.index[ob_idx]
 
-        # --- Bullish OB ---
-        broke_swing_high = any(
-            not np.isnan(df['swing_high'].iloc[s]) and
-            df['Close'].iloc[i] > df['swing_high'].iloc[s]
-            for s in range(i - 1, max(i - lookback_periods * 4, swing_strength) - 1, -1)
-        )
-        if broke_swing_high:
-            for j in range(1, lookback_periods + 1):
-                ob_idx = i - j
-                if ob_idx < 0:
-                    continue
-                ob_label = df.index[ob_idx]           # ← datetime label (FIX-2)
-                if (ob_label in already_tagged or
-                        df['ob_bullish_detected'].iloc[ob_idx]):
-                    continue
-                if (df['is_bearish_candle'].iloc[ob_idx] and
-                        df['volume_percentile_static'].iloc[ob_idx] >= min_volume_percentile):
+        if ob_label in already_tagged:
+            return
 
-                    df.loc[ob_label, 'ob_bullish_detected'] = True
-                    df.loc[ob_label, 'ob_detected_time'] = df.index[i]
-                    if use_wicks:
-                        df.loc[ob_label, 'ob_top'] = df['High'].iloc[ob_idx]
-                        df.loc[ob_label, 'ob_bottom'] = df['Low'].iloc[ob_idx]
-                    else:
-                        df.loc[ob_label, 'ob_top'] = max(df['Open'].iloc[ob_idx],
-                                                         df['Close'].iloc[ob_idx])
-                        df.loc[ob_label, 'ob_bottom'] = min(df['Open'].iloc[ob_idx],
-                                                            df['Close'].iloc[ob_idx])
-                    df.loc[ob_label, 'ob_volume'] = df['Volume'].iloc[ob_idx]
-                    price_move = (abs(df['Close'].iloc[ob_idx] - df['Open'].iloc[ob_idx]) /
-                                  (df['Open'].iloc[ob_idx] + 1e-10))
-                    vol_score = df['volume_percentile_static'].iloc[ob_idx] / 100
-                    df.loc[ob_label, 'ob_strength'] = (price_move * 100 + vol_score) / 2
-                    already_tagged.add(ob_label)      # ← store label (FIX-2)
+        if side == 'bullish':
+            if df['ob_bullish_detected'].iloc[ob_idx]:
+                return
+            df.loc[ob_label, 'ob_bullish_detected'] = True
+        else:
+            if df['ob_bearish_detected'].iloc[ob_idx]:
+                return
+            df.loc[ob_label, 'ob_bearish_detected'] = True
+
+        df.loc[ob_label, 'ob_detected_time'] = df.index[bos_idx]
+
+        if use_wicks:
+            df.loc[ob_label, 'ob_top'] = df['High'].iloc[ob_idx]
+            df.loc[ob_label, 'ob_bottom'] = df['Low'].iloc[ob_idx]
+        else:
+            df.loc[ob_label, 'ob_top'] = max(df['Open'].iloc[ob_idx], df['Close'].iloc[ob_idx])
+            df.loc[ob_label, 'ob_bottom'] = min(df['Open'].iloc[ob_idx], df['Close'].iloc[ob_idx])
+
+        df.loc[ob_label, 'ob_volume'] = df['Volume'].iloc[ob_idx]
+
+        price_move = abs(df['Close'].iloc[ob_idx] - df['Open'].iloc[ob_idx]) / (df['Open'].iloc[ob_idx] + 1e-10)
+        vol_score = df['volume_percentile_static'].iloc[ob_idx] / 100
+        df.loc[ob_label, 'ob_strength'] = (price_move * 100 + vol_score) / 2
+
+        already_tagged.add(ob_label)
+
+    # ====================== IMPULSE-FIRST DETECTION ======================
+    processed_impulses = set()
+
+    i = 0
+    while i < len(df):
+
+        if not df['is_displacement'].iloc[i]:
+            i += 1
+            continue
+
+        # Build one full impulse leg once
+        impulse_start = i
+        impulse_end = i
+
+        while impulse_end + 1 < len(df) and df['is_displacement'].iloc[impulse_end + 1]:
+            impulse_end += 1
+
+        impulse_key = (df.index[impulse_start], df.index[impulse_end])
+        if impulse_key in processed_impulses:
+            i = impulse_end + 1
+            continue
+        processed_impulses.add(impulse_key)
+
+        # Extra live-safe rule:
+        # if the impulse is still open on the right edge, skip it for now.
+        if impulse_end == len(df) - 1:
+            break
+
+        # Determine direction from WHOLE impulse leg, not one candle
+        impulse_move = df['Close'].iloc[impulse_end] - df['Open'].iloc[impulse_start]
+
+        if impulse_move > 0:
+            impulse_direction = 'bullish'
+        elif impulse_move < 0:
+            impulse_direction = 'bearish'
+        else:
+            i = impulse_end + 1
+            continue
+
+        # Find the last opposite candle BEFORE impulse_start
+        ob_idx = None
+        search_start = impulse_start - 1
+        search_end = max(impulse_start - lookback_periods, 0) - 1
+
+        if impulse_direction == 'bullish':
+            for m in range(search_start, search_end, -1):
+                if df['is_bearish_candle'].iloc[m]:
+                    ob_idx = m
+                    break
+        else:
+            for m in range(search_start, search_end, -1):
+                if df['is_bullish_candle'].iloc[m]:
+                    ob_idx = m
                     break
 
-        # --- Bearish OB ---
-        broke_swing_low = any(
-            not np.isnan(df['swing_low'].iloc[s]) and
-            df['Close'].iloc[i] < df['swing_low'].iloc[s]
-            for s in range(i - 1, max(i - lookback_periods * 4, swing_strength) - 1, -1)
-        )
-        if broke_swing_low:
-            for j in range(1, lookback_periods + 1):
-                ob_idx = i - j
-                if ob_idx < 0:
-                    continue
-                ob_label = df.index[ob_idx]           # ← datetime label (FIX-2)
-                if (ob_label in already_tagged or
-                        df['ob_bearish_detected'].iloc[ob_idx]):
-                    continue
-                if (df['is_bullish_candle'].iloc[ob_idx] and
-                        df['volume_percentile_static'].iloc[ob_idx] >= min_volume_percentile):
+        if ob_idx is None:
+            i = impulse_end + 1
+            continue
 
-                    df.loc[ob_label, 'ob_bearish_detected'] = True
-                    df.loc[ob_label, 'ob_detected_time'] = df.index[i]
-                    if use_wicks:
-                        df.loc[ob_label, 'ob_top'] = df['High'].iloc[ob_idx]
-                        df.loc[ob_label, 'ob_bottom'] = df['Low'].iloc[ob_idx]
-                    else:
-                        df.loc[ob_label, 'ob_top'] = max(df['Open'].iloc[ob_idx],
-                                                         df['Close'].iloc[ob_idx])
-                        df.loc[ob_label, 'ob_bottom'] = min(df['Open'].iloc[ob_idx],
-                                                            df['Close'].iloc[ob_idx])
-                    df.loc[ob_label, 'ob_volume'] = df['Volume'].iloc[ob_idx]
-                    price_move = (abs(df['Close'].iloc[ob_idx] - df['Open'].iloc[ob_idx]) /
-                                  (df['Open'].iloc[ob_idx] + 1e-10))
-                    vol_score = df['volume_percentile_static'].iloc[ob_idx] / 100
-                    df.loc[ob_label, 'ob_strength'] = (price_move * 100 + vol_score) / 2
-                    already_tagged.add(ob_label)      # ← store label (FIX-2)
+        if df['volume_percentile_static'].iloc[ob_idx] < min_volume_percentile:
+            i = impulse_end + 1
+            continue
+
+        # BOS window:
+        # allow BOS during the impulse or shortly after it
+        bos_window_end = min(impulse_end + bos_lookahead, len(df) - 1)
+        bos_idx = None
+
+        if impulse_direction == 'bullish':
+            for j in range(impulse_start, bos_window_end + 1):
+                latest_swing_high = df['latest_confirmed_swing_high_asof'].iloc[j]
+                if not np.isnan(latest_swing_high) and df['Close'].iloc[j] > latest_swing_high:
+                    bos_idx = j
                     break
 
-    # ====================== MITIGATION (Forward Pass - unchanged) ======================
+            if bos_idx is not None:
+                if df['bullish_trend'].iloc[bos_idx] and df['stoch_oversold'].iloc[ob_idx]:
+                    tag_order_block(ob_idx, bos_idx, 'bullish')
+
+        else:  # bearish
+            for j in range(impulse_start, bos_window_end + 1):
+                latest_swing_low = df['latest_confirmed_swing_low_asof'].iloc[j]
+                if not np.isnan(latest_swing_low) and df['Close'].iloc[j] < latest_swing_low:
+                    bos_idx = j
+                    break
+
+            if bos_idx is not None:
+                if df['bearish_trend'].iloc[bos_idx] and df['stoch_overbought'].iloc[ob_idx]:
+                    tag_order_block(ob_idx, bos_idx, 'bearish')
+
+        i = impulse_end + 1
+
+    # ====================== MITIGATION ======================
     if check_mitigation:
         active_bullish = []
         active_bearish = []
@@ -993,13 +1105,12 @@ def calculate_order_blocks(
             row = df.iloc[i]
             idx = df.index[i]
 
-            # Add newly detected OBs
             if row['ob_bullish_detected'] and not row['ob_bullish_mitigated']:
                 active_bullish.append((idx, row['ob_top'], row['ob_bottom'], i))
+
             if row['ob_bearish_detected'] and not row['ob_bearish_mitigated']:
                 active_bearish.append((idx, row['ob_top'], row['ob_bottom'], i))
 
-            # Check if current bar mitigates any active bullish OB
             if active_bullish:
                 for ob in active_bullish[:]:
                     ob_idx, ob_top, ob_bottom, ob_i = ob
@@ -1011,7 +1122,6 @@ def calculate_order_blocks(
                             df.loc[ob_idx, 'ob_bullish_mitigated'] = True
                             active_bullish.remove(ob)
 
-            # Check if current bar mitigates any active bearish OB
             if active_bearish:
                 for ob in active_bearish[:]:
                     ob_idx, ob_top, ob_bottom, ob_i = ob
@@ -1026,8 +1136,17 @@ def calculate_order_blocks(
     df['ob_bullish'] = df['ob_bullish_detected'] & ~df['ob_bullish_mitigated']
     df['ob_bearish'] = df['ob_bearish_detected'] & ~df['ob_bearish_mitigated']
 
-    df = df.drop(columns=['is_bullish_candle', 'is_bearish_candle',
-                           'swing_high', 'swing_low'], errors='ignore')
+    # ====================== CLEANUP ======================
+    drop_cols = [
+        'is_bullish_candle', 'is_bearish_candle',
+        'swing_high', 'swing_low',
+        'latest_confirmed_swing_high_asof', 'latest_confirmed_swing_low_asof',
+        'atr', 'body_size', 'is_displacement',
+        'ema_fast', 'ema_slow', 'bullish_trend', 'bearish_trend',
+        'stoch_raw', 'stoch_k', 'stoch_oversold', 'stoch_overbought'
+    ]
+    df = df.drop(columns=drop_cols, errors='ignore')
+
     return df
 
 
@@ -1127,15 +1246,11 @@ def super_trend(symbol, data, use_llm=False, use_ob_arm=True):
     K = data['Stoch_K']
     D = data['Stoch_D']
     OB_Bullish = data.get('ob_bullish', pd.Series(False, index=data.index))
-    OB_Bearish = data.get('ob_bearish', pd.Series(False, index=data.index))  # ✅ Added
-    OB_Top = data.get('ob_top', pd.Series(np.nan, index=data.index))  # ✅ Added
-    OB_Bottom = data.get('ob_bottom', pd.Series(np.nan, index=data.index))  # ✅ Added
 
     STOCH_BUY_LEVEL = 15
-    STOCH_UPTREND_THRESHOLD = 20
+    STOCH_UPTREND_THRESHOLD = 90
     COOLDOWN_BARS = 3
     OB_FLAG_TTL = 5
-    K_OVERBOUGHT = 80
 
     signal = np.zeros(n, dtype=int)
     signal_reason = [''] * n
@@ -1151,30 +1266,16 @@ def super_trend(symbol, data, use_llm=False, use_ob_arm=True):
         k_cur = K.iloc[i]
         d_cur = D.iloc[i]
         ob_bullish_cur = OB_Bullish.iloc[i]
-        ob_bearish_cur = OB_Bearish.iloc[i]  # ✅ Added
-        ob_top = OB_Top.iloc[i]  # ✅ Added
-        ob_bottom = OB_Bottom.iloc[i]  # ✅ Added
         dt_cur = data.index[i]
-        price_cur = close.iloc[i]  # ✅ Get current price
+
+        if k_cur > 80:
+            armed = False  # cancel any armed setup
+            continue
 
         if pd.isna(k_cur) or pd.isna(d_cur):
             continue
 
-        # Skip if K > 80 (OVERBOUGHT)
-        if k_cur > K_OVERBOUGHT:
-            continue
-
         curr_date = dt_cur.date() if hasattr(dt_cur, 'date') else pd.Timestamp(dt_cur).date()
-
-        # ✅ LOG BULLISH OB FOUND
-        if ob_bullish_cur and not pd.isna(ob_bottom):
-            tele_msg(
-                f"✅ BULLISH OB FOUND | Symbol: {symbol} | Price: {price_cur:.2f} | OB Level: {ob_bottom:.2f} | DateTime: {dt_cur}")
-
-        # ✅ LOG BEARISH OB FOUND
-        if ob_bearish_cur and not pd.isna(ob_top):
-            tele_msg(
-                f"⚠️ BEARISH OB FOUND | Symbol: {symbol} | Price: {price_cur:.2f} | OB Level: {ob_top:.2f} | DateTime: {dt_cur}")
 
         if armed and armed_date and curr_date != armed_date:
             armed = False
@@ -1197,9 +1298,6 @@ def super_trend(symbol, data, use_llm=False, use_ob_arm=True):
                 signal_grade[i] = "★★★★★"
                 armed_source[i] = "OB_DIRECT"
                 last_fired_bar = i
-                # ✅ LOG TRADE SIGNAL
-                print(
-                    f"🔔 BUY SIGNAL GENERATED | Symbol: {symbol} | Price: {price_cur:.2f} | DateTime: {dt_cur} | Reason: {signal_reason[i]}")
 
             # Otherwise arm and wait for confirmation
             elif k_cur > 5:
@@ -1218,9 +1316,6 @@ def super_trend(symbol, data, use_llm=False, use_ob_arm=True):
             armed_source[i] = "OB"
             last_fired_bar = i
             armed = False
-            # ✅ LOG TRADE SIGNAL
-            print(
-                f"🔔 BUY SIGNAL GENERATED | Symbol: {symbol} | Price: {price_cur:.2f} | DateTime: {dt_cur} | Reason: {signal_reason[i]}")
 
     data['st_sig'] = signal
     data['st_sig_raw'] = signal
@@ -1233,6 +1328,8 @@ def super_trend(symbol, data, use_llm=False, use_ob_arm=True):
         data['st_sig'] = 0
 
     return data
+
+
 
 
 
