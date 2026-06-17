@@ -1223,112 +1223,393 @@ def calculate_cci(high, low, close, length=20, clamp=True):
 
 
 
-def super_trend(symbol, data, use_llm=False, use_ob_arm=True):
-    """ Same logic as your original - now safe for live incremental calls """
+def super_trend(symbol, data, use_llm=False, use_trendline=False):
+    
+
+    # Validate input
+    required = ['Open', 'High', 'Low', 'Close', 'Volume']
+    for col in required:
+        if col not in data.columns:
+            raise ValueError(f"Missing required column: '{col}'")
+
     data = data.copy()
-    close = data['Close']
-    high = data['High']
-    low = data['Low']
     n = len(data)
 
-    stoch = ta.stoch(high, low, close, 14, 3, 3)
-    data['Stoch_K'] = stoch['STOCHk_14_3_3']
-    data['Stoch_D'] = stoch['STOCHd_14_3_3']
-
-    ob_df = calculate_order_blocks(data)
-
-    ob_cols = ['ob_bullish', 'ob_bearish', 'ob_top', 'ob_bottom', 'ob_volume',
-               'ob_strength', 'ob_bullish_mitigated', 'ob_bearish_mitigated']
-
-    for col in ob_cols:
-        if col in ob_df.columns:
-            data[col] = ob_df[col].reindex(data.index, fill_value=False)
-
-    K = data['Stoch_K']
-    D = data['Stoch_D']
-    OB_Bullish = data.get('ob_bullish', pd.Series(False, index=data.index))
-
-    STOCH_BUY_LEVEL = 15
-    STOCH_UPTREND_THRESHOLD = 90
-    COOLDOWN_BARS = 3
-    OB_FLAG_TTL = 5
-
+    # Initialize output columns
     signal = np.zeros(n, dtype=int)
     signal_reason = [''] * n
     signal_grade = [''] * n
-    armed_source = [''] * n
+    entry_price = np.full(n, np.nan)
+    sl_price = np.full(n, np.nan)
+    tp1_price = np.full(n, np.nan)
+    tp2_price = np.full(n, np.nan)
+    risk_pct = np.full(n, np.nan)
 
-    armed = False
-    armed_bar = -1
-    armed_date = None
-    last_fired_bar = -999
+    # Strategy parameters (optimized for options)
+    MIN_SWING_DISTANCE = 20
+    TL_SWING_PERIOD = 5
+    TL_MIN_HL_POINTS = 2
+    TL_LOOKBACK = 50
+    TL_TOLERANCE = 0.007
+    MIN_BODY_RATIO = 0.30
+    MAX_UPPER_WICK = 0.50
+    VOL_FACTOR = 0.8
+    VOL_LOOKBACK = 20
+    OB_RETEST_MODE = 'wick'  # 'wick', 'close', or 'penetration'
+    ALLOW_MITIGATED_OB = True
+    MAX_MITIGATION_AGE = 10
+    TP1_R = 1.0
+    TP2_R = 2.0
+
+    if n < 30:
+        print(f"{symbol}: Insufficient data ({n} bars)")
+        data['st_sig'] = signal
+        data['signal_reason'] = signal_reason
+        data['signal_grade'] = signal_grade
+        return data
+
+    # ══════════════════════════════════════════════════════
+    # HELPER: BUILD TRENDLINE
+    # ══════════════════════════════════════════════════════
+
+    def build_trendline(df, swing_period, min_hl_points, lookback_candles, tolerance):
+        """Build ascending trendline from Higher Lows."""
+        n_tl = len(df)
+        if n_tl < swing_period+3:
+            return None
+
+        if n_tl > lookback_candles:
+            start = n_tl-lookback_candles
+            df_w = df.iloc[start:].copy()
+            offset = start
+        else:
+            df_w = df.copy()
+            offset = 0
+
+        swing_lows = []
+        for i in range(swing_period, len(df_w)-3):
+            cur = df_w['Low'].iloc[i]
+            left = df_w['Low'].iloc[max(0, i-swing_period):i]
+            right = df_w['Low'].iloc[i+1: i+4]
+
+            if len(left) > 0 and len(right) == 3:
+                if cur <= left.min() and cur <= right.min():
+                    swing_lows.append((i+offset, cur))
+
+        if len(swing_lows) < 2:
+            return None
+
+        higher_lows = [swing_lows[0]]
+        for i in range(1, len(swing_lows)):
+            idx, low = swing_lows[i]
+            _, prev_low = higher_lows[-1]
+            if low >= prev_low * 0.998:
+                higher_lows.append((idx, low))
+            else:
+                higher_lows = [(idx, low)]
+
+        if len(higher_lows) < min_hl_points:
+            return None
+
+        recent = higher_lows[-min_hl_points:]
+        idx1, p1 = recent[0]
+        idx2, p2 = recent[-1]
+
+        slope = (p2-p1) / (idx2-idx1)
+        if slope < -0.0001:
+            return None
+
+        intercept = p1-slope * idx1
+
+        break_idx = n_tl
+        for i in range(idx2+1, n_tl):
+            lv = slope * i+intercept
+            if df['Close'].iloc[i] < lv-lv * (tolerance * 3):
+                break_idx = i
+                break
+
+        touch_set = set()
+        search_start = max(0, n_tl-lookback_candles)
+        for i in range(search_start, break_idx):
+            lv = slope * i+intercept
+            th = lv * tolerance
+            lo = df['Low'].iloc[i]
+            hi = df['High'].iloc[i]
+            cl = df['Close'].iloc[i]
+            if abs(lo-lv) <= th or abs(cl-lv) <= th or (lo <= lv+th and hi >= lv-th):
+                if cl > lv-th * 2:
+                    touch_set.add(i)
+
+        return slope, intercept, idx2, touch_set
+
+    # ══════════════════════════════════════════════════════
+    # SWING DETECTION (3-bar confirmation)
+    # ══════════════════════════════════════════════════════
+
+    data['swing_high'] = False
+    data['swing_low'] = False
+
+    if n >= 7:
+        for i in range(3, n-3):
+            # Swing high
+            if (data['High'].iloc[i] > data['High'].iloc[i-1] and
+                    data['High'].iloc[i] > data['High'].iloc[i-2] and
+                    data['High'].iloc[i] > data['High'].iloc[i-3] and
+                    data['High'].iloc[i] > data['High'].iloc[i+1] and
+                    data['High'].iloc[i] > data['High'].iloc[i+2] and
+                    data['High'].iloc[i] > data['High'].iloc[i+3]):
+                data.iloc[i, data.columns.get_loc('swing_high')] = True
+
+            # Swing low
+            if (data['Low'].iloc[i] < data['Low'].iloc[i-1] and
+                    data['Low'].iloc[i] < data['Low'].iloc[i-2] and
+                    data['Low'].iloc[i] < data['Low'].iloc[i-3] and
+                    data['Low'].iloc[i] < data['Low'].iloc[i+1] and
+                    data['Low'].iloc[i] < data['Low'].iloc[i+2] and
+                    data['Low'].iloc[i] < data['Low'].iloc[i+3]):
+                data.iloc[i, data.columns.get_loc('swing_low')] = True
+
+    if data['swing_high'].sum() == 0:
+        print(f"{symbol}: No swing highs detected")
+        data['st_sig'] = signal
+        data['signal_reason'] = signal_reason
+        data['signal_grade'] = signal_grade
+        return data
+
+    data['_lsh'] = np.where(data['swing_high'], data['High'], np.nan)
+    data['_lsl'] = np.where(data['swing_low'], data['Low'], np.nan)
+    data['last_swing_high'] = data['_lsh'].ffill().shift(1)
+    data['last_swing_low'] = data['_lsl'].ffill().shift(1)
+
+    # ══════════════════════════════════════════════════════
+    # BREAK OF STRUCTURE
+    # ══════════════════════════════════════════════════════
+
+    data['bos_up'] = (
+            (data['Close'] > data['last_swing_high']) &
+            (data['Close'].shift(1) <= data['last_swing_high']) &
+            data['last_swing_high'].notna()
+    )
+
+    # ══════════════════════════════════════════════════════
+    # ORDER BLOCK DETECTION
+    # ══════════════════════════════════════════════════════
+
+    all_obs = []
+    last_bull_ob_pos = None
+
+    for bos_time in data.index[data['bos_up']].tolist():
+        bos_pos = data.index.get_loc(bos_time)
+
+        if last_bull_ob_pos is not None and bos_pos-last_bull_ob_pos < MIN_SWING_DISTANCE:
+            continue
+
+        # Find last bearish candle before BOS
+        for j in range(bos_pos-1, max(0, bos_pos-20), -1):
+            c = data.iloc[j]
+            if c['Close'] >= c['Open']:
+                continue
+
+            ob_top = c['High']
+            ob_bottom = c['Low']
+            ob_middle = (ob_top+ob_bottom) / 2
+
+            all_obs.append({
+                'top': ob_top,
+                'bottom': ob_bottom,
+                'middle': ob_middle,
+                'pos': j,
+                'time': data.index[j],
+                'bos_pos': bos_pos
+            })
+
+            last_bull_ob_pos = bos_pos
+            break
+
+    # ══════════════════════════════════════════════════════
+    # TRENDLINE (OPTIONAL)
+    # ══════════════════════════════════════════════════════
+
+    tl_result = build_trendline(
+        data,
+        swing_period=TL_SWING_PERIOD,
+        min_hl_points=TL_MIN_HL_POINTS,
+        lookback_candles=TL_LOOKBACK,
+        tolerance=TL_TOLERANCE,
+    )
+
+    # ══════════════════════════════════════════════════════
+    # FORWARD PASS: SIGNAL GENERATION
+    # ══════════════════════════════════════════════════════
 
     for i in range(5, n):
-        k_cur = K.iloc[i]
-        d_cur = D.iloc[i]
-        ob_bullish_cur = OB_Bullish.iloc[i]
-        dt_cur = data.index[i]
-
-        if k_cur > 80:
-            armed = False  # cancel any armed setup
+        if i < 1:
             continue
 
-        if pd.isna(k_cur) or pd.isna(d_cur):
+        candle = data.iloc[i]
+        prev_candle = data.iloc[i-1]
+
+        # Must be bullish candle
+        if candle['Close'] <= candle['Open']:
             continue
 
-        curr_date = dt_cur.date() if hasattr(dt_cur, 'date') else pd.Timestamp(dt_cur).date()
-
-        if armed and armed_date and curr_date != armed_date:
-            armed = False
-        if i-last_fired_bar < COOLDOWN_BARS:
+        # Candle quality checks
+        hl_range = candle['High']-candle['Low']
+        if hl_range == 0:
             continue
 
-        if use_ob_arm and not armed and ob_bullish_cur:
+        body = abs(candle['Close']-candle['Open'])
+        body_ratio = body / hl_range
 
-            k_in_uptrend = (
-                    k_cur > d_cur and
-                    k_cur > STOCH_UPTREND_THRESHOLD
-            )
+        if body_ratio < MIN_BODY_RATIO:
+            continue
 
-            # Buy immediately if stochastic already bullish
-            if k_in_uptrend:
-                signal[i] = 1
-                signal_reason[i] = (
-                    f"[OB DIRECT] K={k_cur:.1f} D={d_cur:.1f}"
+        upper_wick = candle['High']-max(candle['Open'], candle['Close'])
+        if body > 0 and upper_wick / body > MAX_UPPER_WICK:
+            continue
+
+        # Volume check
+        vol_avg = data['Volume'].iloc[max(0, i-VOL_LOOKBACK):i].mean()
+        vol_ratio = candle['Volume'] / vol_avg if vol_avg > 0 else 0
+
+        if vol_ratio < VOL_FACTOR:
+            continue
+
+        # Trendline check (if required)
+        tl_ok = True
+        if use_trendline:
+            if tl_result is None:
+                continue
+
+            slope, intercept, right_anchor_idx, touch_set = tl_result
+            tl_val = slope * i+intercept
+            th = tl_val * TL_TOLERANCE
+
+            tl_ok = abs(candle['Low']-tl_val) <= th or candle['Low'] <= tl_val+th
+
+            if not tl_ok:
+                continue
+
+        # Find active OBs for this bar
+        active_obs = []
+        for ob in all_obs:
+            if ob['pos'] >= i:
+                continue
+
+            # Check mitigation status
+            future = data.iloc[ob['pos']+1:i+1]
+            mitigated_mask = future['Low'] <= ob['middle']
+
+            if mitigated_mask.any():
+                mitigation_idx = future[mitigated_mask].index[0]
+                mitigation_pos = data.index.get_loc(mitigation_idx)
+                bars_since_mitigation = i-mitigation_pos
+
+                if ALLOW_MITIGATED_OB and bars_since_mitigation <= MAX_MITIGATION_AGE:
+                    ob['mitigated'] = True
+                    ob['mitigation_age'] = bars_since_mitigation
+                    active_obs.append(ob)
+            else:
+                ob['mitigated'] = False
+                ob['mitigation_age'] = 0
+                active_obs.append(ob)
+
+        if len(active_obs) == 0:
+            continue
+
+        # Check OB retest + bullish rejection
+        for ob in active_obs:
+            # OB retest logic
+            if OB_RETEST_MODE == 'wick':
+                inside_zone = (
+                        candle['Low'] <= ob['top'] and
+                        candle['Close'] >= ob['middle']
                 )
-                signal_grade[i] = "★★★★★"
-                armed_source[i] = "OB_DIRECT"
-                last_fired_bar = i
+            elif OB_RETEST_MODE == 'close':
+                inside_zone = (
+                        candle['Close'] >= ob['bottom'] and
+                        candle['Close'] <= ob['top']
+                )
+            elif OB_RETEST_MODE == 'penetration':
+                inside_zone = (
+                        candle['Low'] <= ob['top'] and
+                        candle['High'] >= ob['bottom']
+                )
+            else:
+                inside_zone = False
 
-            # Otherwise arm and wait for confirmation
-            elif k_cur > 5:
-                armed = True
-                armed_bar = i
-                armed_date = curr_date
+            # Bullish rejection
+            bullish_rejection = candle['Close'] > prev_candle['High']
 
-        if armed and (i-armed_bar) > OB_FLAG_TTL:
-            if not (k_cur > d_cur and k_cur > STOCH_BUY_LEVEL):
-                armed = False
+            if inside_zone and bullish_rejection:
+                # SIGNAL FIRED!
+                signal[i] = 1
 
-        if armed and i > armed_bar and k_cur > d_cur and k_cur > STOCH_BUY_LEVEL:
-            signal[i] = 1
-            signal_reason[i] = f"[OB] + K>D | K={k_cur:.1f} D={d_cur:.1f}"
-            signal_grade[i] = "★★★★★"
-            armed_source[i] = "OB"
-            last_fired_bar = i
-            armed = False
+                # Calculate entry/exit prices
+                buffer = (ob['top']-ob['bottom']) * 0.10
+                sl = ob['bottom']-buffer
+                entry = candle['Close']
+                risk = entry-sl
+
+                if risk <= 0:
+                    risk = entry * 0.02
+                    sl = entry-risk
+
+                tp1 = entry+TP1_R * risk
+                tp2 = entry+TP2_R * risk
+                risk_p = (risk / entry) * 100
+
+                entry_price[i] = round(entry, 2)
+                sl_price[i] = round(sl, 2)
+                tp1_price[i] = round(tp1, 2)
+                tp2_price[i] = round(tp2, 2)
+                risk_pct[i] = round(risk_p, 2)
+
+                # Signal details
+                ob_status = "MIT" if ob.get('mitigated', False) else "FRESH"
+                tl_status = "TL+" if use_trendline and tl_ok else ""
+
+                signal_reason[i] = (
+                    f"[OB {ob_status}] {tl_status} | "
+                    f"Body={body_ratio:.1%} Vol={vol_ratio:.1f}x | "
+                    f"OB: ₹{ob['bottom']:.1f}-{ob['top']:.1f}"
+                )
+
+                # Grade based on confluence
+                grade_score = 3  # Base: OB + rejection + quality
+                if use_trendline and tl_ok:
+                    grade_score += 1
+                if body_ratio >= 0.50:
+                    grade_score += 1
+                if vol_ratio >= 1.5:
+                    grade_score += 1
+
+                signal_grade[i] = "★" * min(grade_score, 5)
+
+                break  # Only one signal per bar
+
+    # ══════════════════════════════════════════════════════
+    # ATTACH RESULTS TO DATAFRAME
+    # ══════════════════════════════════════════════════════
 
     data['st_sig'] = signal
-    data['st_sig_raw'] = signal
+    data['ob_tl_sig_raw'] = signal
     data['signal_reason'] = signal_reason
     data['signal_grade'] = signal_grade
-    data['armed_source'] = armed_source
+    data['entry_price'] = entry_price
+    data['sl_price'] = sl_price
+    data['tp1_price'] = tp1_price
+    data['tp2_price'] = tp2_price
+    data['risk_pct'] = risk_pct
+
     print(f"{symbol}: st_sig exists =", 'st_sig' in data.columns)
-    print(data.columns.tolist())
+    print(f"{symbol}: Signals generated = {signal.sum()}")
+
     if 'st_sig' not in data.columns:
         data['st_sig'] = 0
 
     return data
+
 
 
 
