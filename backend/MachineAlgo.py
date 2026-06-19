@@ -58,7 +58,7 @@ Total_Cash = 10000
 Max_Position = 1
 Total_Cash_per_position = int(Total_Cash / Max_Position)
 
-Take_Profit = 20
+Take_Profit = 30
 
 #Tickers = ['NIFTY 08 MAY 2025 CE 24400.00','NIFTY 08 MAY 2025 PE 24400.00']
 
@@ -1510,7 +1510,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         continue
 
                     current_price  = float(spot_prices1[i])
-                    Trade_quantity = 75
+                    Trade_quantity = 65
                     Target_Price   = current_price + Take_Profit
                     Sprice         = current_price - 10
                     entry_time     = dt.datetime.now(UTC).strftime("%d-%b-%Y %I:%M%p")
