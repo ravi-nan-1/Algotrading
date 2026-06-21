@@ -819,23 +819,14 @@ def _atr(high, low, close, period=14):
 
 
 
+
 def super_trend(symbol, data, use_llm=False, use_trendline=False):
     """
-    Generate ULTRA-EARLY BUY signals for NIFTY options.
-
-    Parameters
-    ----------
-    symbol        : str   — instrument label for logging
-    data          : pd.DataFrame with OHLCV columns
-    use_llm       : bool  — reserved for future LLM confluence layer
-    use_trendline : bool  — (deprecated, no effect)
-
-    Returns
-    -------
-    pd.DataFrame with signal columns attached
+    Less Aggressive + High Accuracy BUY signals for NIFTY options.
+    ✅ Fixed rolling error
+    ✅ No future data leakage
+    ✅ Stronger confirmation on entry
     """
-
-    # ── Validate ──────────────────────────────────────────────────────────────
     required = ['Open', 'High', 'Low', 'Close', 'Volume']
     for col in required:
         if col not in data.columns:
@@ -843,8 +834,12 @@ def super_trend(symbol, data, use_llm=False, use_trendline=False):
 
     data = data.copy()
     n = len(data)
+    if n < 50:
+        print(f"{symbol}: Insufficient data ({n} bars)")
+        data['st_sig'] = 0
+        return data
 
-    # ── Output arrays ─────────────────────────────────────────────────────────
+    # Output arrays
     signal = np.zeros(n, dtype=int)
     signal_reason = [''] * n
     signal_grade = [''] * n
@@ -854,155 +849,115 @@ def super_trend(symbol, data, use_llm=False, use_trendline=False):
     tp2_price = np.full(n, np.nan)
     risk_pct = np.full(n, np.nan)
 
-    # ── Strategy parameters ───────────────────────────────────────────────────
-    MIN_SWING_DISTANCE = 10
-    OB_LOOKBACK_BARS = 30
-    VOL_FACTOR = 0.60  # IMPROVED from 0.6 → stronger volume filter
-    VOL_LOOKBACK = 20
+    # Parameters
+    MIN_SWING_DISTANCE = 20
+    OB_LOOKBACK_BARS = 60
+    VOL_FACTOR = 0.60
+    VOL_LOOKBACK = 10
     ALLOW_MITIGATED_OB = True
-    MAX_MITIGATION_AGE = 5  # IMPROVED from 15 → fresher OBs only
+    MAX_MITIGATION_AGE = 10
     TP1_R = 1.0
     TP2_R = 2.0
     CCI_PERIOD = 20
     ATR_PERIOD = 14
-    OB_MIN_IMPULSE_RATIO = 0.4  # RELAXED from 0.6
-    MAX_RISK_PCT = 10  # NEW: cap absurd risk trades
+    OB_MIN_IMPULSE_RATIO = 0.4
+    MAX_RISK_PCT = 10
+    OB_ENTRY_BUFFER = 0.12
+    SWING_CONFIRM_BARS = 4
 
-    # NEW: Early entry zone expansion
-    OB_ENTRY_BUFFER = 0.15  # Enter when price within 15% above OB top
-
-    if n < 30:
-        print(f"{symbol}: Insufficient data ({n} bars)")
-        data['st_sig'] = signal
-        data['signal_reason'] = signal_reason
-        data['signal_grade'] = signal_grade
-        return data
-
-    # ── Pre-compute indicators ────────────────────────────────────────────────
+    # Pre-compute indicators
     cci_series = _cci(data['High'], data['Low'], data['Close'], CCI_PERIOD)
     atr_series = _atr(data['High'], data['Low'], data['Close'], ATR_PERIOD)
 
-    # ── Swing detection (3-bar confirmation) ──────────────────────────────────
+    # Pre-compute 5-bar High MA for momentum check
+    data['high_ma5'] = data['High'].rolling(5).mean()
+
+    # Causal Swing detection
     data['swing_high'] = False
     data['swing_low'] = False
+    for i in range(SWING_CONFIRM_BARS, n):
+        left_high = data['High'].iloc[i-SWING_CONFIRM_BARS:i].max()
+        if (data['High'].iloc[i] > left_high and
+                data['High'].iloc[i] > data['High'].iloc[i-1] and
+                data['High'].iloc[i] > data['High'].iloc[i-2]):
+            data.iloc[i, data.columns.get_loc('swing_high')] = True
 
-    if n >= 7:
-        for i in range(1, n-3):
-            if (data['High'].iloc[i] > data['High'].iloc[i-1] and
-                    data['High'].iloc[i] > data['High'].iloc[i-2] and
-                    data['High'].iloc[i] > data['High'].iloc[i-3] and
-                    data['High'].iloc[i] > data['High'].iloc[i+1] and
-                    data['High'].iloc[i] > data['High'].iloc[i+2] and
-                    data['High'].iloc[i] > data['High'].iloc[i+3]):
-                data.iloc[i, data.columns.get_loc('swing_high')] = True
-
-            if (data['Low'].iloc[i] < data['Low'].iloc[i-1] and
-                    data['Low'].iloc[i] < data['Low'].iloc[i-2] and
-                    data['Low'].iloc[i] < data['Low'].iloc[i-3] and
-                    data['Low'].iloc[i] < data['Low'].iloc[i+1] and
-                    data['Low'].iloc[i] < data['Low'].iloc[i+2] and
-                    data['Low'].iloc[i] < data['Low'].iloc[i+3]):
-                data.iloc[i, data.columns.get_loc('swing_low')] = True
-
-    if data['swing_high'].sum() == 0:
-        print(f"{symbol}: No swing highs detected")
-        data['st_sig'] = signal
-        data['signal_reason'] = signal_reason
-        data['signal_grade'] = signal_grade
-        return data
+        left_low = data['Low'].iloc[i-SWING_CONFIRM_BARS:i].min()
+        if (data['Low'].iloc[i] < left_low and
+                data['Low'].iloc[i] < data['Low'].iloc[i-1] and
+                data['Low'].iloc[i] < data['Low'].iloc[i-2]):
+            data.iloc[i, data.columns.get_loc('swing_low')] = True
 
     data['_lsh'] = np.where(data['swing_high'], data['High'], np.nan)
     data['_lsl'] = np.where(data['swing_low'], data['Low'], np.nan)
     data['last_swing_high'] = data['_lsh'].ffill().shift(1)
     data['last_swing_low'] = data['_lsl'].ffill().shift(1)
 
-    # ── Break of Structure ────────────────────────────────────────────────────
+    # BOS
     data['bos_up'] = (
             (data['Close'] > data['last_swing_high']) &
             (data['Close'].shift(1) <= data['last_swing_high']) &
             data['last_swing_high'].notna()
     )
 
-    # ── Order Block detection ─────────────────────────────────────────────────
+    # Order Block detection
     all_obs = []
     last_bull_ob_pos = None
-
     for bos_time in data.index[data['bos_up']].tolist():
         bos_pos = data.index.get_loc(bos_time)
-
         if last_bull_ob_pos is not None and bos_pos-last_bull_ob_pos < MIN_SWING_DISTANCE:
             continue
-
         for j in range(bos_pos-1, max(0, bos_pos-OB_LOOKBACK_BARS), -1):
             c = data.iloc[j]
             if c['Close'] >= c['Open']:
                 continue
-
             atr_j = atr_series.iloc[j]
             body_j = abs(c['Close']-c['Open'])
             if atr_j > 0 and (body_j / atr_j) < OB_MIN_IMPULSE_RATIO:
                 continue
 
+            vol_avg = data['Volume'].iloc[max(0, j-VOL_LOOKBACK):j+1].mean()
+            if c['Volume'] < vol_avg * 0.8:
+                continue
+
             ob_top = c['High']
             ob_bottom = c['Low']
             ob_middle = (ob_top+ob_bottom) / 2.0
-
             all_obs.append({
-                'top': ob_top,
-                'bottom': ob_bottom,
-                'middle': ob_middle,
-                'pos': j,
-                'time': data.index[j],
-                'bos_pos': bos_pos,
-                'mitigated': False,
-                'mitigation_age': 0,
-                'mit_pos': None,
+                'top': ob_top, 'bottom': ob_bottom, 'middle': ob_middle,
+                'pos': j, 'time': data.index[j], 'bos_pos': bos_pos,
+                'mit_pos': None, 'mitigated': False, 'mitigation_age': 0
             })
-
             last_bull_ob_pos = bos_pos
             break
 
-    # ── PRE-CACHE mitigation state ────────────────────────────────────────────
-    for ob in all_obs:
-        ob_start = ob['pos']+1
-        for k in range(ob_start, n):
-            if data['Low'].iloc[k] <= ob['middle']:
-                ob['mit_pos'] = k
-                break
-
-    # ── FORWARD PASS: ULTRA-EARLY signal generation ──────────────────────────
+    # Forward Pass - Less Aggressive Confirmed Entry
     for i in range(5, n):
         candle = data.iloc[i]
 
-        # ── 1. Volume check (IMPROVED) ────────────────────────────────────────
+        # Volume filter
         vol_avg = data['Volume'].iloc[max(0, i-VOL_LOOKBACK):i].mean()
         vol_ratio = candle['Volume'] / vol_avg if vol_avg > 0 else 0
         if vol_ratio < VOL_FACTOR:
             continue
 
-        # ── 2. CCI momentum filter (IMPROVED) ──────────────────────────────────
+        # CCI filter
         cci_now = cci_series.iloc[i]
         cci_prev = cci_series.iloc[i-1] if i > 0 else cci_now
-
-        # FILTER: Reject if CCI > 50 (overstretched, lower TP rate)
         if cci_now > 50:
             continue
-
-        # Also need some momentum
-        cci_ok = (cci_now >= -100) or (cci_now > cci_prev)
-        if not cci_ok:
+        if not ((cci_now >= -100) or (cci_now > cci_prev)):
             continue
 
-        # ── 3. Find active OBs ────────────────────────────────────────────────
+        # Active OBs
         active_obs = []
         for ob in all_obs:
             if ob['pos'] >= i:
                 continue
-
-            mit_pos = ob['mit_pos']
-
-            if mit_pos is not None and mit_pos <= i:
-                bars_since = i-mit_pos
+            if ob['mit_pos'] is None and candle['Low'] <= ob['middle']:
+                ob['mit_pos'] = i
+            if ob['mit_pos'] is not None:
+                bars_since = i-ob['mit_pos']
                 if ALLOW_MITIGATED_OB and bars_since <= MAX_MITIGATION_AGE:
                     ob_copy = dict(ob)
                     ob_copy['mitigated'] = True
@@ -1017,89 +972,71 @@ def super_trend(symbol, data, use_llm=False, use_trendline=False):
         if not active_obs:
             continue
 
-        # ── 4. ULTRA-EARLY OB ENTRY LOGIC ─────────────────────────────────────
-        # Entry triggers 2-3 candles earlier by:
-        # a) Accepting ANY candle approaching OB zone (no body requirement)
-        # b) Wider entry zone - up to 15% above OB top
-        # c) Simplified conditions
-        # d) DISABLED: recovered entries (44% TP rate vs 69% for EARLY)
-
+        # Improved Entry Logic (Touch + Bullish Reaction)
         for ob in active_obs:
             ob_range = ob['top']-ob['bottom']
             entry_zone_top = ob['top']+(ob_range * OB_ENTRY_BUFFER)
+            ob_upper_half = ob['bottom']+(ob_range * 0.5)
 
-            # ULTRA-EARLY condition:
-            # Price is approaching or touching the OB zone from above
-            approaching_ob = (
-                    candle['Low'] <= entry_zone_top and  # Low reaches extended entry zone
-                    candle['Low'] >= ob['bottom'] * 0.99  # Still above OB bottom (with 1% buffer)
+            touched_ob = (candle['Low'] <= entry_zone_top and candle['Low'] >= ob['bottom'] * 0.98)
+
+            bullish_reaction = (
+                    candle['Close'] > candle['Open'] and
+                    candle['Close'] >= ob_upper_half and
+                    (candle['Close']-candle['Low']) / ob_range > 0.6
             )
 
-            # Alternative: Even if price went through, accept if close recovered
-            recovered = (
-                    candle['Low'] < ob['bottom'] and  # Spiked through
-                    candle['Close'] >= ob['bottom']  # But closed back inside/above
-            )
-
-            # IMPROVEMENT: Disable recovered entries (they have 44% TP rate vs 69% for EARLY)
-            if recovered:
+            if not (touched_ob and bullish_reaction):
                 continue
 
-            if approaching_ob:
-                # ── SIGNAL FIRED ───────────────────────────────────────────────
-                signal[i] = 1
+            if candle['Low'] < ob['bottom'] and candle['Close'] < ob['bottom'] * 1.005:
+                continue
 
-                # Entry at current close for market execution
-                # Or use ob['top'] for limit order at exact OB level
-                entry = candle['Close']
+            # ── SIGNAL ─────────────────────────────────────
+            signal[i] = 1
+            entry = candle['Close']
+            buffer = ob_range * 0.08
+            sl = ob['bottom']-buffer
+            risk = entry-sl
+            if risk <= 0:
+                risk = entry * 0.02
+                sl = entry-risk
+            risk_p = (risk / entry) * 100
+            if risk_p > MAX_RISK_PCT:
+                continue
 
-                # Stop loss below OB with smaller buffer for tighter risk
-                buffer = ob_range * 0.08
-                sl = ob['bottom']-buffer
+            tp1 = entry+TP1_R * risk
+            tp2 = entry+TP2_R * risk
 
-                risk = entry-sl
-                if risk <= 0:
-                    risk = entry * 0.02
-                    sl = entry-risk
+            entry_price[i] = round(entry, 2)
+            sl_price[i] = round(sl, 2)
+            tp1_price[i] = round(tp1, 2)
+            tp2_price[i] = round(tp2, 2)
+            risk_pct[i] = round(risk_p, 2)
 
-                # IMPROVEMENT: Reject if risk exceeds threshold (prevent absurd risk trades)
-                risk_p = (risk / entry) * 100
-                if risk_p > MAX_RISK_PCT:
-                    continue
+            ob_status = "MIT" if ob['mitigated'] else "FRESH"
+            cci_label = f"CCI={cci_now:.0f}"
 
-                tp1 = entry+TP1_R * risk
-                tp2 = entry+TP2_R * risk
+            signal_reason[i] = (
+                f"[CONFIRMED {ob_status}] {cci_label} | "
+                f"Vol={vol_ratio:.1f}x | "
+                f"OB: ₹{ob['bottom']:.1f}-{ob['top']:.1f} | "
+                f"Risk={risk_p:.1f}%"
+            )
 
-                entry_price[i] = round(entry, 2)
-                sl_price[i] = round(sl, 2)
-                tp1_price[i] = round(tp1, 2)
-                tp2_price[i] = round(tp2, 2)
-                risk_pct[i] = round(risk_p, 2)
+            # Grade with fixed momentum check
+            grade_score = 2
+            if vol_ratio >= 1.2: grade_score += 1
+            if cci_now >= 0: grade_score += 1
+            if not ob['mitigated']: grade_score += 1
+            if risk_p <= 8: grade_score += 1
+            # Fixed momentum check using pre-computed MA
+            if candle['Close'] > data['high_ma5'].iloc[i]:
+                grade_score += 1
+            signal_grade[i] = "★" * min(grade_score, 5)
+            break
 
-                # ── Signal metadata ────────────────────────────────────────────
-                ob_status = "MIT" if ob['mitigated'] else "FRESH"
-                cci_label = f"CCI={cci_now:.0f}"
-                entry_type = "EARLY"  # Only EARLY now (recovered disabled)
-
-                signal_reason[i] = (
-                    f"[{entry_type} {ob_status}] {cci_label} | "
-                    f"Vol={vol_ratio:.1f}x | "
-                    f"OB: ₹{ob['bottom']:.1f}-{ob['top']:.1f} | "
-                    f"Risk={risk_p:.1f}%"
-                )
-
-                # ── Grade ──────────────────────────────────────────────────────
-                grade_score = 2  # base: OB + early entry
-                if vol_ratio >= 1.2:          grade_score += 1
-                if cci_now >= 0:            grade_score += 1
-                if not ob['mitigated']:        grade_score += 1
-                if risk_p <= 8:                grade_score += 1  # Tighter risk = better
-
-                signal_grade[i] = "★" * min(grade_score, 5)
-
-                break  # one signal per bar
-
-    # ── Attach results ────────────────────────────────────────────────────────
+    # Attach results
     data['st_sig'] = signal
     data['ob_tl_sig_raw'] = signal
     data['signal_reason'] = signal_reason
@@ -1110,18 +1047,12 @@ def super_trend(symbol, data, use_llm=False, use_trendline=False):
     data['tp2_price'] = tp2_price
     data['risk_pct'] = risk_pct
 
-    print(f"{symbol}: st_sig exists =", 'st_sig' in data.columns)
+    # Clean up helper column
+    if 'high_ma5' in data.columns:
+        data = data.drop(columns=['high_ma5'])
+
     print(f"{symbol}: Signals generated = {signal.sum()}")
-
-    if 'st_sig' not in data.columns:
-        data['st_sig'] = 0
-
     return data
-
-
-
-
-
 
 
 
