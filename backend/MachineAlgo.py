@@ -863,7 +863,7 @@ def super_trend(symbol, data, use_llm=False, use_trendline=False):
     OB_MIN_IMPULSE_RATIO = 0.4
     MAX_RISK_PCT = 10
     OB_ENTRY_BUFFER = 0.12
-    SWING_CONFIRM_BARS = 4
+    SWING_CONFIRM_BARS = 3
 
     # Pre-compute indicators
     cci_series = _cci(data['High'], data['Low'], data['Close'], CCI_PERIOD)
