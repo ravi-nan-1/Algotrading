@@ -863,7 +863,7 @@ def super_trend(symbol, data, use_llm=False, use_trendline=False):
     OB_MIN_IMPULSE_RATIO = 0.4
     MAX_RISK_PCT = 10
     OB_ENTRY_BUFFER = 0.12
-    SWING_CONFIRM_BARS = 3
+    SWING_CONFIRM_BARS = 5
 
     # Pre-compute indicators
     cci_series = _cci(data['High'], data['Low'], data['Close'], CCI_PERIOD)
@@ -894,11 +894,24 @@ def super_trend(symbol, data, use_llm=False, use_trendline=False):
     data['last_swing_low'] = data['_lsl'].ffill().shift(1)
 
     # BOS
+    BOS_BUFFER = -4
+
+    data['bos_level'] = data['last_swing_high']-BOS_BUFFER
+
     data['bos_up'] = (
-            (data['Close'] > data['last_swing_high']) &
-            (data['Close'].shift(1) <= data['last_swing_high']) &
-            data['last_swing_high'].notna()
+            (data['Close'] > data['bos_level']) &
+            (data['Close'].shift(1) <= data['bos_level']) &
+            data['bos_level'].notna()
     )
+
+    bos_rows = data[data['bos_up']]
+
+    
+
+    for idx, row in data[data['swing_high']].iterrows():
+        print(
+            f"SWING HIGH | {idx} | High={row['High']:.2f}"
+        )
 
     # Order Block detection
     all_obs = []
@@ -1053,7 +1066,6 @@ def super_trend(symbol, data, use_llm=False, use_trendline=False):
 
     print(f"{symbol}: Signals generated = {signal.sum()}")
     return data
-
 
 
 
