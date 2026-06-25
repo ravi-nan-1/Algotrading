@@ -1402,10 +1402,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
             now_ist = dt.datetime.now(pytz.timezone('Asia/Kolkata'))
             current_minute = (now_ist.hour, now_ist.minute)
 
-            print("###################################################################")
-            print('Spot prices of', i, ' ', spot_prices1[i])
-            print(now_ist.strftime("%d-%b-%Y %I:%M:%S%p"))
-            print("###################################################################")
+            
 
             if spot_prices1[i] is None:
                 time.sleep(0.5)
@@ -1424,6 +1421,10 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                 try:
                     data_fut = get_cash_market_data(i, '3m')
+                    print("###################################################################")
+                    print('Spot prices of', i, ' ', spot_prices1[i])
+                    print(now_ist.strftime("%d-%b-%Y %I:%M:%S%p"))
+                    print("###################################################################")
                 except Exception as e:
                     print(f"⚠️ Skipping {i}: {e}")
                     continue
