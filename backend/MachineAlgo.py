@@ -895,23 +895,12 @@ def super_trend(symbol, data, use_llm=False, use_trendline=False):
 
     # BOS
     BOS_BUFFER = -4
-
     data['bos_level'] = data['last_swing_high']-BOS_BUFFER
-
     data['bos_up'] = (
             (data['Close'] > data['bos_level']) &
             (data['Close'].shift(1) <= data['bos_level']) &
             data['bos_level'].notna()
     )
-
-    bos_rows = data[data['bos_up']]
-
-    
-
-    for idx, row in data[data['swing_high']].iterrows():
-        print(
-            f"SWING HIGH | {idx} | High={row['High']:.2f}"
-        )
 
     # Order Block detection
     all_obs = []
@@ -1043,7 +1032,6 @@ def super_trend(symbol, data, use_llm=False, use_trendline=False):
             if cci_now >= 0: grade_score += 1
             if not ob['mitigated']: grade_score += 1
             if risk_p <= 8: grade_score += 1
-            # Fixed momentum check using pre-computed MA
             if candle['Close'] > data['high_ma5'].iloc[i]:
                 grade_score += 1
             signal_grade[i] = "★" * min(grade_score, 5)
@@ -1064,10 +1052,31 @@ def super_trend(symbol, data, use_llm=False, use_trendline=False):
     if 'high_ma5' in data.columns:
         data = data.drop(columns=['high_ma5'])
 
-    print(f"{symbol}: Signals generated = {signal.sum()}")
+    # ====================== PRINTING ======================
+    signal_count = signal.sum()
+    print(f"{symbol}: Signals generated = {signal_count}")
+
+    # Print all generated signals
+    if signal_count > 0:
+        print(f"\n--- All Signals for {symbol} ---")
+        for i in range(n):
+            if signal[i] == 1:
+                idx = data.index[i]
+                print(f"Signal at {idx} | {signal_reason[i]} | Grade: {signal_grade[i]}")
+
+    # Print last observation
+    if not data.empty:
+        last = data.iloc[-1]
+        print(f"\n--- Last Observation ---")
+        print(f"Time : {data.index[-1]}")
+        print(f"O    : {last['Open']:.2f}")
+        print(f"H    : {last['High']:.2f}")
+        print(f"L    : {last['Low']:.2f}")
+        print(f"C    : {last['Close']:.2f}")
+        print(f"Vol  : {last['Volume']:,}")
+        print(f"ST Sig: {int(last['st_sig'])}")
+
     return data
-
-
 
 
 
