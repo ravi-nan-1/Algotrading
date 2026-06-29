@@ -822,10 +822,11 @@ def _atr(high, low, close, period=14):
 
 def super_trend(symbol, data, use_llm=False, use_trendline=False):
     """
-    Less Aggressive + High Accuracy BUY signals for NIFTY options.
-    ✅ Fixed rolling error
+    Fixed for Options Data (CE/PE)
+    ✅ Relaxed filters suitable for intraday options
+    ✅ Debug mode to trace why signals are blocked
+    ✅ signal[i] set only after all checks pass
     ✅ No future data leakage
-    ✅ Stronger confirmation on entry
     """
     required = ['Open', 'High', 'Low', 'Close', 'Volume']
     for col in required:
@@ -834,250 +835,360 @@ def super_trend(symbol, data, use_llm=False, use_trendline=False):
 
     data = data.copy()
     n = len(data)
-    if n < 50:
+
+    DEBUG = True  # Set False to silence detailed logs
+
+    def dprint(*args):
+        if DEBUG:
+            print(*args)
+
+    if n < 30:
         print(f"{symbol}: Insufficient data ({n} bars)")
         data['st_sig'] = 0
         return data
 
-    # Output arrays
-    signal = np.zeros(n, dtype=int)
+    # ── Output arrays ──────────────────────────────────────────────────────────
+    signal        = np.zeros(n, dtype=int)
     signal_reason = [''] * n
-    signal_grade = [''] * n
-    entry_price = np.full(n, np.nan)
-    sl_price = np.full(n, np.nan)
-    tp1_price = np.full(n, np.nan)
-    tp2_price = np.full(n, np.nan)
-    risk_pct = np.full(n, np.nan)
+    signal_grade  = [''] * n
+    entry_price   = np.full(n, np.nan)
+    sl_price      = np.full(n, np.nan)
+    tp1_price     = np.full(n, np.nan)
+    tp2_price     = np.full(n, np.nan)
+    risk_pct      = np.full(n, np.nan)
 
-    # Parameters
-    MIN_SWING_DISTANCE = 20
-    OB_LOOKBACK_BARS = 60
-    VOL_FACTOR = 0.60
-    VOL_LOOKBACK = 10
-    ALLOW_MITIGATED_OB = True
-    MAX_MITIGATION_AGE = 10
-    TP1_R = 1.0
-    TP2_R = 2.0
-    CCI_PERIOD = 20
-    ATR_PERIOD = 14
-    OB_MIN_IMPULSE_RATIO = 0.4
-    MAX_RISK_PCT = 10
-    OB_ENTRY_BUFFER = 0.12
-    SWING_CONFIRM_BARS = 5
+    # ── Parameters (Relaxed for Options) ──────────────────────────────────────
+    MIN_SWING_DISTANCE   = 20       # was 20
+    OB_LOOKBACK_BARS     = 60       # was 60
+    VOL_FACTOR           = 0.60     # was 0.60 — options volume is irregular
+    VOL_LOOKBACK         = 10
+    ALLOW_MITIGATED_OB   = True
+    MAX_MITIGATION_AGE   = 10       # was 10
+    TP1_R                = 1.0
+    TP2_R                = 2.0
+    CCI_PERIOD           = 20       # was 20 — shorter for options
+    ATR_PERIOD           = 14       # was 14
+    OB_MIN_IMPULSE_RATIO = 0.15     # was 0.4 — much more relaxed
+    MAX_RISK_PCT         = 35       # was 10 — options move big
+    OB_ENTRY_BUFFER      = 0.12     # was 0.12
+    SWING_CONFIRM_BARS   = 5        # was 5 — faster swing detection
+    BOS_BUFFER           = -10        # was -4
+    CCI_MAX              = 40      # was 50 — relaxed upper bound
+    BULLISH_RATIO        = 0.5      # was 0.6 — easier reaction requirement
 
-    # Pre-compute indicators
+    # ── Pre-compute indicators ─────────────────────────────────────────────────
     cci_series = _cci(data['High'], data['Low'], data['Close'], CCI_PERIOD)
     atr_series = _atr(data['High'], data['Low'], data['Close'], ATR_PERIOD)
+    high_ma5   = data['High'].rolling(5).mean()
 
-    # Pre-compute 5-bar High MA for momentum check
-    data['high_ma5'] = data['High'].rolling(5).mean()
+    dprint(f"\n[DEBUG] {symbol} — n={n} bars")
+    dprint(f"[DEBUG] CCI range: {cci_series.min():.1f} to {cci_series.max():.1f}")
+    dprint(f"[DEBUG] ATR range: {atr_series.min():.2f} to {atr_series.max():.2f}")
 
-    # Causal Swing detection
-    data['swing_high'] = False
-    data['swing_low'] = False
+    # ── Swing detection ────────────────────────────────────────────────────────
+    swing_high_arr = np.zeros(n, dtype=bool)
+    swing_low_arr  = np.zeros(n, dtype=bool)
+
     for i in range(SWING_CONFIRM_BARS, n):
-        left_high = data['High'].iloc[i-SWING_CONFIRM_BARS:i].max()
-        if (data['High'].iloc[i] > left_high and
-                data['High'].iloc[i] > data['High'].iloc[i-1] and
-                data['High'].iloc[i] > data['High'].iloc[i-2]):
-            data.iloc[i, data.columns.get_loc('swing_high')] = True
+        window_high = data['High'].iloc[i - SWING_CONFIRM_BARS:i].max()
+        if (data['High'].iloc[i] > window_high and
+                data['High'].iloc[i] > data['High'].iloc[i - 1]):
+            swing_high_arr[i] = True
 
-        left_low = data['Low'].iloc[i-SWING_CONFIRM_BARS:i].min()
-        if (data['Low'].iloc[i] < left_low and
-                data['Low'].iloc[i] < data['Low'].iloc[i-1] and
-                data['Low'].iloc[i] < data['Low'].iloc[i-2]):
-            data.iloc[i, data.columns.get_loc('swing_low')] = True
+        window_low = data['Low'].iloc[i - SWING_CONFIRM_BARS:i].min()
+        if (data['Low'].iloc[i] < window_low and
+                data['Low'].iloc[i] < data['Low'].iloc[i - 1]):
+            swing_low_arr[i] = True
 
-    data['_lsh'] = np.where(data['swing_high'], data['High'], np.nan)
-    data['_lsl'] = np.where(data['swing_low'], data['Low'], np.nan)
-    data['last_swing_high'] = data['_lsh'].ffill().shift(1)
-    data['last_swing_low'] = data['_lsl'].ffill().shift(1)
+    swing_high_count = swing_high_arr.sum()
+    swing_low_count  = swing_low_arr.sum()
+    dprint(f"[DEBUG] Swing Highs: {swing_high_count} | Swing Lows: {swing_low_count}")
 
-    # BOS
-    BOS_BUFFER = -4
-    data['bos_level'] = data['last_swing_high']-BOS_BUFFER
-    data['bos_up'] = (
-            (data['Close'] > data['bos_level']) &
-            (data['Close'].shift(1) <= data['bos_level']) &
-            data['bos_level'].notna()
+    # ── Forward-fill swing levels ──────────────────────────────────────────────
+    lsh_series = pd.Series(
+        np.where(swing_high_arr, data['High'].values, np.nan),
+        index=data.index
+    ).ffill().shift(1)
+
+    lsl_series = pd.Series(
+        np.where(swing_low_arr, data['Low'].values, np.nan),
+        index=data.index
+    ).ffill().shift(1)
+
+    # ── BOS detection ─────────────────────────────────────────────────────────
+    bos_level = lsh_series - BOS_BUFFER
+    bos_up = (
+        (data['Close'] > bos_level) &
+        (data['Close'].shift(1) <= bos_level) &
+        bos_level.notna()
     )
 
-    # Order Block detection
-    all_obs = []
+    bos_count = bos_up.sum()
+    dprint(f"[DEBUG] BOS events: {bos_count}")
+    if bos_count == 0:
+        dprint("[DEBUG] ⚠️  No BOS found — try reducing SWING_CONFIRM_BARS or BOS_BUFFER")
+
+    # ── Order Block detection ──────────────────────────────────────────────────
+    all_obs          = []
     last_bull_ob_pos = None
-    for bos_time in data.index[data['bos_up']].tolist():
+
+    for bos_time in data.index[bos_up].tolist():
         bos_pos = data.index.get_loc(bos_time)
-        if last_bull_ob_pos is not None and bos_pos-last_bull_ob_pos < MIN_SWING_DISTANCE:
+
+        if (last_bull_ob_pos is not None and
+                (bos_pos - last_bull_ob_pos) < MIN_SWING_DISTANCE):
+            dprint(f"[DEBUG] BOS at pos {bos_pos} skipped — too close to last OB")
             continue
-        for j in range(bos_pos-1, max(0, bos_pos-OB_LOOKBACK_BARS), -1):
-            c = data.iloc[j]
+
+        found_ob = False
+        for j in range(bos_pos - 1, max(0, bos_pos - OB_LOOKBACK_BARS), -1):
+            c     = data.iloc[j]
+            atr_j = atr_series.iloc[j]
+
+            # Must be bearish candle
             if c['Close'] >= c['Open']:
                 continue
-            atr_j = atr_series.iloc[j]
-            body_j = abs(c['Close']-c['Open'])
+
+            # Impulse ratio
+            body_j = abs(c['Close'] - c['Open'])
             if atr_j > 0 and (body_j / atr_j) < OB_MIN_IMPULSE_RATIO:
                 continue
 
-            vol_avg = data['Volume'].iloc[max(0, j-VOL_LOOKBACK):j+1].mean()
-            if c['Volume'] < vol_avg * 0.8:
+            # Volume check
+            vol_avg = data['Volume'].iloc[max(0, j - VOL_LOOKBACK):j + 1].mean()
+            if vol_avg > 0 and c['Volume'] < vol_avg * 0.5:
                 continue
 
-            ob_top = c['High']
+            ob_top    = c['High']
             ob_bottom = c['Low']
-            ob_middle = (ob_top+ob_bottom) / 2.0
+            ob_middle = (ob_top + ob_bottom) / 2.0
+
             all_obs.append({
-                'top': ob_top, 'bottom': ob_bottom, 'middle': ob_middle,
-                'pos': j, 'time': data.index[j], 'bos_pos': bos_pos,
-                'mit_pos': None, 'mitigated': False, 'mitigation_age': 0
+                'top'           : ob_top,
+                'bottom'        : ob_bottom,
+                'middle'        : ob_middle,
+                'pos'           : j,
+                'time'          : data.index[j],
+                'bos_pos'       : bos_pos,
+                'mit_pos'       : None,
+                'mitigated'     : False,
+                'mitigation_age': 0
             })
             last_bull_ob_pos = bos_pos
+            found_ob = True
+            dprint(f"[DEBUG] OB found at pos={j} | "
+                   f"bottom={ob_bottom:.2f} top={ob_top:.2f} | "
+                   f"for BOS at pos={bos_pos}")
             break
 
-    # Forward Pass - Less Aggressive Confirmed Entry
+        if not found_ob:
+            dprint(f"[DEBUG] BOS at pos={bos_pos} — no valid OB found in lookback")
+
+    dprint(f"[DEBUG] Total Order Blocks: {len(all_obs)}")
+
+    if len(all_obs) == 0:
+        dprint("[DEBUG] ⚠️  No OBs detected — signal impossible. Check data quality.")
+
+    # ── Track filter failure counts ────────────────────────────────────────────
+    fail_vol      = 0
+    fail_cci      = 0
+    fail_no_ob    = 0
+    fail_touch    = 0
+    fail_reaction = 0
+    fail_risk     = 0
+
+    # ── Forward Pass ──────────────────────────────────────────────────────────
     for i in range(5, n):
         candle = data.iloc[i]
 
-        # Volume filter
-        vol_avg = data['Volume'].iloc[max(0, i-VOL_LOOKBACK):i].mean()
-        vol_ratio = candle['Volume'] / vol_avg if vol_avg > 0 else 0
+        # ── Volume filter ──────────────────────────────────────────────────────
+        vol_avg   = data['Volume'].iloc[max(0, i - VOL_LOOKBACK):i].mean()
+        vol_ratio = candle['Volume'] / vol_avg if vol_avg > 0 else 1.0
         if vol_ratio < VOL_FACTOR:
+            fail_vol += 1
             continue
 
-        # CCI filter
-        cci_now = cci_series.iloc[i]
-        cci_prev = cci_series.iloc[i-1] if i > 0 else cci_now
-        if cci_now > 50:
-            continue
-        if not ((cci_now >= -100) or (cci_now > cci_prev)):
+        # ── CCI filter ─────────────────────────────────────────────────────────
+        cci_now  = cci_series.iloc[i]
+        cci_prev = cci_series.iloc[i - 1]
+
+        # Allow entry if CCI is not extremely overbought
+        # AND either recovering from oversold OR rising
+        cci_ok = (cci_now <= CCI_MAX) and (
+            (cci_now >= -200) or (cci_now > cci_prev)
+        )
+        if not cci_ok:
+            fail_cci += 1
             continue
 
-        # Active OBs
+        # ── Active OBs ─────────────────────────────────────────────────────────
         active_obs = []
         for ob in all_obs:
             if ob['pos'] >= i:
                 continue
+
             if ob['mit_pos'] is None and candle['Low'] <= ob['middle']:
                 ob['mit_pos'] = i
+
             if ob['mit_pos'] is not None:
-                bars_since = i-ob['mit_pos']
+                bars_since = i - ob['mit_pos']
                 if ALLOW_MITIGATED_OB and bars_since <= MAX_MITIGATION_AGE:
                     ob_copy = dict(ob)
-                    ob_copy['mitigated'] = True
+                    ob_copy['mitigated']      = True
                     ob_copy['mitigation_age'] = bars_since
                     active_obs.append(ob_copy)
             else:
                 ob_copy = dict(ob)
-                ob_copy['mitigated'] = False
+                ob_copy['mitigated']      = False
                 ob_copy['mitigation_age'] = 0
                 active_obs.append(ob_copy)
 
         if not active_obs:
+            fail_no_ob += 1
             continue
 
-        # Improved Entry Logic (Touch + Bullish Reaction)
+        # ── Entry logic per OB ─────────────────────────────────────────────────
+        signal_set = False
         for ob in active_obs:
-            ob_range = ob['top']-ob['bottom']
-            entry_zone_top = ob['top']+(ob_range * OB_ENTRY_BUFFER)
-            ob_upper_half = ob['bottom']+(ob_range * 0.5)
+            ob_range = ob['top'] - ob['bottom']
+            if ob_range <= 0:
+                continue
 
-            touched_ob = (candle['Low'] <= entry_zone_top and candle['Low'] >= ob['bottom'] * 0.98)
+            entry_zone_top    = ob['top'] + (ob_range * OB_ENTRY_BUFFER)
+            ob_upper_half     = ob['bottom'] + (ob_range * 0.5)
 
-            bullish_reaction = (
-                    candle['Close'] > candle['Open'] and
-                    candle['Close'] >= ob_upper_half and
-                    (candle['Close']-candle['Low']) / ob_range > 0.6
+            # Touch check
+            touched_ob = (
+                candle['Low'] <= entry_zone_top and
+                candle['Low'] >= ob['bottom'] * 0.95   # was 0.98
             )
 
-            if not (touched_ob and bullish_reaction):
+            if not touched_ob:
+                fail_touch += 1
                 continue
 
-            if candle['Low'] < ob['bottom'] and candle['Close'] < ob['bottom'] * 1.005:
+            # Bullish reaction
+            candle_range = candle['High'] - candle['Low']
+            if candle_range <= 0:
                 continue
 
-            # ── SIGNAL ─────────────────────────────────────
-            signal[i] = 1
-            entry = candle['Close']
+            bullish_reaction = (
+                candle['Close'] > candle['Open'] and
+                candle['Close'] >= ob_upper_half and
+                (candle['Close'] - candle['Low']) / candle_range > BULLISH_RATIO
+            )
+
+            if not bullish_reaction:
+                fail_reaction += 1
+                continue
+
+            # Deep wick rejection
+            if (candle['Low'] < ob['bottom'] and
+                    candle['Close'] < ob['bottom'] * 1.005):
+                continue
+
+            # ── Risk calc ─────────────────────────────────────────────────────
+            entry  = candle['Close']
             buffer = ob_range * 0.08
-            sl = ob['bottom']-buffer
-            risk = entry-sl
+            sl     = ob['bottom'] - buffer
+            risk   = entry - sl
+
             if risk <= 0:
-                risk = entry * 0.02
-                sl = entry-risk
+                risk = entry * 0.03
+                sl   = entry - risk
+
             risk_p = (risk / entry) * 100
+
             if risk_p > MAX_RISK_PCT:
+                fail_risk += 1
+                dprint(f"[DEBUG] Bar {i} — risk {risk_p:.1f}% > max {MAX_RISK_PCT}%")
                 continue
 
-            tp1 = entry+TP1_R * risk
-            tp2 = entry+TP2_R * risk
+            tp1 = entry + TP1_R * risk
+            tp2 = entry + TP2_R * risk
 
+            # ── All checks passed ─────────────────────────────────────────────
+            signal[i]      = 1
             entry_price[i] = round(entry, 2)
-            sl_price[i] = round(sl, 2)
-            tp1_price[i] = round(tp1, 2)
-            tp2_price[i] = round(tp2, 2)
-            risk_pct[i] = round(risk_p, 2)
+            sl_price[i]    = round(sl,    2)
+            tp1_price[i]   = round(tp1,   2)
+            tp2_price[i]   = round(tp2,   2)
+            risk_pct[i]    = round(risk_p, 2)
 
             ob_status = "MIT" if ob['mitigated'] else "FRESH"
-            cci_label = f"CCI={cci_now:.0f}"
-
             signal_reason[i] = (
-                f"[CONFIRMED {ob_status}] {cci_label} | "
+                f"[CONFIRMED {ob_status}] CCI={cci_now:.0f} | "
                 f"Vol={vol_ratio:.1f}x | "
-                f"OB: ₹{ob['bottom']:.1f}-{ob['top']:.1f} | "
+                f"OB: {ob['bottom']:.2f}-{ob['top']:.2f} | "
                 f"Risk={risk_p:.1f}%"
             )
 
-            # Grade with fixed momentum check
             grade_score = 2
-            if vol_ratio >= 1.2: grade_score += 1
-            if cci_now >= 0: grade_score += 1
-            if not ob['mitigated']: grade_score += 1
-            if risk_p <= 8: grade_score += 1
-            if candle['Close'] > data['high_ma5'].iloc[i]:
-                grade_score += 1
+            if vol_ratio >= 1.2:                       grade_score += 1
+            if cci_now >= 0:                           grade_score += 1
+            if not ob['mitigated']:                    grade_score += 1
+            if risk_p <= MAX_RISK_PCT * 0.6:           grade_score += 1
+            if candle['Close'] > high_ma5.iloc[i]:     grade_score += 1
             signal_grade[i] = "★" * min(grade_score, 5)
+
+            signal_set = True
             break
 
-    # Attach results
-    data['st_sig'] = signal
+    # ── Attach results ─────────────────────────────────────────────────────────
+    data['st_sig']        = signal
     data['ob_tl_sig_raw'] = signal
     data['signal_reason'] = signal_reason
-    data['signal_grade'] = signal_grade
-    data['entry_price'] = entry_price
-    data['sl_price'] = sl_price
-    data['tp1_price'] = tp1_price
-    data['tp2_price'] = tp2_price
-    data['risk_pct'] = risk_pct
+    data['signal_grade']  = signal_grade
+    data['entry_price']   = entry_price
+    data['sl_price']      = sl_price
+    data['tp1_price']     = tp1_price
+    data['tp2_price']     = tp2_price
+    data['risk_pct']      = risk_pct
 
-    # Clean up helper column
-    if 'high_ma5' in data.columns:
-        data = data.drop(columns=['high_ma5'])
+    # ── Print ──────────────────────────────────────────────────────────────────
+    signal_count = int(signal.sum())
+    print(f"\n{'='*65}")
+    print(f"  {symbol}")
+    print(f"  Bars: {n}  |  Signals: {signal_count}")
+    print(f"{'='*65}")
 
-    # ====================== PRINTING ======================
-    signal_count = signal.sum()
-    print(f"{symbol}: Signals generated = {signal_count}")
+    # Debug filter summary
+    if DEBUG:
+        print(f"\n  [Filter Stats]")
+        print(f"  Volume rejected   : {fail_vol}")
+        print(f"  CCI rejected      : {fail_cci}")
+        print(f"  No active OB      : {fail_no_ob}")
+        print(f"  OB not touched    : {fail_touch}")
+        print(f"  No bullish react  : {fail_reaction}")
+        print(f"  Risk too high     : {fail_risk}")
 
-    # Print all generated signals
     if signal_count > 0:
-        print(f"\n--- All Signals for {symbol} ---")
+        print(f"\n  {'─'*60}")
+        print(f"  Signals:")
+        print(f"  {'─'*60}")
         for i in range(n):
             if signal[i] == 1:
-                idx = data.index[i]
-                print(f"Signal at {idx} | {signal_reason[i]} | Grade: {signal_grade[i]}")
+                print(f"\n  ▶ {data.index[i]}")
+                print(f"    {signal_reason[i]}")
+                print(f"    Entry : {entry_price[i]}")
+                print(f"    SL    : {sl_price[i]}")
+                print(f"    TP1   : {tp1_price[i]}")
+                print(f"    TP2   : {tp2_price[i]}")
+                print(f"    Grade : {signal_grade[i]}")
+    else:
+        print(f"\n  ⚠️  No signals generated.")
 
-    # Print last observation
     if not data.empty:
         last = data.iloc[-1]
-        print(f"\n--- Last Observation ---")
-        print(f"Time : {data.index[-1]}")
-        print(f"O    : {last['Open']:.2f}")
-        print(f"H    : {last['High']:.2f}")
-        print(f"L    : {last['Low']:.2f}")
-        print(f"C    : {last['Close']:.2f}")
-        print(f"Vol  : {last['Volume']:,}")
-        print(f"ST Sig: {int(last['st_sig'])}")
+        print(f"\n  {'─'*60}")
+        print(f"  Last Bar: {data.index[-1]}")
+        print(f"  O={last['Open']:.2f}  H={last['High']:.2f}  "
+              f"L={last['Low']:.2f}  C={last['Close']:.2f}  "
+              f"Vol={last['Volume']:,}")
+        print(f"  Signal: {int(last['st_sig'])}")
 
+    print(f"{'='*65}\n")
     return data
-
 
 
 
