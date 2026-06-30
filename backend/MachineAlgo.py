@@ -821,13 +821,7 @@ def _atr(high, low, close, period=14):
 
 
 def super_trend(symbol, data, use_llm=False, use_trendline=False):
-    """
-    Fixed for Options Data (CE/PE)
-    ✅ Relaxed filters suitable for intraday options
-    ✅ Debug mode to trace why signals are blocked
-    ✅ signal[i] set only after all checks pass
-    ✅ No future data leakage
-    """
+   
     required = ['Open', 'High', 'Low', 'Close', 'Volume']
     for col in required:
         if col not in data.columns:
