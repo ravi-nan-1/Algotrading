@@ -821,7 +821,16 @@ def _atr(high, low, close, period=14):
 
 
 def super_trend(symbol, data, use_llm=False, use_trendline=False):
-   
+    """
+    CONSERVATIVE OB + VWAP STRATEGY
+
+    Only fires on HIGHLY VALID setups:
+    1. OB: Order Block must be pristine (strong impulse, volume, structure)
+    2. VWAP_SUPPORT: Strong bounce with institutional confirmation
+    3. No aggressive/marginal signals
+
+    Fewer signals = Higher quality + Better win rate
+    """
     required = ['Open', 'High', 'Low', 'Close', 'Volume']
     for col in required:
         if col not in data.columns:
@@ -829,360 +838,414 @@ def super_trend(symbol, data, use_llm=False, use_trendline=False):
 
     data = data.copy()
     n = len(data)
-
-    DEBUG = True  # Set False to silence detailed logs
-
-    def dprint(*args):
-        if DEBUG:
-            print(*args)
-
-    if n < 30:
+    if n < 50:
         print(f"{symbol}: Insufficient data ({n} bars)")
         data['st_sig'] = 0
         return data
 
-    # ── Output arrays ──────────────────────────────────────────────────────────
-    signal        = np.zeros(n, dtype=int)
+    # Output arrays
+    signal = np.zeros(n, dtype=int)
+    signal_type = [''] * n
     signal_reason = [''] * n
-    signal_grade  = [''] * n
-    entry_price   = np.full(n, np.nan)
-    sl_price      = np.full(n, np.nan)
-    tp1_price     = np.full(n, np.nan)
-    tp2_price     = np.full(n, np.nan)
-    risk_pct      = np.full(n, np.nan)
+    signal_grade = [''] * n
+    entry_price = np.full(n, np.nan)
+    sl_price = np.full(n, np.nan)
+    tp1_price = np.full(n, np.nan)
+    tp2_price = np.full(n, np.nan)
+    risk_pct = np.full(n, np.nan)
 
-    # ── Parameters (Relaxed for Options) ──────────────────────────────────────
-    MIN_SWING_DISTANCE   = 20       # was 20
-    OB_LOOKBACK_BARS     = 60       # was 60
-    VOL_FACTOR           = 0.60     # was 0.60 — options volume is irregular
-    VOL_LOOKBACK         = 10
-    ALLOW_MITIGATED_OB   = True
-    MAX_MITIGATION_AGE   = 10       # was 10
-    TP1_R                = 1.0
-    TP2_R                = 2.0
-    CCI_PERIOD           = 20       # was 20 — shorter for options
-    ATR_PERIOD           = 14       # was 14
-    OB_MIN_IMPULSE_RATIO = 0.15     # was 0.4 — much more relaxed
-    MAX_RISK_PCT         = 35       # was 10 — options move big
-    OB_ENTRY_BUFFER      = 0.12     # was 0.12
-    SWING_CONFIRM_BARS   = 5        # was 5 — faster swing detection
-    BOS_BUFFER           = -10        # was -4
-    CCI_MAX              = 40      # was 50 — relaxed upper bound
-    BULLISH_RATIO        = 0.5      # was 0.6 — easier reaction requirement
+    # ============================================================================
+    # CONSERVATIVE PARAMETERS (Higher bars to entry = fewer, better signals)
+    # ============================================================================
 
-    # ── Pre-compute indicators ─────────────────────────────────────────────────
+    # Swing Detection
+    SWING_CONFIRM_BARS = 6  # was 4 -> slower confirmation
+    MIN_SWING_DISTANCE = 25  # was 12 -> more space between setups
+
+    # OB Detection (STRICT)
+    OB_LOOKBACK_BARS = 80  # was 60 -> look deeper for valid impulse
+    OB_MIN_IMPULSE_RATIO = 0.55  # was 0.35 -> STRONGER candles only
+    OB_MIN_VOLUME_RATIO = 0.95  # was 0.8 -> volume must be SIGNIFICANT
+    OB_MIN_BODY_SIZE = 0.40  # NEW: candle body must be 40%+ of range
+
+    # BOS and Entry Confirmation
+    BOS_BUFFER_ATR_MULT = 0.25  # was 0.15 -> wider, more conservative
+    CONFIRM_WINDOW = 3  # was 5 -> tighter confirmation window
+    REACTION_MIN_RATIO = 0.60  # was 0.45 -> STRONGER reclaim required
+
+    # Volume & Momentum Filters (STRICT)
+    VOL_FACTOR = 0.85  # was 0.65 -> higher volume threshold
+    VOL_LOOKBACK = 10
+    CCI_PERIOD = 20
+    ATR_PERIOD = 14
+    CCI_OVERBOUGHT_CUTOFF = 40  # was 60 -> no overbought entries
+
+    # Risk Management
+    MAX_RISK_PCT = 10  # was 12 -> tighter risk control
+    TP1_R = 1.0
+    TP2_R = 2.0
+
+    # VWAP Parameters (SELECTIVE)
+    VWAP_PERIOD = 25
+    VWAP_SUPPORT_ATR_MULT = 0.50  # was 0.45 -> tighter support zone
+    VWAP_MIN_SLOPE = 0.00012  # was 0.00008 -> stronger slope required
+    VWAP_VOL_MULT = 0.95  # was 0.75 -> more volume needed
+    VWAP_CCI_MAX = 35  # was 55 -> MUCH stricter
+    VWAP_CROSS_LOOKBACK = 5
+    VWAP_ENABLE = True
+    VWAP_SUPPORT_ENABLE = True
+
+    # Disable Momentum Fallback (too aggressive)
+    ENABLE_MOMENTUM_FALLBACK = False
+
+    # ============================================================================
+    # Pre-compute Indicators
+    # ============================================================================
     cci_series = _cci(data['High'], data['Low'], data['Close'], CCI_PERIOD)
     atr_series = _atr(data['High'], data['Low'], data['Close'], ATR_PERIOD)
-    high_ma5   = data['High'].rolling(5).mean()
+    data['vol_ma20'] = data['Volume'].rolling(20).mean()
 
-    dprint(f"\n[DEBUG] {symbol} — n={n} bars")
-    dprint(f"[DEBUG] CCI range: {cci_series.min():.1f} to {cci_series.max():.1f}")
-    dprint(f"[DEBUG] ATR range: {atr_series.min():.2f} to {atr_series.max():.2f}")
+    # VWAP
+    data['vwap'] = _vwap(data['High'], data['Low'], data['Close'], data['Volume'], VWAP_PERIOD)
+    data['vwap_slope'] = data['vwap'].diff()
+    data['vwap_rising'] = data['vwap_slope'] > VWAP_MIN_SLOPE
+    data['price_below_vwap'] = data['Close'] < data['vwap']
 
-    # ── Swing detection ────────────────────────────────────────────────────────
-    swing_high_arr = np.zeros(n, dtype=bool)
-    swing_low_arr  = np.zeros(n, dtype=bool)
+    # ============================================================================
+    # Swing Detection (Conservative - Slower)
+    # ============================================================================
+    data['swing_high'] = False
+    data['swing_low'] = False
 
     for i in range(SWING_CONFIRM_BARS, n):
-        window_high = data['High'].iloc[i - SWING_CONFIRM_BARS:i].max()
-        if (data['High'].iloc[i] > window_high and
-                data['High'].iloc[i] > data['High'].iloc[i - 1]):
-            swing_high_arr[i] = True
+        # Swing High: Current high > all previous SWING_CONFIRM_BARS bars
+        left_high = data['High'].iloc[i-SWING_CONFIRM_BARS:i].max()
+        if (data['High'].iloc[i] > left_high and
+                data['High'].iloc[i] > data['High'].iloc[i-1] and
+                data['High'].iloc[i] > data['High'].iloc[i-2]):
+            data.iloc[i, data.columns.get_loc('swing_high')] = True
 
-        window_low = data['Low'].iloc[i - SWING_CONFIRM_BARS:i].min()
-        if (data['Low'].iloc[i] < window_low and
-                data['Low'].iloc[i] < data['Low'].iloc[i - 1]):
-            swing_low_arr[i] = True
+        # Swing Low: Current low < all previous SWING_CONFIRM_BARS bars
+        left_low = data['Low'].iloc[i-SWING_CONFIRM_BARS:i].min()
+        if (data['Low'].iloc[i] < left_low and
+                data['Low'].iloc[i] < data['Low'].iloc[i-1] and
+                data['Low'].iloc[i] < data['Low'].iloc[i-2]):
+            data.iloc[i, data.columns.get_loc('swing_low')] = True
 
-    swing_high_count = swing_high_arr.sum()
-    swing_low_count  = swing_low_arr.sum()
-    dprint(f"[DEBUG] Swing Highs: {swing_high_count} | Swing Lows: {swing_low_count}")
+    data['_lsh'] = np.where(data['swing_high'], data['High'], np.nan)
+    data['_lsl'] = np.where(data['swing_low'], data['Low'], np.nan)
+    data['last_swing_high'] = data['_lsh'].ffill().shift(1)
+    data['last_swing_low'] = data['_lsl'].ffill().shift(1)
 
-    # ── Forward-fill swing levels ──────────────────────────────────────────────
-    lsh_series = pd.Series(
-        np.where(swing_high_arr, data['High'].values, np.nan),
-        index=data.index
-    ).ffill().shift(1)
+    # ============================================================================
+    # BOS (Break of Structure) - Conservative Buffer
+    # ============================================================================
+    data['bos_buffer'] = (atr_series * BOS_BUFFER_ATR_MULT)
+    data['bos_buffer'] = data['bos_buffer'].fillna(data['bos_buffer'].median())
+    data['bos_level'] = data['last_swing_high']+data['bos_buffer']
 
-    lsl_series = pd.Series(
-        np.where(swing_low_arr, data['Low'].values, np.nan),
-        index=data.index
-    ).ffill().shift(1)
-
-    # ── BOS detection ─────────────────────────────────────────────────────────
-    bos_level = lsh_series - BOS_BUFFER
-    bos_up = (
-        (data['Close'] > bos_level) &
-        (data['Close'].shift(1) <= bos_level) &
-        bos_level.notna()
+    data['bos_up'] = (
+            (data['Close'] > data['bos_level']) &
+            (data['Close'].shift(1) <= data['bos_level']) &
+            data['bos_level'].notna()
     )
 
-    bos_count = bos_up.sum()
-    dprint(f"[DEBUG] BOS events: {bos_count}")
-    if bos_count == 0:
-        dprint("[DEBUG] ⚠️  No BOS found — try reducing SWING_CONFIRM_BARS or BOS_BUFFER")
-
-    # ── Order Block detection ──────────────────────────────────────────────────
-    all_obs          = []
+    # ============================================================================
+    # Order Block Detection (PRISTINE CONDITIONS ONLY)
+    # ============================================================================
+    all_obs = []
     last_bull_ob_pos = None
 
-    for bos_time in data.index[bos_up].tolist():
+    for bos_time in data.index[data['bos_up']].tolist():
         bos_pos = data.index.get_loc(bos_time)
 
-        if (last_bull_ob_pos is not None and
-                (bos_pos - last_bull_ob_pos) < MIN_SWING_DISTANCE):
-            dprint(f"[DEBUG] BOS at pos {bos_pos} skipped — too close to last OB")
+        # Enforce minimum distance between OBs
+        if last_bull_ob_pos is not None and bos_pos-last_bull_ob_pos < MIN_SWING_DISTANCE:
             continue
 
-        found_ob = False
-        for j in range(bos_pos - 1, max(0, bos_pos - OB_LOOKBACK_BARS), -1):
-            c     = data.iloc[j]
-            atr_j = atr_series.iloc[j]
+        # Search backwards for a VALID impulse candle (strong bearish)
+        for j in range(bos_pos-1, max(0, bos_pos-OB_LOOKBACK_BARS), -1):
+            c = data.iloc[j]
 
             # Must be bearish candle
             if c['Close'] >= c['Open']:
                 continue
 
-            # Impulse ratio
-            body_j = abs(c['Close'] - c['Open'])
+            # ──── STRICT IMPULSE CHECKS ────
+            atr_j = atr_series.iloc[j]
+            body_j = abs(c['Close']-c['Open'])
+            range_j = c['High']-c['Low']
+
+            # Body size check: candle body must be substantial (40%+ of range)
+            if range_j > 0:
+                body_ratio = body_j / range_j
+                if body_ratio < OB_MIN_BODY_SIZE:
+                    continue
+
+            # Impulse ratio: strong selling pressure
             if atr_j > 0 and (body_j / atr_j) < OB_MIN_IMPULSE_RATIO:
                 continue
 
-            # Volume check
-            vol_avg = data['Volume'].iloc[max(0, j - VOL_LOOKBACK):j + 1].mean()
-            if vol_avg > 0 and c['Volume'] < vol_avg * 0.5:
+            # Volume check: STRICT - must be significantly above average
+            vol_avg = data['Volume'].iloc[max(0, j-VOL_LOOKBACK):j+1].mean()
+            if c['Volume'] < vol_avg * OB_MIN_VOLUME_RATIO:
                 continue
 
-            ob_top    = c['High']
+            # ──── VALID OB FOUND ────
+            ob_top = c['High']
             ob_bottom = c['Low']
-            ob_middle = (ob_top + ob_bottom) / 2.0
+            ob_middle = (ob_top+ob_bottom) / 2.0
 
             all_obs.append({
-                'top'           : ob_top,
-                'bottom'        : ob_bottom,
-                'middle'        : ob_middle,
-                'pos'           : j,
-                'time'          : data.index[j],
-                'bos_pos'       : bos_pos,
-                'mit_pos'       : None,
-                'mitigated'     : False,
-                'mitigation_age': 0
+                'top': ob_top,
+                'bottom': ob_bottom,
+                'middle': ob_middle,
+                'pos': j,
+                'time': data.index[j],
+                'bos_pos': bos_pos,
+                'touch_pos': None,
+                'body_ratio': body_ratio,
+                'vol_ratio': c['Volume'] / vol_avg if vol_avg > 0 else 0,
             })
+
             last_bull_ob_pos = bos_pos
-            found_ob = True
-            dprint(f"[DEBUG] OB found at pos={j} | "
-                   f"bottom={ob_bottom:.2f} top={ob_top:.2f} | "
-                   f"for BOS at pos={bos_pos}")
-            break
+            break  # Only ONE OB per BOS
 
-        if not found_ob:
-            dprint(f"[DEBUG] BOS at pos={bos_pos} — no valid OB found in lookback")
-
-    dprint(f"[DEBUG] Total Order Blocks: {len(all_obs)}")
-
-    if len(all_obs) == 0:
-        dprint("[DEBUG] ⚠️  No OBs detected — signal impossible. Check data quality.")
-
-    # ── Track filter failure counts ────────────────────────────────────────────
-    fail_vol      = 0
-    fail_cci      = 0
-    fail_no_ob    = 0
-    fail_touch    = 0
-    fail_reaction = 0
-    fail_risk     = 0
-
-    # ── Forward Pass ──────────────────────────────────────────────────────────
+    # ============================================================================
+    # Main Forward Pass: OB + VWAP Signals
+    # ============================================================================
     for i in range(5, n):
         candle = data.iloc[i]
 
-        # ── Volume filter ──────────────────────────────────────────────────────
-        vol_avg   = data['Volume'].iloc[max(0, i - VOL_LOOKBACK):i].mean()
-        vol_ratio = candle['Volume'] / vol_avg if vol_avg > 0 else 1.0
-        if vol_ratio < VOL_FACTOR:
-            fail_vol += 1
-            continue
+        vol_avg = data['Volume'].iloc[max(0, i-VOL_LOOKBACK):i].mean()
+        vol_ratio = candle['Volume'] / vol_avg if vol_avg > 0 else 0
+        cci_now = cci_series.iloc[i]
+        cci_prev = cci_series.iloc[i-1] if i > 0 else cci_now
+        atr_now = atr_series.iloc[i]
 
-        # ── CCI filter ─────────────────────────────────────────────────────────
-        cci_now  = cci_series.iloc[i]
-        cci_prev = cci_series.iloc[i - 1]
+        fired = False
 
-        # Allow entry if CCI is not extremely overbought
-        # AND either recovering from oversold OR rising
-        cci_ok = (cci_now <= CCI_MAX) and (
-            (cci_now >= -200) or (cci_now > cci_prev)
-        )
-        if not cci_ok:
-            fail_cci += 1
-            continue
+        # ========================================================================
+        # 1. ORDER BLOCK SIGNAL (CONSERVATIVE 2-STAGE ENTRY)
+        # ========================================================================
+        if vol_ratio >= VOL_FACTOR and cci_now <= CCI_OVERBOUGHT_CUTOFF:
+            for ob in all_obs:
+                if ob['pos'] >= i:
+                    continue
 
-        # ── Active OBs ─────────────────────────────────────────────────────────
-        active_obs = []
-        for ob in all_obs:
-            if ob['pos'] >= i:
-                continue
+                ob_range = ob['top']-ob['bottom']
+                if ob_range <= 0:
+                    continue
 
-            if ob['mit_pos'] is None and candle['Low'] <= ob['middle']:
-                ob['mit_pos'] = i
+                # Entry zone: very tight (only 18% above OB top)
+                entry_zone_top = ob['top']+(ob_range * 0.18)
+                touches_zone = (candle['Low'] <= entry_zone_top and
+                                candle['Low'] >= ob['bottom'] * 0.98)
 
-            if ob['mit_pos'] is not None:
-                bars_since = i - ob['mit_pos']
-                if ALLOW_MITIGATED_OB and bars_since <= MAX_MITIGATION_AGE:
-                    ob_copy = dict(ob)
-                    ob_copy['mitigated']      = True
-                    ob_copy['mitigation_age'] = bars_since
-                    active_obs.append(ob_copy)
-            else:
-                ob_copy = dict(ob)
-                ob_copy['mitigated']      = False
-                ob_copy['mitigation_age'] = 0
-                active_obs.append(ob_copy)
+                # Stage 1: Touch detection
+                if ob['touch_pos'] is None:
+                    if touches_zone:
+                        ob['touch_pos'] = i
+                    else:
+                        continue
 
-        if not active_obs:
-            fail_no_ob += 1
-            continue
+                bars_since_touch = i-ob['touch_pos']
 
-        # ── Entry logic per OB ─────────────────────────────────────────────────
-        signal_set = False
-        for ob in active_obs:
-            ob_range = ob['top'] - ob['bottom']
-            if ob_range <= 0:
-                continue
+                # Confirmation window TIGHT (3 bars max)
+                if bars_since_touch > CONFIRM_WINDOW:
+                    continue
 
-            entry_zone_top    = ob['top'] + (ob_range * OB_ENTRY_BUFFER)
-            ob_upper_half     = ob['bottom'] + (ob_range * 0.5)
+                # Stage 2: Strong reclaim (60%+ of OB range)
+                ob_upper_half = ob['bottom']+(ob_range * (1-REACTION_MIN_RATIO))
+                bullish_reaction = (
+                        candle['Close'] > candle['Open'] and
+                        candle['Close'] >= ob_upper_half and
+                        (candle['Close']-candle['Low']) / ob_range > REACTION_MIN_RATIO
+                )
 
-            # Touch check
-            touched_ob = (
-                candle['Low'] <= entry_zone_top and
-                candle['Low'] >= ob['bottom'] * 0.95   # was 0.98
-            )
+                if not bullish_reaction:
+                    continue
 
-            if not touched_ob:
-                fail_touch += 1
-                continue
+                # Candle must close WELL above OB bottom
+                if candle['Close'] < ob['bottom'] * 0.998:
+                    continue
 
-            # Bullish reaction
-            candle_range = candle['High'] - candle['Low']
-            if candle_range <= 0:
-                continue
+                # ──── OB SIGNAL FIRED ────
+                entry = candle['Close']
+                buffer = ob_range * 0.10
+                sl = ob['bottom']-buffer
+                risk = entry-sl
 
-            bullish_reaction = (
-                candle['Close'] > candle['Open'] and
-                candle['Close'] >= ob_upper_half and
-                (candle['Close'] - candle['Low']) / candle_range > BULLISH_RATIO
-            )
+                if risk <= 0:
+                    continue
 
-            if not bullish_reaction:
-                fail_reaction += 1
-                continue
+                risk_p = (risk / entry) * 100
+                if risk_p > MAX_RISK_PCT:
+                    continue
 
-            # Deep wick rejection
-            if (candle['Low'] < ob['bottom'] and
-                    candle['Close'] < ob['bottom'] * 1.005):
-                continue
+                # GRADE the signal quality
+                grade_score = 0
+                grade_score += 1  # Base OB setup
+                if ob['vol_ratio'] >= 1.3: grade_score += 1  # Strong volume impulse
+                if ob['body_ratio'] >= 0.55: grade_score += 1  # Solid body
+                if vol_ratio >= 1.0: grade_score += 1  # Entry volume good
+                if cci_now >= -10: grade_score += 1  # Momentum turning
+                if bars_since_touch == 0: grade_score += 1  # Same-bar reaction (cleanest)
+                if risk_p <= 7: grade_score += 1  # Low risk
+                if candle['Close'] > candle['Open']: grade_score += 1  # Bullish close
 
-            # ── Risk calc ─────────────────────────────────────────────────────
-            entry  = candle['Close']
-            buffer = ob_range * 0.08
-            sl     = ob['bottom'] - buffer
-            risk   = entry - sl
+                signal[i] = 1
+                signal_type[i] = 'OB'
+                entry_price[i] = round(entry, 2)
+                sl_price[i] = round(sl, 2)
+                tp1_price[i] = round(entry+TP1_R * risk, 2)
+                tp2_price[i] = round(entry+TP2_R * risk, 2)
+                risk_pct[i] = round(risk_p, 2)
 
-            if risk <= 0:
-                risk = entry * 0.03
-                sl   = entry - risk
+                signal_reason[i] = (
+                    f"[OB PRISTINE +{bars_since_touch}bar] "
+                    f"OB: {ob['bottom']:.1f}→{ob['top']:.1f} | "
+                    f"Body: {ob['body_ratio'] * 100:.0f}% | "
+                    f"ImpulseVol: {ob['vol_ratio']:.2f}x | "
+                    f"EntryVol: {vol_ratio:.2f}x | CCI={cci_now:.0f} | "
+                    f"Risk={risk_p:.1f}%"
+                )
 
-            risk_p = (risk / entry) * 100
+                signal_grade[i] = "*" * min(grade_score, 5)
 
-            if risk_p > MAX_RISK_PCT:
-                fail_risk += 1
-                dprint(f"[DEBUG] Bar {i} — risk {risk_p:.1f}% > max {MAX_RISK_PCT}%")
-                continue
+                ob['touch_pos'] = None  # Reset for potential re-use
+                fired = True
+                break
 
-            tp1 = entry + TP1_R * risk
-            tp2 = entry + TP2_R * risk
+        # ========================================================================
+        # 2. VWAP SUPPORT (STRONG BOUNCE ONLY)
+        # ========================================================================
+        if VWAP_SUPPORT_ENABLE and not fired and i >= 2:
+            vwap_now = data['vwap'].iloc[i]
 
-            # ── All checks passed ─────────────────────────────────────────────
-            signal[i]      = 1
-            entry_price[i] = round(entry, 2)
-            sl_price[i]    = round(sl,    2)
-            tp1_price[i]   = round(tp1,   2)
-            tp2_price[i]   = round(tp2,   2)
-            risk_pct[i]    = round(risk_p, 2)
+            if not np.isnan(vwap_now):
+                prev_low = data['Low'].iloc[i-1]
+                prev_vwap = data['vwap'].iloc[i-1]
+                prev_close = data['Close'].iloc[i-1]
+                support_zone = atr_now * VWAP_SUPPORT_ATR_MULT
 
-            ob_status = "MIT" if ob['mitigated'] else "FRESH"
-            signal_reason[i] = (
-                f"[CONFIRMED {ob_status}] CCI={cci_now:.0f} | "
-                f"Vol={vol_ratio:.1f}x | "
-                f"OB: {ob['bottom']:.2f}-{ob['top']:.2f} | "
-                f"Risk={risk_p:.1f}%"
-            )
+                # Previous candle TESTED VWAP (touched but didn't break through)
+                tested_support = (
+                        abs(prev_low-prev_vwap) <= support_zone and
+                        prev_low <= prev_vwap and
+                        prev_close > prev_vwap  # Closed above
+                )
 
-            grade_score = 2
-            if vol_ratio >= 1.2:                       grade_score += 1
-            if cci_now >= 0:                           grade_score += 1
-            if not ob['mitigated']:                    grade_score += 1
-            if risk_p <= MAX_RISK_PCT * 0.6:           grade_score += 1
-            if candle['Close'] > high_ma5.iloc[i]:     grade_score += 1
-            signal_grade[i] = "★" * min(grade_score, 5)
+                # Current candle: STRONG BULLISH BOUNCE
+                strong_bounce = (
+                        candle['Close'] > candle['Open'] and
+                        candle['Close'] > vwap_now and
+                        (candle['Close']-candle['Low']) / (candle['High']-candle['Low']) > 0.55 and
+                        candle['Volume'] > vol_avg * VWAP_VOL_MULT
+                )
 
-            signal_set = True
-            break
+                # VWAP must be stable or rising
+                vwap_ok = data['vwap_slope'].iloc[i] > (VWAP_MIN_SLOPE * -0.2)
 
-    # ── Attach results ─────────────────────────────────────────────────────────
-    data['st_sig']        = signal
-    data['ob_tl_sig_raw'] = signal
+                # CCI: VERY strict (must be low/turning)
+                cci_ok = cci_now <= VWAP_CCI_MAX
+
+                if tested_support and strong_bounce and vwap_ok and cci_ok:
+                    entry = candle['Close']
+                    sl = vwap_now-(atr_now * 1.2)
+                    risk = entry-sl
+                    risk_p = (risk / entry) * 100
+
+                    if 0 < risk_p <= MAX_RISK_PCT:
+                        grade_score = 0
+                        grade_score += 1  # Base VWAP support
+                        if candle['Volume'] > vol_avg * 1.3: grade_score += 1
+                        if cci_now <= 0: grade_score += 1
+                        if risk_p <= 6: grade_score += 1
+                        if (candle['Close']-candle['Low']) / (candle['High']-candle['Low']) > 0.65: grade_score += 1
+
+                        signal[i] = 1
+                        signal_type[i] = 'VWAP_SUPPORT'
+                        entry_price[i] = round(entry, 2)
+                        sl_price[i] = round(sl, 2)
+                        tp1_price[i] = round(entry+TP1_R * risk, 2)
+                        tp2_price[i] = round(entry+TP2_R * risk, 2)
+                        risk_pct[i] = round(risk_p, 2)
+
+                        signal_reason[i] = (
+                            f"[VWAP SUPPORT STRONG] "
+                            f"Tested: {prev_low:.2f} | VWAP: {vwap_now:.2f} | "
+                            f"Bounce Vol: {vol_ratio:.2f}x | CCI: {cci_now:.0f} | "
+                            f"Risk={risk_p:.1f}%"
+                        )
+
+                        signal_grade[i] = "*" * min(grade_score+1, 5)
+                        fired = True
+
+    # ============================================================================
+    # Attach Results
+    # ============================================================================
+    data['st_sig'] = signal
+    data['signal_type'] = signal_type
     data['signal_reason'] = signal_reason
-    data['signal_grade']  = signal_grade
-    data['entry_price']   = entry_price
-    data['sl_price']      = sl_price
-    data['tp1_price']     = tp1_price
-    data['tp2_price']     = tp2_price
-    data['risk_pct']      = risk_pct
+    data['signal_grade'] = signal_grade
+    data['entry_price'] = entry_price
+    data['sl_price'] = sl_price
+    data['tp1_price'] = tp1_price
+    data['tp2_price'] = tp2_price
+    data['risk_pct'] = risk_pct
 
-    # ── Print ──────────────────────────────────────────────────────────────────
-    signal_count = int(signal.sum())
-    print(f"\n{'='*65}")
-    print(f"  {symbol}")
-    print(f"  Bars: {n}  |  Signals: {signal_count}")
-    print(f"{'='*65}")
+    # Clean up
+    drop_cols = ['vol_ma20', '_lsh', '_lsl', 'swing_high', 'swing_low',
+                 'last_swing_high', 'last_swing_low', 'bos_buffer',
+                 'bos_level', 'bos_up', 'vwap', 'vwap_slope', 'vwap_rising',
+                 'price_below_vwap']
+    data = data.drop(columns=drop_cols, errors='ignore')
 
-    # Debug filter summary
-    if DEBUG:
-        print(f"\n  [Filter Stats]")
-        print(f"  Volume rejected   : {fail_vol}")
-        print(f"  CCI rejected      : {fail_cci}")
-        print(f"  No active OB      : {fail_no_ob}")
-        print(f"  OB not touched    : {fail_touch}")
-        print(f"  No bullish react  : {fail_reaction}")
-        print(f"  Risk too high     : {fail_risk}")
+    ob_count = int((data['signal_type'] == 'OB').sum())
+    vwap_support_count = int((data['signal_type'] == 'VWAP_SUPPORT').sum())
+    total_signals = signal.sum()
 
-    if signal_count > 0:
-        print(f"\n  {'─'*60}")
-        print(f"  Signals:")
-        print(f"  {'─'*60}")
-        for i in range(n):
-            if signal[i] == 1:
-                print(f"\n  ▶ {data.index[i]}")
-                print(f"    {signal_reason[i]}")
-                print(f"    Entry : {entry_price[i]}")
-                print(f"    SL    : {sl_price[i]}")
-                print(f"    TP1   : {tp1_price[i]}")
-                print(f"    TP2   : {tp2_price[i]}")
-                print(f"    Grade : {signal_grade[i]}")
-    else:
-        print(f"\n  ⚠️  No signals generated.")
+    print(f"\n{'=' * 70}")
+    print(f"{symbol}: CONSERVATIVE MODE")
+    print(f"{'=' * 70}")
+    print(f"Total Signals: {total_signals}")
+    print(f"  - Order Block (Pristine): {ob_count}")
+    print(f"  - VWAP Support (Strong): {vwap_support_count}")
+    print(f"{'=' * 70}\n")
 
-    if not data.empty:
-        last = data.iloc[-1]
-        print(f"\n  {'─'*60}")
-        print(f"  Last Bar: {data.index[-1]}")
-        print(f"  O={last['Open']:.2f}  H={last['High']:.2f}  "
-              f"L={last['Low']:.2f}  C={last['Close']:.2f}  "
-              f"Vol={last['Volume']:,}")
-        print(f"  Signal: {int(last['st_sig'])}")
-
-    print(f"{'='*65}\n")
     return data
+
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+def _cci(high, low, close, period=20):
+    """Commodity Channel Index"""
+    tp = (high+low+close) / 3
+    sma_tp = tp.rolling(window=period).mean()
+    mad = tp.rolling(window=period).apply(lambda x: (abs(x-x.mean())).mean())
+    cci = (tp-sma_tp) / (0.015 * mad)
+    return cci.fillna(0)
+
+
+def _atr(high, low, close, period=14):
+    """Average True Range"""
+    tr1 = high-low
+    tr2 = abs(high-close.shift(1))
+    tr3 = abs(low-close.shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(window=period).mean()
+    return atr.fillna(tr.mean())
+
+
+def _vwap(high, low, close, volume, period=20):
+    """Volume Weighted Average Price"""
+    tp = (high+low+close) / 3.0
+    vwap_numerator = (tp * volume).rolling(window=period).sum()
+    vwap_denominator = volume.rolling(window=period).sum()
+    return vwap_numerator / vwap_denominator
+
 
 
 
