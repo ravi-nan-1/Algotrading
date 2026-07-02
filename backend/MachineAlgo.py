@@ -1213,6 +1213,7 @@ def super_trend(symbol, data, use_llm=False, use_trendline=False):
     print(f"  - Order Block (Pristine): {ob_count}")
     print(f"  - VWAP Support (Strong): {vwap_support_count}")
     print(f"{'=' * 70}\n")
+    print(data[data["st_sig"] == 1][["Close", "st_sig", "signal_type"]])
 
     return data
 
@@ -1616,7 +1617,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                 Short_Open_Position = super_Trend_Short[super_Trend_Short['Trade Status'] == 'OPEN']
 
                 # ── LONG ENTRY ────────────────────────────────
-                if data_list[i]['st_sig'].iloc[-1] == 1:
+                if (data_list[i]["st_sig"].tail(3) == 1).any():
 
                     all_trade_files()
                     open_trades_df = pd.read_excel('All_Trades.xlsx')
