@@ -1022,8 +1022,8 @@ def super_trend(symbol, data, use_llm=False):
     # backtest engine's win/loss history — flagging honestly rather than
     # pretending this is ML-calibrated). Treat these as a tunable starting
     # point; re-weight using your own trade log once you have enough sample size.
-    W = dict(velocity=0.22, momentum=0.22, displacement=0.20,
-              compression=0.10, exhaustion=0.14, candle_quality=0.12)
+    W = dict(velocity=0.18, momentum=0.25, displacement=0.17,
+              compression=0.10, exhaustion=0.12, candle_quality=0.12)
 
     data['probability_score'] = (
         W['velocity']       * velocity_score +
