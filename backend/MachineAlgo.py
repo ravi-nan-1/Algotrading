@@ -844,25 +844,25 @@ def super_trend(symbol, data, use_llm=False):
     # ═══════════════════════════════════════════════════════
     EMA_SPAN         = 5      # Smoothed velocity span
     ER_WINDOW        = 10     # Kaufman Efficiency Ratio window (trend "cleanliness")
-    PERSIST_WINDOW   = 5      # Bars checked for velocity sign persistence
+    PERSIST_WINDOW   = 3      # Bars checked for velocity sign persistence
     STOCH_K_PERIOD   = 14
     STOCH_SMOOTH     = 3
     STOCH_D_PERIOD   = 3
     CCI_PERIOD       = 20
     RANGE_LOOKBACK   = 20     # Range/volume/ATR averaging window
-    SCORE_WINDOW     = 50     # Rolling z-score window for normalized scores
+    SCORE_WINDOW     = 25     # Rolling z-score window for normalized scores
 
     # Fixed probability threshold (NOT self-referential like the old rolling
     # percentile, which raised its own bar right after a good signal and
     # suppressed follow-through). Calibrate this constant OFFLINE against a
     # larger historical sample from your backtest engine — don't let it
     # adapt off its own recent output.
-    ENTRY_PROBABILITY = 57.0   # Calibrated: baseline noise/drift ceiling sits ~61-62,
+    ENTRY_PROBABILITY = 53.0   # Calibrated: baseline noise/drift ceiling sits ~61-62,
                                 # genuine displacement bursts spike to ~70 (verified via
                                 # synthetic burst test). Sits just above the noise ceiling.
     EXIT_PROBABILITY  = 48.0   # Drop out of ACTIVE state once evidence decays below this
 
-    MIN_BODY_EFF      = 0.25   # Soft floor only — folded in as a gate, not stacked with other ANDs
+    MIN_BODY_EFF      = 0.20   # Soft floor only — folded in as a gate, not stacked with other ANDs
 
     warmup = max(SCORE_WINDOW, RANGE_LOOKBACK, STOCH_K_PERIOD, CCI_PERIOD) + 5
     if n < warmup:
