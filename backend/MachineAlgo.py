@@ -1583,26 +1583,28 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
             print(f"  📊 {i} | Buy:{BuyPrice} | Now:{current_price} | "
                   f"Target:{Target_Price} | SL:{S_Price} | PnL:{round(profit_from_entry,2)}")
 
-            # ── B1: TRAILING SL + TRAILING TARGET ────────────
+            # ── B1: TRAILING SL + STAGED TARGET ───────────────
             # Logic:
-            #   Every 10 points of profit → move SL up by 10 (lock-in)
-            #   Every 10 points → move Target up by 10 (trail target)
-            Trail_Step = 10
+            #   Target steps up in 10s: 10 → 20 → 30 → 40 → 50 (capped at 50)
+            #   SL trails in 5-point steps, always one step behind price,
+            #   and never moves backward — locks in profit already gained
+            Target_Step = 10
+            SL_Step     = 5
+            Max_Target_Offset = 50   # target stops climbing after entry+50
 
-            if profit_from_entry >= Trail_Step:
-                # How many full steps have we moved
-                steps = int(profit_from_entry // Trail_Step)
+            if profit_from_entry >= SL_Step:
 
-                # New SL = entry + (steps-1)*10  → always one step behind price
-                # This locks in profit but gives room to breathe
-                new_sl     = BuyPrice + ((steps - 1) * Trail_Step)
-                new_sl     = max(new_sl, S_Price)   # never move SL down
+                # ── Target: steps in 10s, capped at Max_Target_Offset ──
+                target_steps = int(profit_from_entry // Target_Step)
+                new_target   = BuyPrice + min((target_steps + 1) * Target_Step, Max_Target_Offset)
+                new_target   = max(new_target, Target_Price)   # never move Target down
 
-                # New Target = entry + (steps+1)*10  → one step ahead of price
-                new_target = BuyPrice + ((steps + 1) * Trail_Step)
-                new_target = max(new_target, Target_Price)  # never move Target down
+                # ── SL: trails in 5-point steps, one step behind price ──
+                sl_steps = int(profit_from_entry // SL_Step)
+                new_sl   = BuyPrice + ((sl_steps - 1) * SL_Step)
+                new_sl   = max(new_sl, S_Price)   # never move SL down — locks in profit already gained
 
-                if new_sl > S_Price:
+                if new_sl > S_Price or new_target > Target_Price:
                     print(f"  📈 TRAILING SL: {S_Price} → {new_sl}  |  TARGET: {Target_Price} → {new_target}  [{i}]")
                     tele_msg(f"📈 Trail Update: {i} | SL: {S_Price}→{new_sl} | Target: {Target_Price}→{new_target}")
 
@@ -1617,6 +1619,8 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                     trade_row          = Long_Open_Position[Long_Open_Position['Symbol'] == i]
                     S_Price            = float(trade_row['Sprice'].values[0])
                     Target_Price       = float(trade_row['Target Price'].values[0])
+
+                
 
             # ── B2: HARD SL HIT ──────────────────────────────
             # Check SL BEFORE target so trailing SL fires first
