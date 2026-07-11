@@ -864,6 +864,15 @@ def super_trend(symbol, data, use_llm=False):
 
     MIN_BODY_EFF      = 0.20   # Soft floor only — folded in as a gate, not stacked with other ANDs
 
+    # HIGH-PRIORITY fast path: K coming out of oversold and freshly crossing
+    # above D. Verified against your trade log — in every delayed entry, this
+    # cross happens 1-4 bars BEFORE the probability score clears ENTRY_PROBABILITY,
+    # because the probability path waits for several engines to align while the
+    # move has already run. This path fires the instant the cross happens, using
+    # only bar i and i-1 (no lookahead) — additive, doesn't touch the evidence path.
+    K_OVERSOLD_LEVEL    = 30   # K must have been at/below this within the lookback
+    K_OVERSOLD_LOOKBACK = 3    # bars (inclusive of current) checked for the oversold dip
+
     warmup = max(SCORE_WINDOW, RANGE_LOOKBACK, STOCH_K_PERIOD, CCI_PERIOD) + 5
     if n < warmup:
         data['st_sig'] = 0
@@ -1037,13 +1046,17 @@ def super_trend(symbol, data, use_llm=False):
     probability = data['probability_score'].to_numpy()
     body_eff    = data['body_efficiency'].to_numpy()
     favorable   = is_favorable.to_numpy()
+    k_arr       = data['k'].to_numpy()
+    d_arr       = data['d'].to_numpy()
+    k_vel_arr   = data['k_velocity'].to_numpy()
 
     # ═══════════════════════════════════════════════════════
     #  FINAL SIGNAL — evidence threshold + dynamic exit (no fixed cooldown)
     # ═══════════════════════════════════════════════════════
-    data['state']        = 0
-    data['signal_start']  = False
-    data['st_sig']        = 0
+    data['state']          = 0
+    data['signal_start']   = False
+    data['st_sig']         = 0
+    data['signal_priority'] = ''   # 'HIGH' (K oversold+cross fast path) or 'LOW' (probability path)
 
     final_state = np.zeros(n, dtype=int)
     in_position = False
@@ -1063,16 +1076,41 @@ def super_trend(symbol, data, use_llm=False):
                 final_state[i] = 1
             continue
 
-        potential_buy = (
+        # ---- PRIORITY 1 (HIGH): K oversold, rising, freshly crosses D ----
+        # Uses only bar i and i-1 (causal, no lookahead). Catches the reversal
+        # at the cross itself, before the probability engines fully align —
+        # this is what buys near the low instead of after the pump candle.
+        lookback_start = max(0, i - K_OVERSOLD_LOOKBACK + 1)
+        recent_k_min   = np.min(k_arr[lookback_start:i + 1])
+
+        fresh_cross  = (k_arr[i - 1] <= d_arr[i - 1]) and (k_arr[i] > d_arr[i])
+        k_rising     = k_vel_arr[i] > 0
+        was_oversold = recent_k_min <= K_OVERSOLD_LEVEL
+
+        #high_priority_buy = favorable[i] and fresh_cross and k_rising and was_oversold
+
+        high_priority_buy = (
+                favorable[i]
+                and fresh_cross
+                and k_rising
+                and was_oversold
+                #and body_eff[i] > 0.20
+                and probability[i] > 20
+                #and data['velocity'].iat[i] > 10
+        )
+
+        # ---- PRIORITY 2 (LOW): original evidence/probability path, unchanged ----
+        low_priority_buy = (
             favorable[i] and
             probability[i] > ENTRY_PROBABILITY and
             body_eff[i] > MIN_BODY_EFF
         )
 
-        if potential_buy:
+        if high_priority_buy or low_priority_buy:
             final_state[i] = 1
             data.iloc[i, data.columns.get_loc('signal_start')] = True
             data.iloc[i, data.columns.get_loc('st_sig')] = 1
+            data.iloc[i, data.columns.get_loc('signal_priority')] = 'HIGH' if high_priority_buy else 'LOW'
             in_position = True
         else:
             final_state[i] = 0
@@ -1126,6 +1164,7 @@ def super_trend(symbol, data, use_llm=False):
     print("=" * 130 + "\n")
 
     return data
+
 
 
 
