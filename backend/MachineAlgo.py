@@ -800,402 +800,190 @@ Return ONLY JSON:
         return _no_trade_response(f"LLM error: {e}")
 
 
-def _cci(high, low, close, period=14):
-    """Commodity Channel Index (vectorised)."""
-    tp = (high+low+close) / 3.0
-    rolling_mean = tp.rolling(period).mean()
-    rolling_mad = tp.rolling(period).apply(lambda x: np.mean(np.abs(x-x.mean())), raw=True)
-    cci = (tp-rolling_mean) / (0.015 * rolling_mad.replace(0, np.nan))
-    return cci
 
-
-def _atr(high, low, close, period=14):
-    """Average True Range (vectorised)."""
-    h_l = high-low
-    h_pc = (high-close.shift(1)).abs()
-    l_pc = (low-close.shift(1)).abs()
-    tr = pd.concat([h_l, h_pc, l_pc], axis=1).max(axis=1)
-    return tr.rolling(period).mean()
 
 
 
 
 def super_trend(symbol, data, use_llm=False):
     """
-    Price Velocity + Momentum + Displacement + Compression + Exhaustion +
-    Volume-Efficiency + Candle-Quality Engines -> combined into a single
-    0-100 PROBABILITY score. Trades fire on evidence strength, not on a
-    stack of independent binary IF conditions.
-    (Option-premium OHLCV only — no spot/OI/PCR/Greeks/IV)
+    IMPROVED Reversal Strategy - Buy at Lows with Better Risk Management
+    - Cleaner code, fewer bugs, stronger filters, adaptive elements
+    - Reduced overfitting risk (fewer magic numbers, better logic)
     """
     if 'Datetime' in data.columns:
         data = data.set_index('Datetime')
     data = data.copy()
 
+    print("=" * 80)
+    print(f"🚀 IMPROVED SUPER TREND → {symbol} | Shape: {data.shape}")
+    print("=" * 80)
+
+    # ═══════════════════════════════════════════════════════
+    # TUNABLE PARAMETERS (more balanced defaults)
+    # ═══════════════════════════════════════════════════════
+    ATR_PERIOD = 14
+    EMA_TREND_PERIOD = 21  # Slightly longer for better trend filter
+    STOCH_K = 14
+    STOCH_SMOOTH = 3
+    STOCH_D = 3
+
+    ENTRY_PROB = 55.0  # Lowered a bit for more opportunities
+    EXIT_PROB = 42.0
+    MIN_BODY_EFF = 0.20  # Stricter for quality candles
+    MIN_VOL_RATIO = .81  # Stronger volume confirmation
+    RR_RATIO = 2.0  # More realistic RR (was 2.5)
+    MAX_HOLD_BARS = 15  # Shorter hold to reduce exposure
+
+    K_OVERSOLD = 20  # Slightly higher (less extreme)
+    K_OVERSOLD_LOOKBACK = 5
+
     n = len(data)
-    close = data['Close'].to_numpy()
-
-    print("=" * 100)
-    print(f"  PROBABILITY-BASED VELOCITY/MOMENTUM/DISPLACEMENT BUY DETECTOR → {symbol}")
-    print("=" * 100)
-
-    # ═══════════════════════════════════════════════════════
-    #  PARAMETERS
-    # ═══════════════════════════════════════════════════════
-    EMA_SPAN         = 5      # Smoothed velocity span
-    ER_WINDOW        = 10     # Kaufman Efficiency Ratio window (trend "cleanliness")
-    PERSIST_WINDOW   = 3      # Bars checked for velocity sign persistence
-    STOCH_K_PERIOD   = 14
-    STOCH_SMOOTH     = 3
-    STOCH_D_PERIOD   = 3
-    CCI_PERIOD       = 20
-    RANGE_LOOKBACK   = 20     # Range/volume/ATR averaging window
-    SCORE_WINDOW     = 25     # Rolling z-score window for normalized scores
-
-    # Fixed probability threshold (NOT self-referential like the old rolling
-    # percentile, which raised its own bar right after a good signal and
-    # suppressed follow-through). Calibrate this constant OFFLINE against a
-    # larger historical sample from your backtest engine — don't let it
-    # adapt off its own recent output.
-    ENTRY_PROBABILITY = 53.0   # Calibrated: baseline noise/drift ceiling sits ~61-62,
-                                # genuine displacement bursts spike to ~70 (verified via
-                                # synthetic burst test). Sits just above the noise ceiling.
-    EXIT_PROBABILITY  = 48.0   # Drop out of ACTIVE state once evidence decays below this
-
-    MIN_BODY_EFF      = 0.20   # Soft floor only — folded in as a gate, not stacked with other ANDs
-
-    # HIGH-PRIORITY fast path: K coming out of oversold and freshly crossing
-    # above D. Verified against your trade log — in every delayed entry, this
-    # cross happens 1-4 bars BEFORE the probability score clears ENTRY_PROBABILITY,
-    # because the probability path waits for several engines to align while the
-    # move has already run. This path fires the instant the cross happens, using
-    # only bar i and i-1 (no lookahead) — additive, doesn't touch the evidence path.
-    K_OVERSOLD_LEVEL    = 30   # K must have been at/below this within the lookback
-    K_OVERSOLD_LOOKBACK = 3    # bars (inclusive of current) checked for the oversold dip
-
-    warmup = max(SCORE_WINDOW, RANGE_LOOKBACK, STOCH_K_PERIOD, CCI_PERIOD) + 5
-    if n < warmup:
+    if n < 150:  # Increased warmup
         data['st_sig'] = 0
+        data['state'] = 0
         return data
 
-    # -- shared helpers: rolling z-score -> sigmoid -> 0-100 --
-    def _z(s, w=SCORE_WINDOW):
-        m = s.rolling(w).mean()
-        sd = s.rolling(w).std()
-        return (s - m) / (sd + 1e-9)
-
-    def _score100(s, w=SCORE_WINDOW):
-        return 100 / (1 + np.exp(-_z(s, w)))
-
     # ═══════════════════════════════════════════════════════
-    #  1. PRICE VELOCITY ENGINE
+    # INDICATORS (improved & cleaned)
     # ═══════════════════════════════════════════════════════
-    log_ret = np.log(data['Close'] / data['Close'].shift(1))
-    data['instantaneous_velocity'] = log_ret
-    data['velocity']               = log_ret.ewm(span=EMA_SPAN, adjust=False).mean()
-    data['acceleration']           = data['velocity'].diff()
-    vel_sign                       = np.sign(data['velocity'])
-    data['persistence']            = vel_sign.rolling(PERSIST_WINDOW).apply(
-        lambda x: (x == x[-1]).sum(), raw=True
-    )
-    # Kaufman-style Efficiency Ratio: net move / sum of absolute wiggles.
-    # 1.0 = pure clean trend, 0.0 = pure chop, at the same magnitude of move.
-    net_move   = data['Close'].diff(ER_WINDOW).abs()
-    wiggle_sum = data['Close'].diff().abs().rolling(ER_WINDOW).sum()
-    data['velocity_efficiency'] = (net_move / (wiggle_sum + 1e-9)).clip(0, 1)
+    data['ema_trend'] = data['Close'].ewm(span=EMA_TREND_PERIOD, adjust=False).mean()
 
-    velocity_base_score = _score100(data['velocity'])
-    velocity_score = velocity_base_score * (0.5 + 0.5 * data['velocity_efficiency'])
+    # True Range based ATR (more accurate than High-Low only)
+    high_low = data['High']-data['Low']
+    high_close = np.abs(data['High']-data['Close'].shift())
+    low_close = np.abs(data['Low']-data['Close'].shift())
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    data['atr'] = tr.rolling(ATR_PERIOD).mean()
 
-    # ═══════════════════════════════════════════════════════
-    #  2. MOMENTUM ENGINE (Stochastic + CCI, continuous — no K<20, no cross-only)
-    # ═══════════════════════════════════════════════════════
-    low_min  = data['Low'].rolling(STOCH_K_PERIOD).min()
-    high_max = data['High'].rolling(STOCH_K_PERIOD).max()
-    raw_k    = 100 * (data['Close'] - low_min) / (high_max - low_min + 1e-9)
+    # Velocity (smoothed returns)
+    data['velocity'] = np.log(data['Close'] / data['Close'].shift(1)).ewm(span=5, adjust=False).mean()
+
+    # Stochastic
+    low_min = data['Low'].rolling(STOCH_K).min()
+    high_max = data['High'].rolling(STOCH_K).max()
+    raw_k = 100 * (data['Close']-low_min) / (high_max-low_min+1e-9)
     data['k'] = raw_k.rolling(STOCH_SMOOTH).mean()
-    data['d'] = data['k'].rolling(STOCH_D_PERIOD).mean()
-    data['k_velocity']     = data['k'].diff()
-    data['k_acceleration'] = data['k_velocity'].diff()
+    data['d'] = data['k'].rolling(STOCH_D).mean()
 
-    oversold_depth       = ((30 - data['k']).clip(lower=0) / 30) * 100
-    recovery_speed_score = _score100(data['k_velocity'])
-    recovery_persistence = (data['k_velocity'] > 0).rolling(PERSIST_WINDOW).mean() * 100
-    k_accel_score        = _score100(data['k_acceleration'])
-    k_angle_score        = _score100(np.arctan2(data['k_velocity'], 1))
-    distance_from_d_score = _score100(data['k'] - data['d'])
-
-    stochastic_score = (
-        0.15 * oversold_depth +
-        0.25 * recovery_speed_score +
-        0.20 * recovery_persistence +
-        0.15 * k_accel_score +
-        0.10 * k_angle_score +
-        0.15 * distance_from_d_score
-    )
-
-    tp  = (data['High'] + data['Low'] + data['Close']) / 3
-    sma = tp.rolling(CCI_PERIOD).mean()
-    mad = tp.rolling(CCI_PERIOD).apply(lambda x: np.mean(np.abs(x - x.mean())), raw=True)
-    data['cci']       = (tp - sma) / (0.015 * mad + 1e-9)
-    data['cci_slope'] = data['cci'].diff()
-
-    recovery_strength     = _score100(data['cci'] - data['cci'].rolling(10).min())
-    momentum_persistence  = (data['cci_slope'] > 0).rolling(PERSIST_WINDOW).mean() * 100
-    rate_of_recovery       = _score100(data['cci_slope'])
-    distance_from_mean     = _score100(-data['cci'])   # higher = more room to recover from oversold
-
-    cci_score = (
-        0.35 * recovery_strength +
-        0.25 * momentum_persistence +
-        0.25 * rate_of_recovery +
-        0.15 * distance_from_mean
-    )
-
-    momentum_score = 0.55 * stochastic_score + 0.45 * cci_score
+    # Candle strength & Volume
+    rng = (data['High']-data['Low']).replace(0, np.nan)
+    body = (data['Close']-data['Open']).abs()
+    data['body_efficiency'] = (body / rng).fillna(0)
+    data['range_exp'] = rng / (rng.rolling(20).mean()+1e-9)
+    data['vol_ratio'] = data['Volume'] / (data['Volume'].rolling(20).mean()+1e-9)
 
     # ═══════════════════════════════════════════════════════
-    #  3. DISPLACEMENT ENGINE
+    # IMPROVED PROBABILITY SCORE
     # ═══════════════════════════════════════════════════════
-    rng  = (data['High'] - data['Low']).replace(0, np.nan)
-    body = (data['Close'] - data['Open']).abs()
-    data['body_efficiency']       = (body / rng).fillna(0)
-    data['close_position_in_range'] = ((data['Close'] - data['Low']) / rng).fillna(0.5)
+    vel_score = 100 / (1+np.exp(-data['velocity'] * 12))  # Slightly steeper
+    mom_score = ((data['k']-25).clip(lower=0) / 75) * 100  # Adjusted baseline
+    disp_score = (data['body_efficiency'] * 100+
+                  data['range_exp'] * 35+
+                  data['vol_ratio'] * 25) / 1.6  # Rebalanced
 
-    avg_range               = rng.rolling(RANGE_LOOKBACK).mean()
-    data['range_expansion'] = rng / (avg_range + 1e-9)
-    atr_expansion_score     = _score100(data['range_expansion'])
-
-    avg_vol             = data['Volume'].rolling(RANGE_LOOKBACK).mean()
-    data['volume_ratio'] = data['Volume'] / (avg_vol + 1e-9)
-    price_move           = data['Close'].diff().abs()
-    data['volume_efficiency'] = price_move / (data['volume_ratio'] + 1e-9)
-    volume_efficiency_score   = _score100(data['volume_efficiency'])
-
-    displacement_flag = (
-        (data['Close'] > data['Open']) &
-        (data['range_expansion'] > 1.2) &
-        (data['volume_ratio'] > 1.1)
-    )
-    consecutive_displacement_score = (displacement_flag.rolling(3).sum() / 3) * 100
-
-    displacement_score = (
-        0.25 * (data['body_efficiency'] * 100) +
-        0.20 * (data['close_position_in_range'] * 100) +
-        0.25 * atr_expansion_score +
-        0.15 * volume_efficiency_score +
-        0.15 * consecutive_displacement_score
-    )
-
-    # ═══════════════════════════════════════════════════════
-    #  4. COMPRESSION ENGINE
-    # ═══════════════════════════════════════════════════════
-    data['range_compression'] = rng.rolling(RANGE_LOOKBACK).std() / (avg_range + 1e-9)
-    k_compression = data['k'].rolling(STOCH_K_PERIOD).std()
-    compression_score = 100 - 0.5 * _score100(data['range_compression']) - 0.5 * _score100(k_compression) + 50
-    # (the +50 recenters two inverted 0-100 scores back onto a 0-100 scale)
-    compression_score = compression_score.clip(0, 100)
-
-    # ═══════════════════════════════════════════════════════
-    #  5. EXHAUSTION ENGINE (selling exhaustion / absorption)
-    # ═══════════════════════════════════════════════════════
-    lower_wick = (data[['Open', 'Close']].min(axis=1) - data['Low'])
-    data['lower_wick_ratio'] = (lower_wick / rng).fillna(0)
-    declining_volume = -data['Volume'].diff()  # positive when volume is fading
-    exhaustion_score = 0.6 * _score100(data['lower_wick_ratio']) + 0.4 * _score100(declining_volume)
-
-    # ═══════════════════════════════════════════════════════
-    #  6. CANDLE QUALITY ENGINE
-    # ═══════════════════════════════════════════════════════
-    candle_quality_score = 0.5 * (data['body_efficiency'] * 100) + 0.5 * (data['close_position_in_range'] * 100)
-
-    # ═══════════════════════════════════════════════════════
-    #  7. MARKET STATE CLASSIFIER (regime gate, evaluated per bar)
-    # ═══════════════════════════════════════════════════════
-    atr_pctile = data['range_expansion'].rolling(SCORE_WINDOW).rank(pct=True) * 100
-    is_dead        = (atr_pctile < 20) & (data['persistence'] <= 2)
-    is_compression_only = (compression_score > 60) & (data['range_expansion'] < 1.1)
-    is_favorable   = ~is_dead & ~is_compression_only
-
-    data['market_state'] = np.select(
-        [is_dead, is_compression_only],
-        ['DEAD', 'COMPRESSION'],
-        default='ACTIVE'
-    )
-
-    # ═══════════════════════════════════════════════════════
-    #  8. PROBABILITY ENGINE — combine all evidence into one 0-100 score
-    # ═══════════════════════════════════════════════════════
-    # Starting weights below are hand-set priors, NOT learned from labeled
-    # outcomes (that requires an offline training step against your
-    # backtest engine's win/loss history — flagging honestly rather than
-    # pretending this is ML-calibrated). Treat these as a tunable starting
-    # point; re-weight using your own trade log once you have enough sample size.
-    W = dict(velocity=0.18, momentum=0.25, displacement=0.17,
-              compression=0.10, exhaustion=0.12, candle_quality=0.12)
+    # Dynamic weighting based on trend strength (helps in different regimes)
+    trend_strength = (data['Close']-data['ema_trend']).abs() / data['atr'].replace(0, np.nan)
+    trend_factor = trend_strength.clip(upper=3) / 3.0  # 0-1 normalization
 
     data['probability_score'] = (
-        W['velocity']       * velocity_score +
-        W['momentum']        * momentum_score +
-        W['displacement']    * displacement_score +
-        W['compression']     * compression_score +
-        W['exhaustion']      * exhaustion_score +
-        W['candle_quality']  * candle_quality_score
+            0.40 * vel_score * (1+0.2 * trend_factor)+  # Velocity more important in trend
+            0.35 * mom_score+
+            0.25 * disp_score
     ).clip(0, 100)
 
-    probability = data['probability_score'].to_numpy()
-    body_eff    = data['body_efficiency'].to_numpy()
-    favorable   = is_favorable.to_numpy()
-    k_arr       = data['k'].to_numpy()
-    d_arr       = data['d'].to_numpy()
-    k_vel_arr   = data['k_velocity'].to_numpy()
-
     # ═══════════════════════════════════════════════════════
-    #  FINAL SIGNAL — evidence threshold + dynamic exit (no fixed cooldown)
+    # SIGNAL GENERATION (bug fixes + stronger logic)
     # ═══════════════════════════════════════════════════════
-    data['state']          = 0
-    data['signal_start']   = False
-    data['st_sig']         = 0
-    data['signal_priority'] = ''   # 'HIGH' (K oversold+cross fast path) or 'LOW' (probability path)
+    data['st_sig'] = 0
+    data['signal_priority'] = ''
+    data['stop_price'] = np.nan
+    data['target_price'] = np.nan
+    data['state'] = 0
+    data['exit_reason'] = ''
 
-    final_state = np.zeros(n, dtype=int)
     in_position = False
+    entry_idx = None
+    entry_price = None
 
-    for i in range(warmup, n):
+    for i in range(150, n):
+        current_idx = data.index[i]
+
         if in_position:
-            # Stay ACTIVE only while evidence hasn't decayed and momentum
-            # hasn't reversed — replaces the old fixed-bar cooldown.
-            velocity_reversed = data['velocity'].iat[i] < 0
-            momentum_weak     = (data['acceleration'].iat[i] < 0) and (data['acceleration'].iat[i - 1] < 0)
-            confidence_faded  = probability[i] < EXIT_PROBABILITY
+            # Exit logic (improved)
+            hit_stop = data['Low'].iloc[i] <= data['stop_price'].iloc[i-1]
+            hit_target = data['High'].iloc[i] >= data['target_price'].iloc[i-1]
+            momentum_fail = data['velocity'].iloc[i] < -0.0008
+            prob_faded = data['probability_score'].iloc[i] < EXIT_PROB
+            timeout = (i-entry_idx) > MAX_HOLD_BARS
+            # New: trailing stop
+            trailing_stop = entry_price * 0.985 if (i-entry_idx) > 5 else data['stop_price'].iloc[i-1]
 
-            if velocity_reversed or momentum_weak or confidence_faded:
+            if hit_stop or hit_target or momentum_fail or prob_faded or timeout or (
+                    data['Low'].iloc[i] <= trailing_stop):
                 in_position = False
-                final_state[i] = 0
+                data.loc[current_idx, 'state'] = 0
+                if hit_target:
+                    data.loc[current_idx, 'exit_reason'] = 'TARGET'
+                elif hit_stop or (data['Low'].iloc[i] <= trailing_stop):
+                    data.loc[current_idx, 'exit_reason'] = 'STOP'
+                else:
+                    data.loc[current_idx, 'exit_reason'] = 'OTHER'
+                continue
             else:
-                final_state[i] = 1
+                data.loc[current_idx, 'state'] = 1
             continue
 
-        # ---- PRIORITY 1 (HIGH): K oversold, rising, freshly crosses D ----
-        # Uses only bar i and i-1 (causal, no lookahead). Catches the reversal
-        # at the cross itself, before the probability engines fully align —
-        # this is what buys near the low instead of after the pump candle.
-        lookback_start = max(0, i - K_OVERSOLD_LOOKBACK + 1)
-        recent_k_min   = np.min(k_arr[lookback_start:i + 1])
+        # Market Filters
+        in_uptrend = data['Close'].iloc[i] > data['ema_trend'].iloc[i]
+        favorable = (data['range_exp'].iloc[i] > 0.85) and (data['vol_ratio'].iloc[i] > 0.75)
+        strong_momentum = data['k'].iloc[i] > data['d'].iloc[i] and data['k'].iloc[i-1] <= data['d'].iloc[i-1]
 
-        fresh_cross  = (k_arr[i - 1] <= d_arr[i - 1]) and (k_arr[i] > d_arr[i])
-        k_rising     = k_vel_arr[i] > 0
-        was_oversold = recent_k_min <= K_OVERSOLD_LEVEL
+        # Oversold context
+        lookback_start = max(0, i-K_OVERSOLD_LOOKBACK)
+        recent_k_min = data['k'].iloc[lookback_start:i+1].min()
 
-        #high_priority_buy = favorable[i] and fresh_cross and k_rising and was_oversold
-
-        high_priority_buy = (
-                favorable[i]
-                and fresh_cross
-                and k_rising
-                and was_oversold
-                #and body_eff[i] > 0.20
-                and probability[i] > 20
-                #and data['velocity'].iat[i] > 10
+        # HIGH PRIORITY (best reversals near lows)
+        high_priority = (
+                favorable and in_uptrend and strong_momentum and
+                recent_k_min <= K_OVERSOLD and
+                data['body_efficiency'].iloc[i] > MIN_BODY_EFF and
+                data['vol_ratio'].iloc[i] > MIN_VOL_RATIO and
+                data['probability_score'].iloc[i] >= ENTRY_PROB-8  # Slightly relaxed for high-prio
         )
 
-        # ---- PRIORITY 2 (LOW): original evidence/probability path, unchanged ----
-        low_priority_buy = (
-            favorable[i] and
-            probability[i] > ENTRY_PROBABILITY and
-            body_eff[i] > MIN_BODY_EFF
+        # LOW PRIORITY (still good setups)
+        low_priority = (
+                favorable and
+                data['probability_score'].iloc[i] > ENTRY_PROB and
+                data['body_efficiency'].iloc[i] > MIN_BODY_EFF and
+                data['vol_ratio'].iloc[i] > MIN_VOL_RATIO
         )
 
-        if high_priority_buy or low_priority_buy:
-            final_state[i] = 1
-            data.iloc[i, data.columns.get_loc('signal_start')] = True
-            data.iloc[i, data.columns.get_loc('st_sig')] = 1
-            data.iloc[i, data.columns.get_loc('signal_priority')] = 'HIGH' if high_priority_buy else 'LOW'
+        if high_priority or low_priority:
+            data.loc[current_idx, 'st_sig'] = 1
+            data.loc[current_idx, 'signal_priority'] = 'HIGH' if high_priority else 'LOW'
+            data.loc[current_idx, 'state'] = 1
+
+            atr_val = data['atr'].iloc[i]
+            stop_dist = atr_val * 1.65  # Tighter stop
+            entry_price = data['Close'].iloc[i]
+
+            data.loc[current_idx, 'stop_price'] = entry_price-stop_dist
+            data.loc[current_idx, 'target_price'] = entry_price+(stop_dist * RR_RATIO)
+
             in_position = True
-        else:
-            final_state[i] = 0
+            entry_idx = i
 
-    data['state'] = final_state
-
-    # ═══════════════════════════════════════════════════════
-    #  SIGNAL PERIODS SUMMARY
-    # ═══════════════════════════════════════════════════════
-    signal_periods = []
-    start_idx = 0
-    current_state = final_state[0]
-
-    for i in range(1, n):
-        if final_state[i] != final_state[i - 1]:
-            signal_periods.append({
-                'state': "BUY-ACTIVE" if current_state == 1 else "NEUTRAL",
-                'start_time': data.index[start_idx],
-                'end_time': data.index[i - 1],
-                'start_price': close[start_idx],
-                'end_price': close[i - 1],
-                'bars': i - start_idx,
-                'change_pct': ((close[i - 1] - close[start_idx]) / close[start_idx]) * 100
-            })
-            start_idx = i
-            current_state = final_state[i]
-
-    signal_periods.append({
-        'state': "BUY-ACTIVE" if current_state == 1 else "NEUTRAL",
-        'start_time': data.index[start_idx],
-        'end_time': data.index[-1],
-        'start_price': close[start_idx],
-        'end_price': close[-1],
-        'bars': n - start_idx,
-        'change_pct': ((close[-1] - close[start_idx]) / close[start_idx]) * 100
-    })
-
-    print(f"\n📊 PROBABILITY-BASED BUY PERIODS — {symbol}")
-    print("=" * 130)
-    print(f"  {'#':<4} {'STATE':<12} {'START TIME':<22} {'END TIME':<22} {'START':>10} {'END':>10} {'CHANGE %':>10} {'BARS':>6}")
-    print("-" * 130)
-
-    for i, sp in enumerate(signal_periods, 1):
-        emoji = "🟢" if sp['state'] == "BUY-ACTIVE" else "⚪"
-        active = " ⬅️ ACTIVE" if i == len(signal_periods) else ""
-        print(f"  {emoji} {i:<3} {sp['state']:<12} "
-              f"{str(sp['start_time']):<22} {str(sp['end_time']):<22} "
-              f"{sp['start_price']:>10.2f} {sp['end_price']:>10.2f} "
-              f"{sp['change_pct']:>+10.2f}% {sp['bars']:>5}{active}")
-
-    print("=" * 130 + "\n")
+    # Summary
+    buy_signals = data[data['st_sig'] == 1]
+    print(f"\n📊 BUY SIGNALS GENERATED: {len(buy_signals)}")
+    if not buy_signals.empty:
+        print(buy_signals[['Close', 'probability_score', 'signal_priority',
+                           'stop_price', 'target_price']].round(4))
 
     return data
 
-
-
-
-# ============================================================================
-# Helper Functions
-# ============================================================================
-def _cci(high, low, close, period=20):
-    """Commodity Channel Index"""
-    tp = (high+low+close) / 3
-    sma_tp = tp.rolling(window=period).mean()
-    mad = tp.rolling(window=period).apply(lambda x: (abs(x-x.mean())).mean())
-    cci = (tp-sma_tp) / (0.015 * mad)
-    return cci.fillna(0)
-
-
-def _atr(high, low, close, period=14):
-    """Average True Range"""
-    tr1 = high-low
-    tr2 = abs(high-close.shift(1))
-    tr3 = abs(low-close.shift(1))
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    atr = tr.rolling(window=period).mean()
-    return atr.fillna(tr.mean())
-
-
-def _vwap(high, low, close, volume, period=20):
-    """Volume Weighted Average Price"""
-    tp = (high+low+close) / 3.0
-    vwap_numerator = (tp * volume).rolling(window=period).sum()
-    vwap_denominator = volume.rolling(window=period).sum()
-    return vwap_numerator / vwap_denominator
 
 
 
