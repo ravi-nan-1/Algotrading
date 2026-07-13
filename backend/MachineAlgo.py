@@ -805,7 +805,7 @@ Return ONLY JSON:
 
 
 
-def super_trend(symbol, data, use_llm=False):
+def super_trendjj(symbol, data, use_llm=False):
     """
     IMPROVED Reversal Strategy - Buy at Lows with Better Risk Management
     - Cleaner code, fewer bugs, stronger filters, adaptive elements
@@ -986,6 +986,414 @@ def super_trend(symbol, data, use_llm=False):
 
 
 
+def super_trend(symbol: str, data: pd.DataFrame) -> pd.DataFrame:
+    """
+    AGGRESSIVE MULTI-BRANCH OPTION BUYING STRATEGY
+    Generates more signals by relaxing strict conditions
+    """
+
+    if 'Datetime' in data.columns:
+        data = data.set_index('Datetime')
+
+    data = data.copy()
+    n = len(data)
+
+    print("=" * 100)
+    print(f"🚀 MULTI-BRANCH OPTION STRATEGY → {symbol} | Data Points: {n}")
+    print("=" * 100)
+
+    # Initialize output columns
+    data['st_sig'] = 0
+    data['condition'] = ''
+    data['quality'] = ''
+    data['entry_price'] = np.nan
+    data['stop_loss'] = np.nan
+    data['take_profit'] = np.nan
+    data['risk_reward'] = np.nan
+    data['confidence'] = 0.0
+    data['reason'] = ''
+
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # CALCULATE METRICS
+    # ═══════════════════════════════════════════════════════════════════════════════
+
+    # ATR
+    high_low = data['High']-data['Low']
+    high_close = np.abs(data['High']-data['Close'].shift())
+    low_close = np.abs(data['Low']-data['Close'].shift())
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    data['ATR'] = tr.rolling(14).mean()
+
+    # EMAs
+    data['EMA10'] = data['Close'].ewm(span=10, adjust=False).mean()
+    data['EMA20'] = data['Close'].ewm(span=20, adjust=False).mean()
+    data['EMA50'] = data['Close'].ewm(span=50, adjust=False).mean()
+
+    # Candles
+    data['range'] = data['High']-data['Low']
+    data['body'] = (data['Close']-data['Open']).abs()
+    data['body_pct'] = data['body'] / (data['range'].replace(0, np.nan))
+    data['close_pos'] = (data['Close']-data['Low']) / (data['range'].replace(0, np.nan))
+    data['is_bullish'] = data['Close'] > data['Open']
+
+    # Volume
+    data['vol_ma20'] = data['Volume'].rolling(20).mean()
+    data['vol_ratio'] = data['Volume'] / (data['vol_ma20']+1e-9)
+
+    # Momentum (price velocity)
+    data['momentum'] = data['Close'].diff(1)
+    data['momentum_pct'] = (data['Close'].pct_change() * 100).fillna(0)
+
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # BRANCH 1: V-SHAPE REVERSAL (AGGRESSIVE)
+    # ═══════════════════════════════════════════════════════════════════════════════
+
+    def detect_v_shape(idx):
+        """
+        V-Shape: Catch reversals at the bottom
+        More relaxed: Accept any reversal with decent volume
+        """
+        if idx < 8:
+            return False, {}
+
+        current = data.iloc[idx]
+        prev = data.iloc[idx-1]
+        prev2 = data.iloc[idx-2]
+
+        # Signal 1: Strong bullish reversal after down day
+        is_bullish_today = current['Close'] > current['Open']
+        was_bearish_yesterday = prev['Close'] < prev['Open']
+
+        if not (is_bullish_today and was_bearish_yesterday):
+            return False, {}
+
+        # Signal 2: Good body (at least 30% of range)
+        if current['body_pct'] < 0.6:
+            return False, {}
+
+        # Signal 3: Close in upper half
+        if current['close_pos'] < 0.5:
+            return False, {}
+
+        # Signal 4: Volume okay (>= 0.8x average)
+        if current['vol_ratio'] < 0.8:
+            return False, {}
+
+        # Signal 5: Recent downtrend (not mandatory but preferred)
+        recent_closes = data['Close'].iloc[idx-5:idx].values
+        has_some_down = recent_closes[0] > recent_closes[-1]
+
+        signal_data = {
+            'body_pct': current['body_pct'] * 100,
+            'close_pos_pct': current['close_pos'] * 100,
+            'volume_ratio': current['vol_ratio'] * 100,
+            'momentum': current['momentum_pct'],
+            'has_downtrend': has_some_down
+        }
+
+        return True, signal_data
+
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # BRANCH 2: BASE FORMATION (AGGRESSIVE)
+    # ═══════════════════════════════════════════════════════════════════════════════
+
+    def detect_base(idx):
+        """
+        Base: Catch breakouts from consolidation
+        More relaxed: Any tight range breakout with volume
+        """
+        if idx < 10:
+            return False, {}
+
+        current = data.iloc[idx]
+
+        # Check last 8 candles for consolidation
+        window = data.iloc[idx-8:idx]
+
+        # Signal 1: Tight range (max-min is small)
+        range_width = window['High'].max()-window['Low'].min()
+        close_price = current['Close']
+        range_pct = range_width / (close_price+1e-9) * 100
+
+        if range_pct > 3.5:  # More than 3.5% range = not consolidation
+            return False, {}
+
+        # Signal 2: Breakout happening now (close > range high)
+        window_high = window['High'].max()
+
+        if current['Close'] <= window_high:
+            return False, {}
+
+        # Signal 3: Volume on breakout (>= 0.9x average is okay)
+        if current['vol_ratio'] < 0.9:
+            return False, {}
+
+        # Signal 4: Current candle has decent body
+        if current['body_pct'] < 0.25:
+            return False, {}
+
+        signal_data = {
+            'range_width_pct': range_pct,
+            'window_high': window_high,
+            'close': current['Close'],
+            'breakout_pct': ((current['Close']-window_high) / (window_high+1e-9)) * 100,
+            'volume_ratio': current['vol_ratio'] * 100,
+            'body_pct': current['body_pct'] * 100
+        }
+
+        return True, signal_data
+
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # BRANCH 3: BULLISH CONTINUATION (AGGRESSIVE)
+    # ═══════════════════════════════════════════════════════════════════════════════
+
+    def detect_continuation(idx):
+        """
+        Continuation: Entry on pullback in uptrend
+        More relaxed: Any pullback in an uptrend with recovery
+        """
+        if idx < 15:
+            return False, {}
+
+        current = data.iloc[idx]
+        ema10 = data['EMA10'].iloc[idx]
+        ema20 = data['EMA20'].iloc[idx]
+
+        # Signal 1: In uptrend (price > EMA10 > EMA20)
+        if not (current['Close'] > ema10 > ema20):
+            return False, {}
+
+        # Signal 2: Close near EMA (within 2%)
+        distance_from_ema = (current['Close']-ema10) / (ema10+1e-9)
+
+        if distance_from_ema < -0.02 or distance_from_ema > 0.03:
+            return False, {}
+
+        # Signal 3: Bullish candle
+        if not current['is_bullish']:
+            return False, {}
+
+        # Signal 4: Good body (>25%)
+        if current['body_pct'] < 0.25:
+            return False, {}
+
+        # Signal 5: Volume okay
+        if current['vol_ratio'] < 0.8:
+            return False, {}
+
+        # Check recent structure (should have higher lows)
+        recent_lows = data['Low'].iloc[idx-8:idx].values
+        has_higher_lows = sum(recent_lows[i] > recent_lows[i-1] for i in range(1, len(recent_lows))) >= 1
+
+        signal_data = {
+            'distance_from_ema_pct': distance_from_ema * 100,
+            'ema10': ema10,
+            'ema20': ema20,
+            'close': current['Close'],
+            'body_pct': current['body_pct'] * 100,
+            'volume_ratio': current['vol_ratio'] * 100,
+            'has_higher_lows': has_higher_lows
+        }
+
+        return True, signal_data
+
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # CALCULATE LEVELS & QUALITY
+    # ═══════════════════════════════════════════════════════════════════════════════
+
+    def calculate_levels(idx, condition):
+        entry = data['Close'].iloc[idx]
+        atr = data['ATR'].iloc[idx]
+
+        if condition == 'V_SHAPE':
+            # Stop below recent low
+            recent_low = data['Low'].iloc[max(0, idx-8):idx].min()
+            stop = recent_low-atr * 0.4
+            stop_dist = entry-stop
+            target = entry+(stop_dist * 2.2)
+
+        elif condition == 'BASE':
+            # Stop below consolidation low
+            cons_low = data['Low'].iloc[max(0, idx-10):idx].min()
+            stop = cons_low-atr * 0.3
+            stop_dist = entry-stop
+            target = entry+(stop_dist * 2.0)
+
+        else:  # CONTINUATION
+            # Stop below EMA or recent low
+            ema10 = data['EMA10'].iloc[idx]
+            recent_low = data['Low'].iloc[max(0, idx-6):idx].min()
+            support = min(ema10, recent_low)
+            stop = support-atr * 0.3
+            stop_dist = entry-stop
+            target = entry+(stop_dist * 1.8)
+
+        rr = abs(target-entry) / (abs(entry-stop)+1e-9)
+
+        return entry, stop, target, rr
+
+    def get_quality(rr):
+        """Quality based on RR"""
+        if rr < 1.2:
+            return "REJECT"
+        elif rr >= 2.2:
+            return "PREMIUM"
+        elif rr >= 1.8:
+            return "HIGH"
+        else:
+            return "MEDIUM"
+
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # MAIN LOOP - GENERATE SIGNALS
+    # ═══════════════════════════════════════════════════════════════════════════════
+
+    signals_list = []
+
+    for idx in range(15, n):
+        candidates = []
+
+        # ──────────────────── V-SHAPE ────────────────────
+        v_det, v_data = detect_v_shape(idx)
+        if v_det:
+            entry, stop, target, rr = calculate_levels(idx, 'V_SHAPE')
+            quality = get_quality(rr)
+            if quality != "REJECT":
+                confidence = min(80 if quality == "PREMIUM" else 70 if quality == "HIGH" else 60, 100)
+                candidates.append({
+                    'condition': 'V_SHAPE_REVERSAL',
+                    'quality': quality,
+                    'entry': entry,
+                    'stop': stop,
+                    'target': target,
+                    'rr': rr,
+                    'confidence': confidence,
+                    'data': v_data,
+                    'priority': 1
+                })
+
+        # ──────────────────── BASE ────────────────────
+        b_det, b_data = detect_base(idx)
+        if b_det:
+            entry, stop, target, rr = calculate_levels(idx, 'BASE')
+            quality = get_quality(rr)
+            if quality != "REJECT":
+                confidence = min(75 if quality == "PREMIUM" else 65 if quality == "HIGH" else 55, 100)
+                candidates.append({
+                    'condition': 'BASE_FORMATION',
+                    'quality': quality,
+                    'entry': entry,
+                    'stop': stop,
+                    'target': target,
+                    'rr': rr,
+                    'confidence': confidence,
+                    'data': b_data,
+                    'priority': 2
+                })
+
+        # ──────────────────── CONTINUATION ────────────────────
+        c_det, c_data = detect_continuation(idx)
+        if c_det:
+            entry, stop, target, rr = calculate_levels(idx, 'CONTINUATION')
+            quality = get_quality(rr)
+            if quality != "REJECT":
+                confidence = min(70 if quality == "PREMIUM" else 60 if quality == "HIGH" else 50, 100)
+                candidates.append({
+                    'condition': 'BULLISH_CONTINUATION',
+                    'quality': quality,
+                    'entry': entry,
+                    'stop': stop,
+                    'target': target,
+                    'rr': rr,
+                    'confidence': confidence,
+                    'data': c_data,
+                    'priority': 3
+                })
+
+        # Take best candidate
+        if candidates:
+            # Sort by quality score and priority
+            quality_score = {"PREMIUM": 3, "HIGH": 2, "MEDIUM": 1}
+            best = max(candidates, key=lambda x: (quality_score[x['quality']], -x['priority']))
+
+            condition = best['condition']
+            quality = best['quality']
+            entry = best['entry']
+            stop = best['stop']
+            target = best['target']
+            rr = best['rr']
+            confidence = best['confidence']
+            sig_data = best['data']
+
+            # Record signal
+            data.loc[data.index[idx], 'st_sig'] = 1
+            data.loc[data.index[idx], 'condition'] = condition
+            data.loc[data.index[idx], 'quality'] = quality
+            data.loc[data.index[idx], 'entry_price'] = entry
+            data.loc[data.index[idx], 'stop_loss'] = stop
+            data.loc[data.index[idx], 'take_profit'] = target
+            data.loc[data.index[idx], 'risk_reward'] = rr
+            data.loc[data.index[idx], 'confidence'] = confidence
+
+            # Build reason
+            reason = f"{condition.replace('_', ' ')} | RR={rr:.2f}x | "
+            for k, v in sig_data.items():
+                if isinstance(v, (int, float)):
+                    reason += f"{k}={v:.1f} "
+
+            data.loc[data.index[idx], 'reason'] = reason[:200]
+
+            signals_list.append({
+                'datetime': data.index[idx],
+                'close': data['Close'].iloc[idx],
+                'condition': condition,
+                'quality': quality,
+                'entry': entry,
+                'stop': stop,
+                'target': target,
+                'rr': rr,
+                'confidence': confidence
+            })
+
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # PRINT SUMMARY
+    # ═══════════════════════════════════════════════════════════════════════════════
+
+    print(f"\n📊 SIGNALS GENERATED: {len(signals_list)}\n")
+
+    if len(signals_list) > 0:
+        print(f"{'DateTime':<30} {'Close':<10} {'Condition':<25} {'Quality':<10} {'RR':<8} {'Conf':<8}")
+        print("-" * 95)
+
+        for sig in signals_list[-20:]:  # Last 20 signals
+            print(f"{str(sig['datetime']):<30} {sig['close']:<10.2f} {sig['condition']:<25} "
+                  f"{sig['quality']:<10} {sig['rr']:<8.2f} {sig['confidence']:<8.1f}")
+
+        # Breakdown
+        print(f"\n📈 CONDITION BREAKDOWN:")
+        conds = {}
+        for s in signals_list:
+            conds[s['condition']] = conds.get(s['condition'], 0)+1
+        for c, count in sorted(conds.items()):
+            print(f"   {c}: {count}")
+
+        print(f"\n💎 QUALITY BREAKDOWN:")
+        quals = {}
+        for s in signals_list:
+            quals[s['quality']] = quals.get(s['quality'], 0)+1
+        for q in ['PREMIUM', 'HIGH', 'MEDIUM']:
+            if q in quals:
+                print(f"   {q}: {quals[q]}")
+
+        avg_rr = np.mean([s['rr'] for s in signals_list])
+        avg_conf = np.mean([s['confidence'] for s in signals_list])
+        print(f"\n💰 AVG RISK/REWARD: {avg_rr:.2f}x")
+        print(f"📊 AVG CONFIDENCE: {avg_conf:.1f}%")
+    else:
+        print("⚠️  No signals generated - try adjusting parameters")
+
+    print("\n"+"=" * 100+"\n")
+
+    return data
 
 
 
