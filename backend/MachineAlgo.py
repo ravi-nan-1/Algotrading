@@ -805,188 +805,11 @@ Return ONLY JSON:
 
 
 
-def super_trendjj(symbol, data, use_llm=False):
-    """
-    IMPROVED Reversal Strategy - Buy at Lows with Better Risk Management
-    - Cleaner code, fewer bugs, stronger filters, adaptive elements
-    - Reduced overfitting risk (fewer magic numbers, better logic)
-    """
-    if 'Datetime' in data.columns:
-        data = data.set_index('Datetime')
-    data = data.copy()
-
-    print("=" * 80)
-    print(f"🚀 IMPROVED SUPER TREND → {symbol} | Shape: {data.shape}")
-    print("=" * 80)
-
-    # ═══════════════════════════════════════════════════════
-    # TUNABLE PARAMETERS (more balanced defaults)
-    # ═══════════════════════════════════════════════════════
-    ATR_PERIOD = 14
-    EMA_TREND_PERIOD = 21  # Slightly longer for better trend filter
-    STOCH_K = 14
-    STOCH_SMOOTH = 3
-    STOCH_D = 3
-
-    ENTRY_PROB = 55.0  # Lowered a bit for more opportunities
-    EXIT_PROB = 42.0
-    MIN_BODY_EFF = 0.20  # Stricter for quality candles
-    MIN_VOL_RATIO = .81  # Stronger volume confirmation
-    RR_RATIO = 2.0  # More realistic RR (was 2.5)
-    MAX_HOLD_BARS = 15  # Shorter hold to reduce exposure
-
-    K_OVERSOLD = 20  # Slightly higher (less extreme)
-    K_OVERSOLD_LOOKBACK = 5
-
-    n = len(data)
-    if n < 150:  # Increased warmup
-        data['st_sig'] = 0
-        data['state'] = 0
-        return data
-
-    # ═══════════════════════════════════════════════════════
-    # INDICATORS (improved & cleaned)
-    # ═══════════════════════════════════════════════════════
-    data['ema_trend'] = data['Close'].ewm(span=EMA_TREND_PERIOD, adjust=False).mean()
-
-    # True Range based ATR (more accurate than High-Low only)
-    high_low = data['High']-data['Low']
-    high_close = np.abs(data['High']-data['Close'].shift())
-    low_close = np.abs(data['Low']-data['Close'].shift())
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    data['atr'] = tr.rolling(ATR_PERIOD).mean()
-
-    # Velocity (smoothed returns)
-    data['velocity'] = np.log(data['Close'] / data['Close'].shift(1)).ewm(span=5, adjust=False).mean()
-
-    # Stochastic
-    low_min = data['Low'].rolling(STOCH_K).min()
-    high_max = data['High'].rolling(STOCH_K).max()
-    raw_k = 100 * (data['Close']-low_min) / (high_max-low_min+1e-9)
-    data['k'] = raw_k.rolling(STOCH_SMOOTH).mean()
-    data['d'] = data['k'].rolling(STOCH_D).mean()
-
-    # Candle strength & Volume
-    rng = (data['High']-data['Low']).replace(0, np.nan)
-    body = (data['Close']-data['Open']).abs()
-    data['body_efficiency'] = (body / rng).fillna(0)
-    data['range_exp'] = rng / (rng.rolling(20).mean()+1e-9)
-    data['vol_ratio'] = data['Volume'] / (data['Volume'].rolling(20).mean()+1e-9)
-
-    # ═══════════════════════════════════════════════════════
-    # IMPROVED PROBABILITY SCORE
-    # ═══════════════════════════════════════════════════════
-    vel_score = 100 / (1+np.exp(-data['velocity'] * 12))  # Slightly steeper
-    mom_score = ((data['k']-25).clip(lower=0) / 75) * 100  # Adjusted baseline
-    disp_score = (data['body_efficiency'] * 100+
-                  data['range_exp'] * 35+
-                  data['vol_ratio'] * 25) / 1.6  # Rebalanced
-
-    # Dynamic weighting based on trend strength (helps in different regimes)
-    trend_strength = (data['Close']-data['ema_trend']).abs() / data['atr'].replace(0, np.nan)
-    trend_factor = trend_strength.clip(upper=3) / 3.0  # 0-1 normalization
-
-    data['probability_score'] = (
-            0.40 * vel_score * (1+0.2 * trend_factor)+  # Velocity more important in trend
-            0.35 * mom_score+
-            0.25 * disp_score
-    ).clip(0, 100)
-
-    # ═══════════════════════════════════════════════════════
-    # SIGNAL GENERATION (bug fixes + stronger logic)
-    # ═══════════════════════════════════════════════════════
-    data['st_sig'] = 0
-    data['signal_priority'] = ''
-    data['stop_price'] = np.nan
-    data['target_price'] = np.nan
-    data['state'] = 0
-    data['exit_reason'] = ''
-
-    in_position = False
-    entry_idx = None
-    entry_price = None
-
-    for i in range(150, n):
-        current_idx = data.index[i]
-
-        if in_position:
-            # Exit logic (improved)
-            hit_stop = data['Low'].iloc[i] <= data['stop_price'].iloc[i-1]
-            hit_target = data['High'].iloc[i] >= data['target_price'].iloc[i-1]
-            momentum_fail = data['velocity'].iloc[i] < -0.0008
-            prob_faded = data['probability_score'].iloc[i] < EXIT_PROB
-            timeout = (i-entry_idx) > MAX_HOLD_BARS
-            # New: trailing stop
-            trailing_stop = entry_price * 0.985 if (i-entry_idx) > 5 else data['stop_price'].iloc[i-1]
-
-            if hit_stop or hit_target or momentum_fail or prob_faded or timeout or (
-                    data['Low'].iloc[i] <= trailing_stop):
-                in_position = False
-                data.loc[current_idx, 'state'] = 0
-                if hit_target:
-                    data.loc[current_idx, 'exit_reason'] = 'TARGET'
-                elif hit_stop or (data['Low'].iloc[i] <= trailing_stop):
-                    data.loc[current_idx, 'exit_reason'] = 'STOP'
-                else:
-                    data.loc[current_idx, 'exit_reason'] = 'OTHER'
-                continue
-            else:
-                data.loc[current_idx, 'state'] = 1
-            continue
-
-        # Market Filters
-        in_uptrend = data['Close'].iloc[i] > data['ema_trend'].iloc[i]
-        favorable = (data['range_exp'].iloc[i] > 0.85) and (data['vol_ratio'].iloc[i] > 0.75)
-        strong_momentum = data['k'].iloc[i] > data['d'].iloc[i] and data['k'].iloc[i-1] <= data['d'].iloc[i-1]
-
-        # Oversold context
-        lookback_start = max(0, i-K_OVERSOLD_LOOKBACK)
-        recent_k_min = data['k'].iloc[lookback_start:i+1].min()
-
-        # HIGH PRIORITY (best reversals near lows)
-        high_priority = (
-                favorable and in_uptrend and strong_momentum and
-                recent_k_min <= K_OVERSOLD and
-                data['body_efficiency'].iloc[i] > MIN_BODY_EFF and
-                data['vol_ratio'].iloc[i] > MIN_VOL_RATIO and
-                data['probability_score'].iloc[i] >= ENTRY_PROB-8  # Slightly relaxed for high-prio
-        )
-
-        # LOW PRIORITY (still good setups)
-        low_priority = (
-                favorable and
-                data['probability_score'].iloc[i] > ENTRY_PROB and
-                data['body_efficiency'].iloc[i] > MIN_BODY_EFF and
-                data['vol_ratio'].iloc[i] > MIN_VOL_RATIO
-        )
-
-        if high_priority or low_priority:
-            data.loc[current_idx, 'st_sig'] = 1
-            data.loc[current_idx, 'signal_priority'] = 'HIGH' if high_priority else 'LOW'
-            data.loc[current_idx, 'state'] = 1
-
-            atr_val = data['atr'].iloc[i]
-            stop_dist = atr_val * 1.65  # Tighter stop
-            entry_price = data['Close'].iloc[i]
-
-            data.loc[current_idx, 'stop_price'] = entry_price-stop_dist
-            data.loc[current_idx, 'target_price'] = entry_price+(stop_dist * RR_RATIO)
-
-            in_position = True
-            entry_idx = i
-
-    # Summary
-    buy_signals = data[data['st_sig'] == 1]
-    print(f"\n📊 BUY SIGNALS GENERATED: {len(buy_signals)}")
-    if not buy_signals.empty:
-        print(buy_signals[['Close', 'probability_score', 'signal_priority',
-                           'stop_price', 'target_price']].round(4))
-
-    return data
 
 
 
-def super_trend(symbol: str, data: pd.DataFrame) -> pd.DataFrame:
+
+def super_trendefore(symbol: str, data: pd.DataFrame) -> pd.DataFrame:
     """
     AGGRESSIVE MULTI-BRANCH OPTION BUYING STRATEGY
     FIXED: Morning trades + Wick Reversal + Enhanced Range-Bound Filter (PSAR + Candle Logic)
@@ -1423,6 +1246,413 @@ def super_trend(symbol: str, data: pd.DataFrame) -> pd.DataFrame:
 
 
 
+def super_trend(symbol: str, data: pd.DataFrame) -> pd.DataFrame:
+    """
+    AGGRESSIVE MULTI-BRANCH OPTION BUYING STRATEGY
+    FIXED: Morning trades + Wick Reversal + Enhanced Range-Bound Filter (PSAR + Candle Logic)
+    """
+    if 'Datetime' in data.columns:
+        data = data.set_index('Datetime')
+
+    if not isinstance(data.index, pd.DatetimeIndex):
+        data.index = pd.to_datetime(data.index)
+
+    data = data.copy()
+    n = len(data)
+
+    print("=" * 100)
+    print(f"🚀 ENHANCED RANGE-BOUND STRATEGY → {symbol} | Data Points: {n}")
+    print("=" * 100)
+
+    # Initialize signal columns
+    data['st_sig'] = 0
+    data['condition'] = ''
+    data['quality'] = ''
+    data['entry_price'] = np.nan
+    data['stop_loss'] = np.nan
+    data['take_profit'] = np.nan
+    data['risk_reward'] = np.nan
+    data['confidence'] = 0.0
+    data['reason'] = ''
+
+    # Technical Indicators
+    high_low = data['High']-data['Low']
+    high_close = np.abs(data['High']-data['Close'].shift())
+    low_close = np.abs(data['Low']-data['Close'].shift())
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    data['ATR'] = tr.rolling(14).mean()
+
+    data['EMA5'] = data['Close'].ewm(span=5, adjust=False).mean()
+    data['EMA10'] = data['Close'].ewm(span=10, adjust=False).mean()
+    data['EMA20'] = data['Close'].ewm(span=20, adjust=False).mean()
+    data['EMA50'] = data['Close'].ewm(span=50, adjust=False).mean()
+
+    data['range'] = data['High']-data['Low']
+    data['body'] = (data['Close']-data['Open']).abs()
+    data['body_pct'] = data['body'] / (data['range'].replace(0, np.nan))
+    data['close_pos'] = (data['Close']-data['Low']) / (data['range'].replace(0, np.nan))
+    data['is_bullish'] = data['Close'] > data['Open']
+
+    data['vol_ma20'] = data['Volume'].rolling(20).mean()
+    data['vol_ratio'] = data['Volume'] / (data['vol_ma20']+1e-9)
+
+    # ====================== PSAR ======================
+    def psar(high, low, close, iaf=0.02, maxaf=0.2):
+        length = len(high)
+        sar = np.zeros(length)
+        trend = np.zeros(length, dtype=int)
+        af = np.full(length, iaf)
+        ep = np.zeros(length)
+
+        sar[0] = low[0]
+        trend[0] = 1
+        ep[0] = high[0]
+
+        for i in range(1, length):
+            if trend[i-1] == 1:
+                sar[i] = min(sar[i-1]+af[i-1] * (ep[i-1]-sar[i-1]), low[i-1])
+                if low[i] < sar[i]:
+                    trend[i] = -1
+                    sar[i] = ep[i-1]
+                    ep[i] = low[i]
+                    af[i] = iaf
+                else:
+                    trend[i] = 1
+                    if high[i] > ep[i-1]:
+                        ep[i] = high[i]
+                        af[i] = min(af[i-1]+iaf, maxaf)
+                    else:
+                        ep[i] = ep[i-1]
+                        af[i] = af[i-1]
+            else:
+                sar[i] = max(sar[i-1]-af[i-1] * (sar[i-1]-ep[i-1]), high[i-1])
+                if high[i] > sar[i]:
+                    trend[i] = 1
+                    sar[i] = ep[i-1]
+                    ep[i] = high[i]
+                    af[i] = iaf
+                else:
+                    trend[i] = -1
+                    if low[i] < ep[i-1]:
+                        ep[i] = low[i]
+                        af[i] = min(af[i-1]+iaf, maxaf)
+                    else:
+                        ep[i] = ep[i-1]
+                        af[i] = af[i-1]
+        return sar, trend
+
+    data['PSAR'], data['PSAR_trend'] = psar(data['High'].values, data['Low'].values, data['Close'].values)
+
+    # ====================== ENHANCED RANGE-BOUND FILTER ======================
+
+
+    def is_range_bound(idx, lookback=12, threshold_pct=0.85):
+        """Enhanced Range Detection using PSAR + Candle Logic"""
+        if idx < max(lookback, 20):
+            return False
+
+        window = data.iloc[idx-lookback:idx+1]
+        c = data.iloc[idx]
+        prev = data.iloc[idx-1] if idx > 0 else c
+
+        price_range_pct = (window['High'].max()-window['Low'].min()) / window['Close'].iloc[-1] * 100
+
+        psar_window = data['PSAR_trend'].iloc[idx-lookback:idx+1]
+        psar_flips = (psar_window.diff() != 0).sum()
+
+        no_breakout = c['High'] <= prev['High'] * 1.002
+
+        recent_bodies = data['body_pct'].iloc[max(0, idx-7):idx]
+        small_body_condition = (recent_bodies < 0.48).mean() >= 0.65
+
+        is_range = (
+                price_range_pct < threshold_pct or
+                (psar_flips >= 4 and no_breakout and small_body_condition)
+        )
+        return is_range
+
+    data['consolidation'] = False
+    for i in range(20, n):
+        win = data.iloc[i-20:i]
+        rng = (win['High'].max()-win['Low'].min()) / win['Close'].iloc[-1]
+        data.loc[data.index[i], 'consolidation'] = rng < 0.019
+
+    # ====================== DETECTORS ======================
+    def detect_base(idx):
+        if idx < 20 or is_range_bound(idx, lookback=12, threshold_pct=0.85):
+            return False, {}
+
+        tm = data.index[idx].time()
+        if not (dt.time(9, 15) <= tm <= dt.time(10, 30)):
+            return False, {}
+
+        c = data.iloc[idx]
+        uptrend = c['Close'] > c['EMA5'] > c['EMA20']
+        strong_body = c['is_bullish'] and c['body_pct'] >= 0.55 and c['close_pos'] >= 0.60
+        momentum = (c['Close']-c['Open']) / (c['High']-c['Low']+1e-9) > 0.62
+        vol_ok = c['vol_ratio'] > 1.20
+
+        if not (uptrend and strong_body and momentum and vol_ok):
+            return False, {}
+
+        if c['Close'] < data['Low'].iloc[idx-8:idx].min() * 0.985:
+            return False, {}
+
+        return True, {
+            'pattern_type': 'BASE_MORNING',
+            'strength': 'HIGH',
+            'vol': round(c['vol_ratio'] * 100, 1)
+        }
+
+    def detect_v_shape(idx):
+        if idx < 14 or is_range_bound(idx, lookback=14, threshold_pct=0.95):
+            return False, {}
+
+        lookback = 9
+        window = data.iloc[idx-lookback:idx+1]
+        low_idx_rel = window['Low'].values.argmin()
+        pivot_idx = idx-lookback+low_idx_rel
+        bars_since_pivot = idx-pivot_idx
+
+        # FIX (late entry): previously allowed bars_since_pivot up to 5, which let the
+        # strategy chase the move several candles after the actual low and enter late.
+        # Now only accept the pivot candle itself (0 = reversal shows up on the low bar,
+        # e.g. a hammer/doji) or the very next candle (1 = first confirmed reversal candle).
+        if bars_since_pivot < 0 or bars_since_pivot > 1:
+            return False, {}
+
+        if data['Low'].iloc[pivot_idx] > data['Low'].iloc[max(0, pivot_idx-6):pivot_idx+7].min():
+            return False, {}
+
+        left_start = max(0, pivot_idx-8)
+        left_window = data.iloc[left_start:pivot_idx+1]
+        swing_high = left_window['High'].max()
+        pivot_low = data['Low'].iloc[pivot_idx]
+        decline_pct = (swing_high-pivot_low) / swing_high * 100 if swing_high > 0 else 0
+        points_drop = swing_high-pivot_low
+
+        red_streak = 0
+        for j in range(pivot_idx, left_start-1, -1):
+            cj = data.iloc[j]
+            if cj['is_bullish']:
+                break
+            if cj['body_pct'] < (0.30 if idx < 30 else 0.35):
+                break
+            red_streak += 1
+
+        is_sharp_fall = points_drop >= 20 or decline_pct >= 1.0
+        is_steep_decline = decline_pct >= 0.75 or points_drop >= 15
+
+        if not (is_sharp_fall or is_steep_decline):
+            return False, {}
+
+        ema5_below_found = any(
+            (data.iloc[j]['Low'] < data.iloc[j].get('EMA5', np.inf))
+            for j in range(left_start, pivot_idx+1)
+        )
+        if not ema5_below_found and 'EMA5' in data.columns:
+            return False, {}
+
+        c = data.iloc[idx]
+        candle_range = c['High']-c['Low']
+        lower_wick = min(c['Open'], c['Close'])-c['Low']
+        lower_wick_pct = lower_wick / candle_range if candle_range > 0 else 0
+        upper_wick_pct = (c['High']-max(c['Open'], c['Close'])) / candle_range if candle_range > 0 else 0
+
+        is_prev_long_wick_red = False
+        if idx > 0:
+            pc = data.iloc[idx-1]
+            p_range = pc['High']-pc['Low']
+            if p_range > 0 and not pc['is_bullish']:
+                p_lower = min(pc['Open'], pc['Close'])-pc['Low']
+                if p_lower / p_range >= 0.52:
+                    is_prev_long_wick_red = True
+
+        pattern_type = None
+        if c['is_bullish'] and c['body_pct'] >= 0.52 and c['close_pos'] >= 0.58:
+            pattern_type = 'GREEN'
+        elif (not c['is_bullish']) and lower_wick_pct >= 0.48 and c['close_pos'] >= 0.35:
+            if c['body_pct'] >= 0.12 or lower_wick_pct >= 0.65:
+                pattern_type = 'WICK'
+            elif lower_wick_pct >= 0.72 and upper_wick_pct <= 0.22:
+                pattern_type = 'WICK_DOJI'
+        elif is_prev_long_wick_red and c['is_bullish'] and c['body_pct'] >= 0.45:
+            pattern_type = 'GREEN_AFTER_WICK'
+
+        if pattern_type is None:
+            return False, {}
+
+        recovery_pct = (c['Close']-pivot_low) / (swing_high-pivot_low+1e-9)
+        min_recovery = 0.14 if 'WICK' in pattern_type else 0.35
+        if recovery_pct < min_recovery:
+            return False, {}
+
+        # FIX: guard for bars_since_pivot == 0 (pivot_idx == idx), where the old slice
+        # data['High'].iloc[pivot_idx:idx] would be empty -> NaN and silently reject.
+        if pivot_idx == idx:
+            recent_high = swing_high
+        else:
+            recent_high = data['High'].iloc[pivot_idx:idx].max()
+
+        breakout_price = c['High'] if 'WICK' in pattern_type else c['Close']
+        if breakout_price < recent_high * 0.996:
+            return False, {}
+
+        min_vol = 0.85 if 'WICK' in pattern_type else 1.10
+        if c['vol_ratio'] < min_vol:
+            return False, {}
+
+        return True, {
+            'pattern_type': pattern_type,
+            'decline_pct': round(decline_pct, 2),
+            'recovery_pct': round(recovery_pct * 100, 2),
+            'lower_wick_pct': round(lower_wick_pct * 100, 2),
+            'vol': round(c['vol_ratio'] * 100, 1)
+        }
+
+    def detect_continuation(idx):
+        if idx < 20 or is_range_bound(idx, lookback=10, threshold_pct=0.9):
+            return False, {}
+
+        tm = data.index[idx].time()
+        if dt.time(9, 15) <= tm <= dt.time(9, 45):
+            return False, {}
+
+        c = data.iloc[idx]
+        ema10 = data['EMA10'].iloc[idx]
+        ema20 = data['EMA20'].iloc[idx]
+
+        trend_ok = c['Close'] > ema10 > ema20
+        body_ok = c['is_bullish'] and c['body_pct'] >= 0.48 and c['close_pos'] >= 0.55
+        vol_ok = c['vol_ratio'] > 1.15
+        pullback = data['Close'].iloc[idx-4:idx].min() < ema10 * 0.999
+        breakout = c['Close'] > data['High'].iloc[idx-3:idx].max() * 0.999
+
+        if not (trend_ok and body_ok and vol_ok and pullback and breakout):
+            return False, {}
+
+        return True, {
+            'pattern_type': 'CONTINUATION',
+            'strength': 'MEDIUM',
+            'vol': round(c['vol_ratio'] * 100, 1)
+        }
+
+    # ====================== LEVELS & QUALITY ======================
+    def calculate_levels(idx, condition):
+        entry = data['Close'].iloc[idx]
+        FIXED_SL_POINTS = 11
+        FIXED_TARGET_POINTS = 30
+        stop = entry-FIXED_SL_POINTS
+        target = entry+FIXED_TARGET_POINTS
+        rr = abs(target-entry) / (abs(entry-stop)+1e-9)
+        return entry, stop, target, rr
+
+    def get_quality(rr):
+        if rr < 1.25:
+            return "REJECT"
+        return "PREMIUM" if rr >= 2.2 else "HIGH" if rr >= 1.8 else "MEDIUM"
+
+    # ====================== MAIN SIGNAL LOOP ======================
+    signals_list = []
+
+    for idx in range(18, n):
+        candidates = []
+
+        b_det, b_data = detect_base(idx)
+        if b_det:
+            entry, stop, target, rr = calculate_levels(idx, 'BASE')
+            quality = get_quality(rr)
+            if quality != "REJECT":
+                candidates.append({
+                    'condition': 'BASE_MORNING', 'quality': quality, 'entry': entry,
+                    'stop': stop, 'target': target, 'rr': rr, 'confidence': 82,
+                    'data': b_data, 'priority': 1
+                })
+
+        v_det, v_data = detect_v_shape(idx)
+        if v_det:
+            entry, stop, target, rr = calculate_levels(idx, 'V_SHAPE')
+            quality = get_quality(rr)
+            if quality != "REJECT":
+                conf = 88 if quality == "PREMIUM" else 76
+                candidates.append({
+                    'condition': 'V_SHAPE_REVERSAL', 'quality': quality, 'entry': entry,
+                    'stop': stop, 'target': target, 'rr': rr, 'confidence': conf,
+                    'data': v_data, 'priority': 2
+                })
+
+        c_det, c_data = detect_continuation(idx)
+        if c_det:
+            entry, stop, target, rr = calculate_levels(idx, 'CONTINUATION')
+            quality = get_quality(rr)
+            if quality != "REJECT":
+                candidates.append({
+                    'condition': 'BULLISH_CONTINUATION', 'quality': quality, 'entry': entry,
+                    'stop': stop, 'target': target, 'rr': rr, 'confidence': 66,
+                    'data': c_data, 'priority': 3
+                })
+
+        if candidates:
+            best = max(candidates, key=lambda x: (
+                {"PREMIUM": 3, "HIGH": 2, "MEDIUM": 1}.get(x['quality'], 0),
+                -x['priority']
+            ))
+
+            condition = best['condition']
+            quality = best['quality']
+            entry = best['entry']
+            stop = best['stop']
+            target = best['target']
+            rr = best['rr']
+            confidence = best['confidence']
+            sig_data = best['data']
+
+            data.loc[data.index[idx], 'st_sig'] = 1
+            data.loc[data.index[idx], 'condition'] = condition
+            data.loc[data.index[idx], 'quality'] = quality
+            data.loc[data.index[idx], 'entry_price'] = entry
+            data.loc[data.index[idx], 'stop_loss'] = stop
+            data.loc[data.index[idx], 'take_profit'] = target
+            data.loc[data.index[idx], 'risk_reward'] = rr
+            data.loc[data.index[idx], 'confidence'] = confidence
+
+            reason = f"{condition.replace('_', ' ')} | RR={rr:.2f}x | "
+            for k, v in sig_data.items():
+                if isinstance(v, (int, float)):
+                    reason += f"{k}={v:.1f} "
+            data.loc[data.index[idx], 'reason'] = reason[:200]
+
+            signals_list.append({
+                'datetime': data.index[idx], 'close': data['Close'].iloc[idx],
+                'condition': condition, 'quality': quality, 'entry': entry,
+                'stop': stop, 'target': target, 'rr': rr, 'confidence': confidence
+            })
+
+    # ====================== SUMMARY ======================
+    print(f"\n📊 SIGNALS GENERATED: {len(signals_list)}\n")
+    if signals_list:
+        print(f"{'DateTime':<30} {'Close':<10} {'Condition':<25} {'Quality':<10} {'RR':<8} {'Conf':<8}")
+        print("-" * 95)
+        for sig in signals_list[-25:]:
+            print(f"{str(sig['datetime']):<30} {sig['close']:<10.2f} {sig['condition']:<25} "
+                  f"{sig['quality']:<10} {sig['rr']:<8.2f} {sig['confidence']:<8.1f}")
+
+        from collections import Counter
+        conds = Counter(s['condition'] for s in signals_list)
+        print("\n📈 CONDITION BREAKDOWN:")
+        for c in sorted(conds):
+            print(f"   {c}: {conds[c]}")
+
+        quals = Counter(s['quality'] for s in signals_list)
+        print("\n💎 QUALITY BREAKDOWN:")
+        for q in ['PREMIUM', 'HIGH', 'MEDIUM']:
+            if q in quals:
+                print(f"   {q}: {quals[q]}")
+
+        print(f"\n💰 AVG RR: {np.mean([s['rr'] for s in signals_list]):.2f}x")
+        print(f"📊 AVG CONF: {np.mean([s['confidence'] for s in signals_list]):.1f}%")
+
+    return data
 
 
 
@@ -1862,7 +2092,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                 # ── SL: trails in 5-point steps, one step behind price ──
                 sl_steps = int(profit_from_entry // SL_Step)
-                new_sl   = BuyPrice + ((sl_steps - 1) * SL_Step)
+                new_sl   = BuyPrice + ((sl_steps - 2) * SL_Step)
                 new_sl   = max(new_sl, S_Price)   # never move SL down — locks in profit already gained
 
                 if new_sl > S_Price or new_target > Target_Price:
