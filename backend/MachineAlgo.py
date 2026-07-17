@@ -1246,7 +1246,7 @@ def super_trendefore(symbol: str, data: pd.DataFrame) -> pd.DataFrame:
 
 
 
-def super_trend(symbol: str, data: pd.DataFrame) -> pd.DataFrame:
+def super_trenddf(symbol: str, data: pd.DataFrame) -> pd.DataFrame:
     """
     AGGRESSIVE MULTI-BRANCH OPTION BUYING STRATEGY
     FIXED: Morning trades + Wick Reversal + Enhanced Range-Bound Filter (PSAR + Candle Logic)
@@ -1655,6 +1655,744 @@ def super_trend(symbol: str, data: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
+def super_trend(symbol: str, data: pd.DataFrame) -> pd.DataFrame:
+    """
+    AGGRESSIVE MULTI-BRANCH OPTION BUYING STRATEGY
+    FIXED: Morning trades + Wick Reversal + Enhanced Range-Bound Filter (PSAR + Candle Logic)
+    NEW: Consolidation-Box Breakout branch + Fall-Box (post sell-off) Breakout branch
+    """
+    if 'Datetime' in data.columns:
+        data = data.set_index('Datetime')
+
+    if not isinstance(data.index, pd.DatetimeIndex):
+        data.index = pd.to_datetime(data.index)
+
+    data = data.copy()
+    n = len(data)
+
+    print("=" * 100)
+    print(f"🚀 ENHANCED RANGE-BOUND STRATEGY → {symbol} | Data Points: {n}")
+    print("=" * 100)
+
+    # Initialize signal columns
+    data['st_sig'] = 0
+    data['condition'] = ''
+    data['quality'] = ''
+    data['entry_price'] = np.nan
+    data['stop_loss'] = np.nan
+    data['take_profit'] = np.nan
+    data['risk_reward'] = np.nan
+    data['confidence'] = 0.0
+    data['reason'] = ''
+
+    # Technical Indicators
+    high_low = data['High']-data['Low']
+    high_close = np.abs(data['High']-data['Close'].shift())
+    low_close = np.abs(data['Low']-data['Close'].shift())
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    data['ATR'] = tr.rolling(14).mean()
+
+    # rolling mean of ATR itself, used by the choppy-market filter below
+    # to detect when volatility is drying up relative to its own recent average.
+    data['ATR_MA'] = data['ATR'].rolling(20).mean()
+
+    data['EMA5'] = data['Close'].ewm(span=5, adjust=False).mean()
+    data['EMA10'] = data['Close'].ewm(span=10, adjust=False).mean()
+    data['EMA20'] = data['Close'].ewm(span=20, adjust=False).mean()
+    data['EMA50'] = data['Close'].ewm(span=50, adjust=False).mean()
+
+    data['range'] = data['High']-data['Low']
+    data['body'] = (data['Close']-data['Open']).abs()
+    data['body_pct'] = data['body'] / (data['range'].replace(0, np.nan))
+    data['close_pos'] = (data['Close']-data['Low']) / (data['range'].replace(0, np.nan))
+    data['is_bullish'] = data['Close'] > data['Open']
+
+    data['vol_ma20'] = data['Volume'].rolling(20).mean()
+    data['vol_ratio'] = data['Volume'] / (data['vol_ma20']+1e-9)
+
+    # ====================== PSAR ======================
+    def psar(high, low, close, iaf=0.02, maxaf=0.2):
+        length = len(high)
+        sar = np.zeros(length)
+        trend = np.zeros(length, dtype=int)
+        af = np.full(length, iaf)
+        ep = np.zeros(length)
+
+        sar[0] = low[0]
+        trend[0] = 1
+        ep[0] = high[0]
+
+        for i in range(1, length):
+            if trend[i-1] == 1:
+                sar[i] = min(sar[i-1]+af[i-1] * (ep[i-1]-sar[i-1]), low[i-1])
+                if low[i] < sar[i]:
+                    trend[i] = -1
+                    sar[i] = ep[i-1]
+                    ep[i] = low[i]
+                    af[i] = iaf
+                else:
+                    trend[i] = 1
+                    if high[i] > ep[i-1]:
+                        ep[i] = high[i]
+                        af[i] = min(af[i-1]+iaf, maxaf)
+                    else:
+                        ep[i] = ep[i-1]
+                        af[i] = af[i-1]
+            else:
+                sar[i] = max(sar[i-1]-af[i-1] * (sar[i-1]-ep[i-1]), high[i-1])
+                if high[i] > sar[i]:
+                    trend[i] = 1
+                    sar[i] = ep[i-1]
+                    ep[i] = high[i]
+                    af[i] = iaf
+                else:
+                    trend[i] = -1
+                    if low[i] < ep[i-1]:
+                        ep[i] = low[i]
+                        af[i] = min(af[i-1]+iaf, maxaf)
+                    else:
+                        ep[i] = ep[i-1]
+                        af[i] = af[i-1]
+        return sar, trend
+
+    data['PSAR'], data['PSAR_trend'] = psar(data['High'].values, data['Low'].values, data['Close'].values)
+
+    # ====================== ENHANCED RANGE-BOUND FILTER ======================
+
+    def is_range_bound(idx, lookback=12, threshold_pct=0.85):
+        """Enhanced Range Detection using PSAR + Candle Logic"""
+        if idx < max(lookback, 20):
+            return False
+
+        window = data.iloc[idx-lookback:idx+1]
+        c = data.iloc[idx]
+        prev = data.iloc[idx-1] if idx > 0 else c
+
+        price_range_pct = (window['High'].max()-window['Low'].min()) / window['Close'].iloc[-1] * 100
+
+        psar_window = data['PSAR_trend'].iloc[idx-lookback:idx+1]
+        psar_flips = (psar_window.diff() != 0).sum()
+
+        no_breakout = c['High'] <= prev['High'] * 1.002
+
+        recent_bodies = data['body_pct'].iloc[max(0, idx-7):idx]
+        small_body_condition = (recent_bodies < 0.48).mean() >= 0.65
+
+        is_range = (
+                price_range_pct < threshold_pct or
+                (psar_flips >= 4 and no_breakout and small_body_condition)
+        )
+        return is_range
+
+    # CHOPPY MARKET FILTER
+    # Runs a 6-check "vote" on the current candle. If 3 or more checks fire,
+    # the market is flagged choppy/low-quality and the calling detector skips
+    # the trade. This is purely a REJECTION layer -- it never creates a signal,
+    # only suppresses false ones on top of whatever is_range_bound already does.
+    # Note: thresholds are scaled to ATR (not fixed points) so this behaves
+    # consistently whether ATR is small (quiet day) or large (volatile day).
+    def is_choppy_market(idx, lookback=10):
+        if idx < 25:  # not enough bars yet for EMA slope / ATR_MA to be meaningful
+            return False
+
+        c = data.iloc[idx]
+        atr_now = data['ATR'].iloc[idx]
+        if pd.isna(atr_now) or atr_now == 0:
+            return False
+
+        window = data.iloc[idx-lookback+1:idx+1]
+        checks = []
+
+        # 1. EMA5 slope flat -> no directional momentum
+        ema_slope = abs(data['EMA5'].iloc[idx] - data['EMA5'].iloc[idx-5])
+        checks.append(ema_slope < 0.08 * atr_now)
+
+        # 2. Range compression -> last N candles stuck in a tight band
+        range_points = window['High'].max() - window['Low'].min()
+        checks.append(range_points < 1.8 * atr_now)
+
+        # 3. Candle overlap -> most candles sit fully inside the prior candle's range
+        overlap_count = 0
+        for j in range(idx-lookback+1, idx+1):
+            cj = data.iloc[j]
+            pj = data.iloc[j-1]
+            if cj['High'] <= pj['High'] and cj['Low'] >= pj['Low']:
+                overlap_count += 1
+        checks.append((overlap_count / lookback) >= 0.70)
+
+        # 4. ATR below its own moving average -> volatility drying up
+        atr_ma_now = data['ATR_MA'].iloc[idx]
+        checks.append((not pd.isna(atr_ma_now)) and atr_now < atr_ma_now)
+
+        # 5. PSAR sitting too close to price -> weak trend strength
+        psar_distance = abs(c['Close'] - c['PSAR'])
+        checks.append(psar_distance < 0.3 * atr_now)
+
+        # 6. No real breakout -> close hasn't cleared the recent range
+        recent_high = data['High'].iloc[idx-lookback:idx].max()
+        checks.append(c['Close'] < recent_high * 1.002)
+
+        return sum(checks) >= 3
+
+    data['consolidation'] = False
+    for i in range(20, n):
+        win = data.iloc[i-20:i]
+        rng = (win['High'].max()-win['Low'].min()) / win['Close'].iloc[-1]
+        data.loc[data.index[i], 'consolidation'] = rng < 0.019
+
+    # NEW: tracks which calendar dates have already produced a BASE_MORNING trade,
+    # so detect_base() can enforce "only one BASE_MORNING trade per session".
+    base_morning_dates_fired = set()
+
+    # ====================== DETECTORS ======================
+    def detect_base(idx):
+        if idx < 20 or is_range_bound(idx, lookback=12, threshold_pct=0.85) or is_choppy_market(idx):
+            return False, {}
+
+        tm = data.index[idx].time()
+        # CHANGED: window narrowed from 9:15–10:30 to 9:15–9:55 per request
+        if not (dt.time(9, 15) <= tm <= dt.time(9, 55)):
+            return False, {}
+
+        # NEW: one BASE_MORNING trade per calendar day only
+        current_date = data.index[idx].date()
+        if current_date in base_morning_dates_fired:
+            return False, {}
+
+        c = data.iloc[idx]
+        uptrend = c['Close'] > c['EMA5'] > c['EMA20']
+        strong_body = c['is_bullish'] and c['body_pct'] >= 0.55 and c['close_pos'] >= 0.60
+        momentum = (c['Close']-c['Open']) / (c['High']-c['Low']+1e-9) > 0.62
+        vol_ok = c['vol_ratio'] > 1.20
+
+        if not (uptrend and strong_body and momentum and vol_ok):
+            return False, {}
+
+        if c['Close'] < data['Low'].iloc[idx-8:idx].min() * 0.985:
+            return False, {}
+
+        return True, {
+            'pattern_type': 'BASE_MORNING',
+            'strength': 'HIGH',
+            'vol': round(c['vol_ratio'] * 100, 1)
+        }
+
+
+    def detect_v_shape(idx):
+        if idx < 14 or is_range_bound(idx, lookback=14, threshold_pct=0.95) or is_choppy_market(idx):
+            return False, {}
+
+        lookback = 9
+        window = data.iloc[idx-lookback:idx+1]
+        low_idx_rel = window['Low'].values.argmin()
+        pivot_idx = idx-lookback+low_idx_rel
+        bars_since_pivot = idx-pivot_idx
+
+        if bars_since_pivot < 0 or bars_since_pivot > 1:
+            return False, {}
+
+        if data['Low'].iloc[pivot_idx] > data['Low'].iloc[max(0, pivot_idx-6):pivot_idx+7].min():
+            return False, {}
+
+        left_start = max(0, pivot_idx-8)
+        left_window = data.iloc[left_start:pivot_idx+1]
+        swing_high = left_window['High'].max()
+        pivot_low = data['Low'].iloc[pivot_idx]
+        decline_pct = (swing_high-pivot_low) / swing_high * 100 if swing_high > 0 else 0
+        points_drop = swing_high-pivot_low
+
+        red_streak = 0
+        for j in range(pivot_idx, left_start-1, -1):
+            cj = data.iloc[j]
+            if cj['is_bullish']:
+                break
+            if cj['body_pct'] < (0.30 if idx < 30 else 0.35):
+                break
+            red_streak += 1
+
+        is_sharp_fall = points_drop >= 20 or decline_pct >= 1.0
+        is_steep_decline = decline_pct >= 0.75 or points_drop >= 15
+
+        if not (is_sharp_fall or is_steep_decline):
+            return False, {}
+
+        ema5_below_found = any(
+            (data.iloc[j]['Low'] < data.iloc[j].get('EMA5', np.inf))
+            for j in range(left_start, pivot_idx+1)
+        )
+        if not ema5_below_found and 'EMA5' in data.columns:
+            return False, {}
+
+        c = data.iloc[idx]
+        candle_range = c['High']-c['Low']
+        lower_wick = min(c['Open'], c['Close'])-c['Low']
+        lower_wick_pct = lower_wick / candle_range if candle_range > 0 else 0
+        upper_wick_pct = (c['High']-max(c['Open'], c['Close'])) / candle_range if candle_range > 0 else 0
+
+        is_prev_long_wick_red = False
+        if idx > 0:
+            pc = data.iloc[idx-1]
+            p_range = pc['High']-pc['Low']
+            if p_range > 0 and not pc['is_bullish']:
+                p_lower = min(pc['Open'], pc['Close'])-pc['Low']
+                if p_lower / p_range >= 0.52:
+                    is_prev_long_wick_red = True
+
+        pattern_type = None
+        if c['is_bullish'] and c['body_pct'] >= 0.52 and c['close_pos'] >= 0.58:
+            pattern_type = 'GREEN'
+        elif (not c['is_bullish']) and lower_wick_pct >= 0.48 and c['close_pos'] >= 0.35:
+            if c['body_pct'] >= 0.12 or lower_wick_pct >= 0.65:
+                pattern_type = 'WICK'
+            elif lower_wick_pct >= 0.72 and upper_wick_pct <= 0.22:
+                pattern_type = 'WICK_DOJI'
+        elif is_prev_long_wick_red and c['is_bullish'] and c['body_pct'] >= 0.45:
+            pattern_type = 'GREEN_AFTER_WICK'
+
+        # ====================== BOX (OX) BREAKOUT AFTER DECLINE ======================
+        if pattern_type is None:
+            box_min_candles = 3
+            box_start = pivot_idx + 1
+            box_end = idx - 1
+            if box_end - box_start + 1 >= box_min_candles:
+                box_window = data.iloc[box_start:box_end + 1]
+                box_high = box_window['High'].max()
+                box_low = box_window['Low'].min()
+                box_range = box_high - box_low
+                decline_size = swing_high - pivot_low
+
+                box_is_tight = decline_size > 0 and box_range <= 0.45 * decline_size
+                box_breakout_confirmed = c['Close'] > box_high and c['is_bullish']
+
+                if box_is_tight and box_breakout_confirmed:
+                    pattern_type = 'BOX_BREAKOUT'
+
+        if pattern_type is None:
+            return False, {}
+
+        recovery_pct = (c['Close']-pivot_low) / (swing_high-pivot_low+1e-9)
+        min_recovery = 0.14 if 'WICK' in pattern_type else 0.30
+        if recovery_pct < min_recovery:
+            return False, {}
+
+        if pivot_idx == idx:
+            recent_high = swing_high
+        else:
+            recent_high = data['High'].iloc[pivot_idx:idx].max()
+
+        breakout_price = c['High'] if 'WICK' in pattern_type else c['Close']
+        if breakout_price < recent_high * 0.996:
+            return False, {}
+
+        min_vol = 0.85 if 'WICK' in pattern_type else 1.10
+        if c['vol_ratio'] < min_vol:
+            return False, {}
+
+        return True, {
+            'pattern_type': pattern_type,
+            'decline_pct': round(decline_pct, 2),
+            'recovery_pct': round(recovery_pct * 100, 2),
+            'lower_wick_pct': round(lower_wick_pct * 100, 2),
+            'vol': round(c['vol_ratio'] * 100, 1)
+        }
+
+    def detect_continuation(idx):
+        if idx < 10 or is_range_bound(idx, lookback=10, threshold_pct=0.9) or is_choppy_market(idx):
+            return False, {}
+
+        tm = data.index[idx].time()
+        # CHANGED: was blocking only 9:15–9:45; now BULLISH_CONTINUATION is
+        # gated to activate only from 10:00 AM onward, per request.
+        if tm < dt.time(10, 0):
+            return False, {}
+
+        c = data.iloc[idx]
+        ema10 = data['EMA10'].iloc[idx]
+        ema20 = data['EMA20'].iloc[idx]
+
+        trend_ok = c['Close'] > ema10 > ema20
+        body_ok = c['is_bullish'] and c['body_pct'] >= 0.48 and c['close_pos'] >= 0.55
+        vol_ok = c['vol_ratio'] > 0.75
+        pullback = data['Close'].iloc[idx-4:idx].min() < ema10 * 0.999
+        breakout = c['Close'] > data['High'].iloc[idx-3:idx].max() * 0.999
+
+        if not (trend_ok and body_ok and vol_ok and pullback and breakout):
+            return False, {}
+
+        return True, {
+            'pattern_type': 'CONTINUATION',
+            'strength': 'MEDIUM',
+            'vol': round(c['vol_ratio'] * 100, 1)
+        }
+
+    # ====================== NEW BRANCH 1: SIDEWAYS CONSOLIDATION BOX BREAKOUT ======================
+    def detect_box_consolidation_breakout(idx, box_lookback=42, min_candles_in_box=8):
+        if idx < box_lookback+5 or is_choppy_market(idx):
+            return False, {}
+
+        atr_now = data['ATR'].iloc[idx]
+        if pd.isna(atr_now) or atr_now == 0:
+            return False, {}
+
+        # box = the N candles immediately before the breakout candle
+        box_window = data.iloc[idx-box_lookback:idx]
+        box_high = box_window['High'].max()
+        box_low = box_window['Low'].min()
+        box_range = box_high-box_low
+
+        # ── NEW CONDITION ──────────────────────────────────────────────────────────
+        # Only fire if the move BEFORE the consolidation box was a genuine fall
+        # of more than 30 points (measured on the raw price, i.e. the index /
+        # instrument itself, not ATR-relative so the threshold is absolute and
+        # easy to reason about).
+        #
+        # We look at a window of candles that sat BEFORE the box window started.
+        # Using 2× box_lookback gives enough history to capture the prior trend
+        # without going too far back. We measure peak-to-trough of that window.
+        pre_box_start = idx-box_lookback  # first candle of the box
+        pre_box_lookback = box_lookback * 2  # how far back before the box
+        pre_start_idx = max(0, pre_box_start-pre_box_lookback)
+        pre_window = data.iloc[pre_start_idx:pre_box_start]
+
+        if len(pre_window) < 3:  # not enough history
+            return False, {}
+
+        pre_high = pre_window['High'].max()
+        pre_low = pre_window['Low'].min()
+        prior_fall = pre_high-pre_low  # peak → trough of prior move
+
+        # The prior move must have been predominantly downward:
+        # the high should come BEFORE the low (i.e. it fell into the box),
+        # and the magnitude must exceed 30 points.
+        high_loc = pre_window['High'].idxmax()
+        low_loc = pre_window['Low'].idxmin()
+
+        if not (high_loc < low_loc and prior_fall > 30):
+            # Either the prior move wasn't a fall, or it was < 30 pts → skip
+            return False, {}
+        # ── END NEW CONDITION ──────────────────────────────────────────────────────
+
+        if box_range > 2.5 * atr_now:
+            return False, {}
+
+        # most candles inside the box should have small bodies
+        small_body_ratio = (box_window['body_pct'] < 0.30).mean()
+        if small_body_ratio < 0.30:
+            return False, {}
+
+        # candles should mostly overlap each other
+        overlap_count = 0
+        for j in range(idx-box_lookback+1, idx):
+            cj = data.iloc[j]
+            pj = data.iloc[j-1]
+            if cj['High'] <= pj['High'] * 1.0015 and cj['Low'] >= pj['Low'] * 0.9985:
+                overlap_count += 1
+        if (overlap_count / (box_lookback-1)) < 0.25:
+            return False, {}
+
+        c = data.iloc[idx]
+
+        breakout_confirmed = (
+                c['Close'] > box_high and
+                c['is_bullish'] and
+                c['body_pct'] >= 0.20 and
+                c['close_pos'] >= 0.25
+        )
+        if not breakout_confirmed:
+            return False, {}
+
+        if c['vol_ratio'] < 0.65:
+            return False, {}
+
+        return True, {
+            'pattern_type': 'CONSOLIDATION_BOX_BREAKOUT',
+            'box_high': round(box_high, 2),
+            'box_low': round(box_low, 2),
+            'box_range': round(box_range, 2),
+            'prior_fall': round(prior_fall, 2),  # ← handy for debugging
+            'vol': round(c['vol_ratio'] * 100, 1)
+        }
+
+    # ====================== NEW BRANCH 2: FALL -> SMALL BOX -> BREAKOUT ======================
+    
+    def detect_fall_box_breakout(idx, min_red_streak=4, max_wait=8):
+            if idx < min_red_streak+6 or is_choppy_market(idx):
+                return False, {}
+
+            c = data.iloc[idx]
+            if not c['is_bullish']:
+                return False, {}
+
+            for gap in range(1, max_wait+1):
+                end_idx = idx-gap
+                if end_idx < min_red_streak+1:
+                    continue
+                if data.iloc[end_idx]['is_bullish']:
+                    continue
+
+                # count consecutive red candles ending at end_idx
+                red_streak = 0
+                j = end_idx
+                while j >= 0 and not data.iloc[j]['is_bullish']:
+                    red_streak += 1
+                    j -= 1
+                streak_start_idx = j+1
+
+                if red_streak <= min_red_streak:
+                    continue
+                if end_idx-1 < 0:
+                    continue
+
+                last_red_idx = end_idx
+                second_last_red_idx = end_idx-1
+                red1 = data.iloc[last_red_idx]
+                red2 = data.iloc[second_last_red_idx]
+
+                box_high = max(red1['Open'], red1['Close'], red2['Open'], red2['Close'])
+                box_low = min(red1['Open'], red1['Close'], red2['Open'], red2['Close'])
+
+                # ── NEW CONDITION ──────────────────────────────────────────────────────
+                # Total market fall (peak → trough of the entire red streak) must
+                # exceed 40 points. We use High of the streak-start candle and Low
+                # of the streak-end candle so we capture the full price swing.
+                streak_high = data['High'].iloc[streak_start_idx:last_red_idx+1].max()
+                streak_low = data['Low'].iloc[streak_start_idx:last_red_idx+1].min()
+                total_fall = streak_high-streak_low
+
+                if total_fall <= 30:
+                    # Fall is real but not big enough → skip this streak entirely
+                    continue
+                # ── END NEW CONDITION ──────────────────────────────────────────────────
+
+                atr_now = data['ATR'].iloc[idx]
+                if pd.isna(atr_now) or atr_now == 0:
+                    continue
+
+                # existing ATR sanity check (kept as-is, now redundant for big falls
+                # but still useful as a volatility normalisation guard)
+                if (streak_high-streak_low) < 1.5 * atr_now:
+                    continue
+
+                # ── NEW: HAMMER REVERSAL SHORT-CIRCUIT ──────────────────────────────────
+                # If, after this red streak, we find a hammer candle before the current
+                # candle, we don't require a box breakout at all — the candle immediately
+                # AFTER that hammer is the signal directly.
+                #
+                # Hammer definition (as given by user):
+                #   body_pct  = |close-open| / (high-low)
+                #   upper_pct = upper_wick / (high-low)
+                #   lower_pct = lower_wick / (high-low)
+                #   is_hammer = lower_pct >= 0.50 and body_pct <= 0.30 and upper_pct <= 0.10
+                #
+                # NOTE: we still apply the existing vol_ratio >= 0.55 filter below as a
+                # minimal safety check before firing — flagging this assumption since it
+                # wasn't explicitly requested; remove it if you want the hammer path to
+                # fire unconditionally on the very next candle.
+                hammer_idx = None
+                for h in range(last_red_idx+1, idx):
+                    hc = data.iloc[h]
+                    hc_range = hc['High']-hc['Low']
+                    if hc_range <= 0:
+                        continue
+                    hc_body_pct = abs(hc['Close']-hc['Open']) / hc_range
+                    hc_upper_pct = (hc['High']-max(hc['Open'], hc['Close'])) / hc_range
+                    hc_lower_pct = (min(hc['Open'], hc['Close'])-hc['Low']) / hc_range
+                    if hc_lower_pct >= 0.50 and hc_body_pct <= 0.30 and hc_upper_pct <= 0.10:
+                        hammer_idx = h
+                        break  # first hammer after the streak is the one that matters
+
+                if hammer_idx is not None and hammer_idx == idx-1:
+                    if c['vol_ratio'] < 0.55:
+                        continue
+                    return True, {
+                        'pattern_type': 'FALL_HAMMER_REVERSAL',
+                        'red_streak': red_streak,
+                        'total_fall': round(total_fall, 2),
+                        'hammer_idx': int(hammer_idx),
+                        'vol': round(c['vol_ratio'] * 100, 1)
+                    }
+                # ── END NEW HAMMER PATH ──────────────────────────────────────────────────
+
+                # first breakout only — don't re-fire on follow-through candles
+                already_broken = False
+                for k in range(last_red_idx+1, idx):
+                    ck = data.iloc[k]
+                    if ck['Close'] > box_high and ck['is_bullish'] and ck['body_pct'] >= 0.20:
+                        already_broken = True
+                        break
+                if already_broken:
+                    continue
+
+                if not (c['Close'] > box_high and c['body_pct'] >= 0.20 and c['close_pos'] >= 0.25):
+                    continue
+
+                if c['vol_ratio'] < 0.55:
+                    continue
+
+                return True, {
+                    'pattern_type': 'FALL_BOX_BREAKOUT',
+                    'red_streak': red_streak,
+                    'total_fall': round(total_fall, 2),  # ← handy for debugging
+                    'box_high': round(box_high, 2),
+                    'box_low': round(box_low, 2),
+                    'vol': round(c['vol_ratio'] * 100, 1)
+                }
+
+            return False, {}
+    # ====================== LEVELS & QUALITY ======================
+    def calculate_levels(idx, condition):
+        entry = data['Close'].iloc[idx]
+        FIXED_SL_POINTS = 11
+        FIXED_TARGET_POINTS = 30
+        stop = entry-FIXED_SL_POINTS
+        target = entry+FIXED_TARGET_POINTS
+        rr = abs(target-entry) / (abs(entry-stop)+1e-9)
+        return entry, stop, target, rr
+
+    def get_quality(rr):
+        if rr < 1.25:
+            return "REJECT"
+        return "PREMIUM" if rr >= 2.2 else "HIGH" if rr >= 1.8 else "MEDIUM"
+
+    # ====================== MAIN SIGNAL LOOP ======================
+    signals_list = []
+
+    # COOLDOWN PERIOD
+    COOLDOWN_CANDLES = 10
+    last_signal_idx = -10**9
+
+    for idx in range(18, n):
+        if idx - last_signal_idx < COOLDOWN_CANDLES:
+            continue
+
+        candidates = []
+
+        b_det, b_data = detect_base(idx)
+        if b_det:
+            entry, stop, target, rr = calculate_levels(idx, 'BASE')
+            quality = get_quality(rr)
+            if quality != "REJECT":
+                candidates.append({
+                    'condition': 'BASE_MORNING', 'quality': quality, 'entry': entry,
+                    'stop': stop, 'target': target, 'rr': rr, 'confidence': 82,
+                    'data': b_data, 'priority': 1
+                })
+
+        v_det, v_data = detect_v_shape(idx)
+        if v_det:
+            entry, stop, target, rr = calculate_levels(idx, 'V_SHAPE')
+            quality = get_quality(rr)
+            if quality != "REJECT":
+                conf = 88 if quality == "PREMIUM" else 76
+                candidates.append({
+                    'condition': 'V_SHAPE_REVERSAL', 'quality': quality, 'entry': entry,
+                    'stop': stop, 'target': target, 'rr': rr, 'confidence': conf,
+                    'data': v_data, 'priority': 2
+                })
+
+        c_det, c_data = detect_continuation(idx)
+        if c_det:
+            entry, stop, target, rr = calculate_levels(idx, 'CONTINUATION')
+            quality = get_quality(rr)
+            if quality != "REJECT":
+                candidates.append({
+                    'condition': 'BULLISH_CONTINUATION', 'quality': quality, 'entry': entry,
+                    'stop': stop, 'target': target, 'rr': rr, 'confidence': 66,
+                    'data': c_data, 'priority': 3
+                })
+
+        # NEW: Branch 1 - sideways consolidation box breakout
+        box_det, box_data = detect_box_consolidation_breakout(idx)
+        if box_det:
+            entry, stop, target, rr = calculate_levels(idx, 'CONSOLIDATION_BOX')
+            quality = get_quality(rr)
+            if quality != "REJECT":
+                candidates.append({
+                    'condition': 'CONSOLIDATION_BOX_BREAKOUT', 'quality': quality, 'entry': entry,
+                    'stop': stop, 'target': target, 'rr': rr, 'confidence': 74,
+                    'data': box_data, 'priority': 4
+                })
+
+        # NEW: Branch 2 - fall + body-box + double green breakout
+        fb_det, fb_data = detect_fall_box_breakout(idx)
+        if fb_det:
+            entry, stop, target, rr = calculate_levels(idx, 'FALL_BOX')
+            quality = get_quality(rr)
+            if quality != "REJECT":
+                candidates.append({
+                    'condition': 'FALL_BOX_BREAKOUT', 'quality': quality, 'entry': entry,
+                    'stop': stop, 'target': target, 'rr': rr, 'confidence': 80,
+                    'data': fb_data, 'priority': 2
+                })
+
+        if candidates:
+            best = max(candidates, key=lambda x: (
+                {"PREMIUM": 3, "HIGH": 2, "MEDIUM": 1}.get(x['quality'], 0),
+                -x['priority']
+            ))
+
+            condition = best['condition']
+            quality = best['quality']
+            entry = best['entry']
+            stop = best['stop']
+            target = best['target']
+            rr = best['rr']
+            confidence = best['confidence']
+            sig_data = best['data']
+
+            data.loc[data.index[idx], 'st_sig'] = 1
+            data.loc[data.index[idx], 'condition'] = condition
+            data.loc[data.index[idx], 'quality'] = quality
+            data.loc[data.index[idx], 'entry_price'] = entry
+            data.loc[data.index[idx], 'stop_loss'] = stop
+            data.loc[data.index[idx], 'take_profit'] = target
+            data.loc[data.index[idx], 'risk_reward'] = rr
+            data.loc[data.index[idx], 'confidence'] = confidence
+
+            reason = f"{condition.replace('_', ' ')} | RR={rr:.2f}x | "
+            for k, v in sig_data.items():
+                if isinstance(v, (int, float)):
+                    reason += f"{k}={v:.1f} "
+            data.loc[data.index[idx], 'reason'] = reason[:200]
+
+            signals_list.append({
+                'datetime': data.index[idx], 'close': data['Close'].iloc[idx],
+                'condition': condition, 'quality': quality, 'entry': entry,
+                'stop': stop, 'target': target, 'rr': rr, 'confidence': confidence
+            })
+
+            # NEW: if the trade that just fired was BASE_MORNING, lock the
+            # 9:15–9:55 window for the rest of this calendar day.
+            if condition == 'BASE_MORNING':
+                base_morning_dates_fired.add(data.index[idx].date())
+
+            last_signal_idx = idx
+
+    # ====================== SUMMARY ======================
+    print(f"\n📊 SIGNALS GENERATED: {len(signals_list)}\n")
+    if signals_list:
+        print(f"{'DateTime':<30} {'Close':<10} {'Condition':<25} {'Quality':<10} {'RR':<8} {'Conf':<8}")
+        print("-" * 95)
+        for sig in signals_list[-25:]:
+            print(f"{str(sig['datetime']):<30} {sig['close']:<10.2f} {sig['condition']:<25} "
+                  f"{sig['quality']:<10} {sig['rr']:<8.2f} {sig['confidence']:<8.1f}")
+
+        from collections import Counter
+        conds = Counter(s['condition'] for s in signals_list)
+        print("\n📈 CONDITION BREAKDOWN:")
+        for c in sorted(conds):
+            print(f"   {c}: {conds[c]}")
+
+        quals = Counter(s['quality'] for s in signals_list)
+        print("\n💎 QUALITY BREAKDOWN:")
+        for q in ['PREMIUM', 'HIGH', 'MEDIUM']:
+            if q in quals:
+                print(f"   {q}: {quals[q]}")
+
+        print(f"\n💰 AVG RR: {np.mean([s['rr'] for s in signals_list]):.2f}x")
+        print(f"📊 AVG CONF: {np.mean([s['confidence'] for s in signals_list]):.1f}%")
+
+    return data
 
 
 
