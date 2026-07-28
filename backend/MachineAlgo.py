@@ -1800,31 +1800,6 @@ except ImportError as e:
     ) from e
 
 
-# =====================================================================================
-# =========================  FALSE-SIGNAL FIX CHANGELOG  ============================
-# =====================================================================================
-# 1. calculate_levels / calculate_levels_bear: fixed 11/30-point SL/TP replaced with
-#    ATR-relative sizing so RR/quality actually reflects current volatility instead of
-#    being a constant ~2.7x for every trade regardless of conditions.
-# 2. Volume thresholds on breakout/reversal branches raised from below-average
-#    (0.55-0.65x) to at/above-average, since below-average-volume breakouts are the
-#    classic false-breakout signature.
-# 3. New optional `trend_persistence` param on super_trend() (default=1, i.e. old
-#    behavior unchanged) lets you require N consecutive ema_trend-confirmed candles
-#    instead of a single noisy candle before a pending signal is allowed to fire.
-# 4. detect_v_shape: added an EMA50-slope guard so the branch doesn't buy V-shape
-#    reversals against a strongly falling macro trend (falling-knife protection).
-# 5. detect_box_consolidation_breakout: added invalidation if the same resistance
-#    level was already closed-above (and failed) earlier -- a "breakout" of a level
-#    that already failed once is a weaker signal.
-# 6. detect_order_block_reversal: added a tap-count decay -- an order block that's
-#    already been retested more than twice is treated as weakened/invalid.
-# 7. Multi-indicator divergence: confidence now scales with how many indicators
-#    agree (agree_count) instead of a flat 78 regardless of 1 vs 5 indicators.
-# 8. detect_base: added an optional index-level trend confirmation (only applied
-#    when index_data is supplied -- no behavior change if you don't pass it).
-# =====================================================================================
-
 
 def _md_calculate_indicators(df):
     close = df['Close']
@@ -2304,8 +2279,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                  multi_div_maxbars: int = 100,
                  multi_div_search: str = "Regular",
                  multi_div_showlast: bool = False,
-                 multi_div_align_tolerance: "pd.Timedelta|None" = None,
-                 trend_persistence: int = 1) -> pd.DataFrame:
+                 multi_div_align_tolerance: "pd.Timedelta|None" = None) -> pd.DataFrame:
     """
     `data` -- OPTION PREMIUM candles (either the CE chain or the PE chain --
               call this function once per side, same as before).
@@ -2319,12 +2293,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
               2x the index feed's own median bar interval. If your feeds
               have irregular gaps (illiquid option strikes, missing
               minutes), pass a wider explicit value, e.g. pd.Timedelta(minutes=10).
-    `trend_persistence` -- FALSE-SIGNAL FIX: number of consecutive candles
-              that must agree with the required ema_trend direction before a
-              pending signal is allowed to confirm and fire. Default (1)
-              preserves the original single-candle-confirmation behavior.
-              Raising to 2-3 filters out whipsaw confirmations where
-              ema_trend flips for one bar and immediately flips back.
 
     Bullish (bottom) divergence label on the index -> feeds the CE pending
     queue (buy call). Bearish (top) divergence label on the index -> feeds
@@ -2345,6 +2313,18 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
 
     data = data.copy()
     n = len(data)
+
+    # ---- Determine which side (CE/PE) this call is for, from the option symbol ----
+    _symbol_tokens = symbol.upper().split()
+    if 'CE' in _symbol_tokens and 'PE' not in _symbol_tokens:
+        multi_div_side = 'CE'
+    elif 'PE' in _symbol_tokens and 'CE' not in _symbol_tokens:
+        multi_div_side = 'PE'
+    else:
+        multi_div_side = 'BOTH'
+        print(f"⚠️  Could not determine CE/PE from symbol '{symbol}' -- multi-indicator "
+              f"divergence side-filtering is DISABLED for this run (both bullish and "
+              f"bearish labels will be queued, same as before).")
 
     print("=" * 100)
     print(f"🚀 ENHANCED RANGE-BOUND STRATEGY → {symbol} | Data Points: {n}")
@@ -2372,6 +2352,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
     data['EMA5'] = data['Close'].ewm(span=6, adjust=False).mean()
     data['EMA10'] = data['Close'].ewm(span=10, adjust=False).mean()
     data['EMA20'] = data['Close'].ewm(span=20, adjust=False).mean()
+    data['EMA30'] = data['Close'].ewm(span=30, adjust=False).mean()
     data['EMA50'] = data['Close'].ewm(span=50, adjust=False).mean()
 
     data['range'] = data['High'] - data['Low']
@@ -2722,49 +2703,69 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
             return False
         return True
 
-    # ====================== FALSE-SIGNAL FIX: trend persistence helper ======================
-    def _trend_confirmed(idx, direction, bars=trend_persistence):
-        """Require `bars` consecutive candles agreeing with `direction`
-        (1 for bullish, -1 for bearish) instead of a single noisy candle.
-        bars=1 reproduces the original single-candle check exactly."""
-        bars = max(1, int(bars))
-        start = idx - bars + 1
-        if start < 0:
-            return False
-        window = data['ema_trend'].iloc[start:idx + 1]
-        if len(window) < bars:
-            return False
-        return bool((window == direction).all())
-
     # ====================== DETECTORS (unchanged) ======================
+
+
     def detect_base(idx):
         if idx < 20 or is_range_bound(idx, lookback=12, threshold_pct=0.85) or is_choppy_market(idx):
             return False, {}
         tm = data.index[idx].time()
-        if not (dt.time(9, 15) <= tm <= dt.time(9, 55)):
-            return False, {}
         current_date = data.index[idx].date()
         if current_date in base_morning_dates_fired:
             return False, {}
-        c = data.iloc[idx]
-        uptrend = c['Close'] > c['EMA5'] > c['EMA20']
-        strong_body = c['is_bullish'] and c['body_pct'] >= 0.55 and c['close_pos'] >= 0.60
-        momentum = (c['Close'] - c['Open']) / (c['High'] - c['Low'] + 1e-9) > 0.62
-        vol_ok = c['vol_ratio'] > 1.20
-        if not (uptrend and strong_body and momentum and vol_ok):
-            return False, {}
-        if c['Close'] < data['Low'].iloc[idx - 8:idx].min() * 0.985:
-            return False, {}
-        # FALSE-SIGNAL FIX: don't buy a morning breakout against a falling index.
-        # Only applied when index_data was actually supplied; no behavior change otherwise.
-        if use_index_filter:
-            idx_close_now = data['idx_Close'].iloc[idx]
-            idx_close_prev = data['idx_Close'].iloc[max(0, idx - 5)]
-            if not pd.isna(idx_close_now) and not pd.isna(idx_close_prev):
-                if idx_close_now < idx_close_prev:
-                    return False, {}
-        return True, {'pattern_type': 'BASE_MORNING', 'strength': 'HIGH', 'vol': round(c['vol_ratio'] * 100, 1)}
 
+        # --- Locate the first 6 candles of the day (the "opening range") ---
+        day_mask = data.index.date == current_date
+        day_start_idx = np.where(day_mask)[0][0]
+        or_end_idx = day_start_idx+6  # opening range = first 6 candles (9:15-9:33 on 3min bars)
+
+        # Only look for a breakout AFTER the opening range is fully formed,
+        # and keep the existing morning window as the outer bound
+        if idx < or_end_idx:
+            return False, {}
+        if not (dt.time(9, 33) <= tm <= dt.time(9, 55)):
+            return False, {}
+
+        orb = data.iloc[day_start_idx:or_end_idx]
+        or_high = orb['High'].max()
+        or_low = orb['Low'].min()
+        or_range = or_high-or_low
+        if or_range <= 0:
+            return False, {}
+
+        # Reject if the opening range itself is too wide (already trending/volatile,
+        # not a real "base") or too narrow (dead market, breakout is just noise)
+        or_range_pct = or_range / or_low
+        if or_range_pct > 0.012 or or_range_pct < 0.002:
+            return False, {}
+
+        c = data.iloc[idx]
+        ema5 = c['EMA5']
+        ema20 = c['EMA20']
+
+        uptrend = c['Close'] > ema5 > ema20
+        strong_body = c['is_bullish'] and c['body_pct'] >= 0.55 and c['close_pos'] >= 0.60
+        momentum = (c['Close']-c['Open']) / (c['High']-c['Low']+1e-9) > 0.62
+        vol_ok = c['vol_ratio'] > 1.20
+
+        # The actual breakout condition: close must clear the opening range high
+        breakout = c['Close'] > or_high * 1.001
+
+        if not (uptrend and strong_body and momentum and vol_ok and breakout):
+            return False, {}
+
+        target = round(or_high+or_range, 2)  # measured-move target = OR high + OR range
+        stop = round(or_low, 2)  # structural stop = opening range low
+
+        return True, {
+            'pattern_type': 'BASE_MORNING',
+            'strength': 'HIGH',
+            'vol': round(c['vol_ratio'] * 100, 1),
+            'or_high': round(or_high, 2),
+            'or_low': round(or_low, 2),
+            'target': target,
+            'stop': stop,
+        }
     def detect_v_shape(idx):
         if idx < 14 or is_range_bound(idx, lookback=14, threshold_pct=0.95) or is_choppy_market(idx):
             return False, {}
@@ -2801,15 +2802,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         )
         if not ema5_below_found and 'EMA5' in data.columns:
             return False, {}
-        # FALSE-SIGNAL FIX: don't buy a V-shape reversal against a strongly
-        # falling macro trend (falling-knife guard). Compares EMA50 now vs
-        # ~10 bars back, scaled by ATR so it adapts to volatility regime.
-        if idx >= 10:
-            atr_now = data['ATR'].iloc[idx]
-            if not pd.isna(atr_now) and atr_now > 0:
-                ema50_slope = data['EMA50'].iloc[idx] - data['EMA50'].iloc[idx - 10]
-                if ema50_slope < -0.6 * atr_now:
-                    return False, {}
         c = data.iloc[idx]
         candle_range = c['High'] - c['Low']
         lower_wick = min(c['Open'], c['Close']) - c['Low']
@@ -2869,29 +2861,63 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
             'lower_wick_pct': round(lower_wick_pct * 100, 2), 'vol': round(c['vol_ratio'] * 100, 1)
         }
 
+    
+
     def detect_continuation(idx):
         if idx < 10 or is_range_bound(idx, lookback=10, threshold_pct=0.9) or is_choppy_market(idx):
             return False, {}
+
         tm = data.index[idx].time()
         if tm < dt.time(10, 0):
             return False, {}
+
         c = data.iloc[idx]
+
         ema10 = data['EMA10'].iloc[idx]
         ema20 = data['EMA20'].iloc[idx]
-        trend_ok = c['Close'] > ema10 > ema20
-        body_ok = c['is_bullish'] and c['body_pct'] >= 0.48 and c['close_pos'] >= 0.55
-        # FALSE-SIGNAL FIX: 0.75 (below average volume) raised to 0.90 -- a
-        # continuation breakout on below-average volume is a weak signal.
-        vol_ok = c['vol_ratio'] > 0.90
-        pullback = data['Close'].iloc[idx - 4:idx].min() < ema10 * 0.999
-        breakout = c['Close'] > data['High'].iloc[idx - 3:idx].max() * 0.999
-        # FALSE-SIGNAL FIX: don't chase a continuation move that's already
-        # deeply overbought -- exhaustion risk is high and reversion is likely.
-        rsi_ok = data['RSI'].iloc[idx] <= 75
-        if not (trend_ok and body_ok and vol_ok and pullback and breakout and rsi_ok):
-            return False, {}
-        return True, {'pattern_type': 'CONTINUATION', 'strength': 'MEDIUM', 'vol': round(c['vol_ratio'] * 100, 1)}
+        ema30 = data['EMA30'].iloc[idx]
 
+        # Strong trend
+        trend_ok = (
+                c['Close'] > ema10 > ema20 > ema30 and
+                (ema10-ema20) > data['ATR'].iloc[idx] * 0.10 and
+                (ema20-ema30) > data['ATR'].iloc[idx] * 0.05
+        )
+
+        # Strong momentum candle
+        body_ok = (
+                c['is_bullish'] and
+                c['body_pct'] >= 0.60 and
+                c['close_pos'] >= 0.70
+        )
+
+        # Above average volume
+        vol_ok = c['vol_ratio'] >= 1.15
+
+        # Real pullback
+        recent_low = data['Close'].iloc[idx-4:idx].min()
+        recent_high = data['High'].iloc[idx-4:idx].max()
+
+        pullback = (
+                recent_low <= ema10 * 1.001 and
+                recent_low > ema20
+        )
+
+        # Clean breakout
+        breakout = (
+                c['Close'] > recent_high * 1.002 and
+                c['High'] > recent_high
+        )
+
+        if not (trend_ok and body_ok and vol_ok and pullback and breakout):
+            return False, {}
+
+        return True, {
+            'pattern_type': 'CONTINUATION',
+            'strength': 'MEDIUM',
+            'vol': round(c['vol_ratio'] * 100, 1)
+        }
+    
     def detect_box_consolidation_breakout(idx, box_lookback=12, min_candles_in_box=8):
         if idx < box_lookback + 5 or is_choppy_market(idx):
             return False, {}
@@ -2928,21 +2954,12 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 overlap_count += 1
         if (overlap_count / (box_lookback - 1)) < 0.25:
             return False, {}
-        # FALSE-SIGNAL FIX: if this exact resistance level was already closed
-        # above earlier (and evidently failed, since we're still forming a
-        # box under it now), today's "breakout" is a retest of a level that
-        # has already proven weak once -- skip it.
-        prior_break = (pre_window['Close'] > box_high).any()
-        if prior_break:
-            return False, {}
         c = data.iloc[idx]
         breakout_confirmed = (c['Close'] > box_high and c['is_bullish']
                                and c['body_pct'] >= 0.20 and c['close_pos'] >= 0.25)
         if not breakout_confirmed:
             return False, {}
-        # FALSE-SIGNAL FIX: 0.65 (below average volume) raised to 0.90 --
-        # box breakouts on sub-average volume are the classic false-breakout.
-        if c['vol_ratio'] < 0.90:
+        if c['vol_ratio'] < 0.65:
             return False, {}
         return True, {
             'pattern_type': 'CONSOLIDATION_BOX_BREAKOUT', 'box_high': round(box_high, 2),
@@ -3001,8 +3018,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                     hammer_idx = h
                     break
             if hammer_idx is not None and hammer_idx == idx - 1:
-                # FALSE-SIGNAL FIX: 0.55 (below average volume) raised to 0.75.
-                if c['vol_ratio'] < 0.75:
+                if c['vol_ratio'] < 0.55:
                     continue
                 return True, {
                     'pattern_type': 'FALL_HAMMER_REVERSAL', 'red_streak': red_streak,
@@ -3019,8 +3035,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 continue
             if not (c['Close'] > box_high and c['body_pct'] >= 0.20 and c['close_pos'] >= 0.25):
                 continue
-            # FALSE-SIGNAL FIX: 0.55 (below average volume) raised to 0.75.
-            if c['vol_ratio'] < 0.75:
+            if c['vol_ratio'] < 0.55:
                 continue
             return True, {
                 'pattern_type': 'FALL_BOX_BREAKOUT', 'red_streak': red_streak,
@@ -3030,7 +3045,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         return False, {}
 
     ob_fired = set()
-    ob_tap_count = {}  # FALSE-SIGNAL FIX: decay an order block's reliability after repeated taps
 
     def detect_order_block_reversal(idx, left=3, right=3, structure_lookback=40, max_ob_age=40):
         if idx < structure_lookback + right + 5 or is_choppy_market(idx):
@@ -3075,16 +3089,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         rejection = c['is_bullish'] and c['Close'] >= ob_low and c['close_pos'] >= 0.55
         if not (tapped_zone and rejection):
             return False, {}
-        # FALSE-SIGNAL FIX: a zone that's already been tapped and re-tapped
-        # without a clean, decisive break is weakening -- reject after the
-        # 2nd tap instead of treating every retest as equally reliable.
-        ob_tap_count[ob_idx] = ob_tap_count.get(ob_idx, 0) + 1
-        if ob_tap_count[ob_idx] > 2:
-            return False, {}
-        # FALSE-SIGNAL FIX: 0.60 (below average volume) raised to 0.75 --
-        # a genuine rejection candle off a real order block should show
-        # participation, not sub-average volume.
-        if c['vol_ratio'] < 0.75:
+        if c['vol_ratio'] < 0.60:
             return False, {}
         return True, {
             'pattern_type': 'ORDER_BLOCK_RETEST', 'ob_idx': int(ob_idx), 'ob_high': round(ob_high, 2),
@@ -3092,51 +3097,21 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         }, ob_idx
 
     # ====================== LEVELS, QUALITY, RATING ======================
-    # FALSE-SIGNAL FIX: the original fixed 11-point SL / 30-point TP made the
-    # RR-based quality gate meaningless -- every trade scored the same ~2.7x RR
-    # regardless of actual volatility, so "REJECT" almost never fired based on
-    # real risk. SL is now sized as a volatility-clamped % of the option
-    # premium (15-35%, driven by ATR), and TP scales with the current
-    # volatility regime (ATR vs its 20-bar average) instead of being constant.
-    _TP_MULT_BY_REGIME = {'LOW': 2.2, 'NORMAL': 2.6, 'HIGH': 3.2}
-
-    def _volatility_regime(idx):
-        atr_now = data['ATR'].iloc[idx]
-        atr_ma = data['ATR_MA'].iloc[idx]
-        if pd.isna(atr_now) or pd.isna(atr_ma) or atr_ma == 0:
-            return 'NORMAL'
-        ratio = atr_now / atr_ma
-        if ratio >= 1.3:
-            return 'HIGH'
-        if ratio <= 0.75:
-            return 'LOW'
-        return 'NORMAL'
-
     def calculate_levels(idx, condition):
         entry = data['Close'].iloc[idx]
-        atr_now = data['ATR'].iloc[idx]
-        if pd.isna(atr_now) or atr_now <= 0 or entry <= 0:
-            atr_now = entry * 0.05 if entry > 0 else 1.0
-        sl_pct = float(np.clip(atr_now / entry, 0.15, 0.35)) if entry > 0 else 0.20
-        stop_points = entry * sl_pct
-        tp_mult = _TP_MULT_BY_REGIME[_volatility_regime(idx)]
-        target_points = stop_points * tp_mult
-        stop = entry - stop_points
-        target = entry + target_points
+        FIXED_SL_POINTS = 11
+        FIXED_TARGET_POINTS = 30
+        stop = entry - FIXED_SL_POINTS
+        target = entry + FIXED_TARGET_POINTS
         rr = abs(target - entry) / (abs(entry - stop) + 1e-9)
         return entry, stop, target, rr
 
     def calculate_levels_bear(idx, condition):
         entry = data['Close'].iloc[idx]
-        atr_now = data['ATR'].iloc[idx]
-        if pd.isna(atr_now) or atr_now <= 0 or entry <= 0:
-            atr_now = entry * 0.05 if entry > 0 else 1.0
-        sl_pct = float(np.clip(atr_now / entry, 0.15, 0.35)) if entry > 0 else 0.20
-        stop_points = entry * sl_pct
-        tp_mult = _TP_MULT_BY_REGIME[_volatility_regime(idx)]
-        target_points = stop_points * tp_mult
-        stop = entry + stop_points
-        target = entry - target_points
+        FIXED_SL_POINTS = 11
+        FIXED_TARGET_POINTS = 30
+        stop = entry + FIXED_SL_POINTS
+        target = entry - FIXED_TARGET_POINTS
         rr = abs(entry - target) / (abs(stop - entry) + 1e-9)
         return entry, stop, target, rr
 
@@ -3210,10 +3185,8 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 continue
             if age > confirm_max_wait:
                 continue  # expired
-            # FALSE-SIGNAL FIX: require `trend_persistence` consecutive bullish
-            # candles instead of a single noisy ema_trend flip (trend_persistence=1
-            # reproduces the original behavior exactly).
-            if _trend_confirmed(idx, 1):
+            trend_now = data['ema_trend'].iloc[idx]
+            if trend_now == 1:
                 if index_volume_profile_confirms_bullish(idx):
                     entry, stop, target, rr = calculate_levels(idx, p['condition'])
                     quality = get_quality(rr)
@@ -3240,7 +3213,8 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 continue
             if age > confirm_max_wait:
                 continue
-            if _trend_confirmed(idx, -1):
+            trend_now = data['ema_trend'].iloc[idx]
+            if trend_now == -1:
                 if index_volume_profile_confirms_bearish(idx):
                     entry, stop, target, rr = calculate_levels_bear(idx, p['condition'])
                     quality = get_quality(rr)
@@ -3334,35 +3308,38 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 if row_label == 'bottom' and src_time != last_multi_div_bull_time:
                     last_multi_div_bull_time = src_time
                     multi_div_bull_seen += 1
-                    agree_count = int(pos_reg + pos_hid)
-                    # FALSE-SIGNAL FIX: confidence now scales with how many
-                    # indicators actually agree, instead of a flat 78 for a
-                    # single indicator vs. five indicators agreeing.
-                    md_confidence = float(min(90, 55 + agree_count * 9))
-                    print(f"[MULTI-DIV] BULLISH #{multi_div_bull_seen} @ {data.index[idx]} "
-                          f"| agree={agree_count} | indicators=({indicators_str}) -> queued for CE "
-                          f"(confidence={md_confidence:.0f})")
-                    pending_signals.append({
-                        'detect_idx': idx, 'condition': 'MULTI_INDICATOR_BULLISH_DIVERGENCE',
-                        'data': {'agree_count': agree_count, 'pos_reg_div': pos_reg, 'pos_hid_div': pos_hid},
-                        'confidence': md_confidence, 'priority': 2
-                    })
-                    multi_div_bull_queued += 1
+                    agree_count = int(pos_reg+pos_hid)
+                    if multi_div_side in ('CE', 'BOTH'):
+                        print(f"[MULTI-DIV] BULLISH #{multi_div_bull_seen} @ {data.index[idx]} "
+                              f"| agree={agree_count} | indicators=({indicators_str}) -> queued for CE")
+                        pending_signals.append({
+                            'detect_idx': idx, 'condition': 'MULTI_INDICATOR_BULLISH_DIVERGENCE',
+                            'data': {'agree_count': agree_count, 'pos_reg_div': pos_reg, 'pos_hid_div': pos_hid},
+                            'confidence': 78, 'priority': 2
+                        })
+                        multi_div_bull_queued += 1
+                    else:
+                        print(f"[MULTI-DIV] BULLISH #{multi_div_bull_seen} @ {data.index[idx]} "
+                              f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
+                              f"(this run is {multi_div_side}-side only)")
 
                 elif row_label == 'top' and src_time != last_multi_div_bear_time:
                     last_multi_div_bear_time = src_time
                     multi_div_bear_seen += 1
-                    agree_count = int(neg_reg + neg_hid)
-                    md_confidence = float(min(90, 55 + agree_count * 9))
-                    print(f"[MULTI-DIV] BEARISH #{multi_div_bear_seen} @ {data.index[idx]} "
-                          f"| agree={agree_count} | indicators=({indicators_str}) -> queued for PE "
-                          f"(confidence={md_confidence:.0f})")
-                    pending_signals_bear.append({
-                        'detect_idx': idx, 'condition': 'MULTI_INDICATOR_BEARISH_DIVERGENCE',
-                        'data': {'agree_count': agree_count, 'neg_reg_div': neg_reg, 'neg_hid_div': neg_hid},
-                        'confidence': md_confidence, 'priority': 2
-                    })
-                    multi_div_bear_queued += 1
+                    agree_count = int(neg_reg+neg_hid)
+                    if multi_div_side in ('PE', 'BOTH'):
+                        print(f"[MULTI-DIV] BEARISH #{multi_div_bear_seen} @ {data.index[idx]} "
+                              f"| agree={agree_count} | indicators=({indicators_str}) -> queued for PE")
+                        pending_signals_bear.append({
+                            'detect_idx': idx, 'condition': 'MULTI_INDICATOR_BEARISH_DIVERGENCE',
+                            'data': {'agree_count': agree_count, 'neg_reg_div': neg_reg, 'neg_hid_div': neg_hid},
+                            'confidence': 78, 'priority': 2
+                        })
+                        multi_div_bear_queued += 1
+                    else:
+                        print(f"[MULTI-DIV] BEARISH #{multi_div_bear_seen} @ {data.index[idx]} "
+                              f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
+                              f"(this run is {multi_div_side}-side only)")
 
     # ====================== SUMMARY ======================
     print(f"\n📊 SIGNALS GENERATED: {len(signals_list)}\n")
@@ -3412,6 +3389,8 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         print(f"⭐ AVG RATING SCORE: {np.mean([s['rating_score'] for s in signals_list]):.1f}")
 
     return data
+
+
 
 
 
