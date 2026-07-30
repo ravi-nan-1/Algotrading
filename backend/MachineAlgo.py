@@ -1800,7 +1800,6 @@ except ImportError as e:
     ) from e
 
 
-
 def _md_calculate_indicators(df):
     close = df['Close']
     high = df['High']
@@ -1822,10 +1821,10 @@ def _md_calculate_indicators(df):
 
     vwma_fast = (close * volume).rolling(12).sum() / volume.rolling(12).sum()
     vwma_slow = (close * volume).rolling(26).sum() / volume.rolling(26).sum()
-    df['vwmacd'] = vwma_fast - vwma_slow
+    df['vwmacd'] = vwma_fast-vwma_slow
 
-    hl = (high - low).replace(0, np.nan)
-    cmfm = ((close - low) - (high - close)) / hl
+    hl = (high-low).replace(0, np.nan)
+    cmfm = ((close-low)-(high-close)) / hl
     cmfv = cmfm * volume
     df['cmf'] = cmfv.rolling(21).sum() / volume.rolling(21).sum()
 
@@ -1837,8 +1836,8 @@ def _md_calculate_indicators(df):
 def _md_pine_pivothigh(arr, i, prd):
     if i < 2 * prd:
         return None
-    center = i - prd
-    window = arr[i - 2 * prd: i + 1]
+    center = i-prd
+    window = arr[i-2 * prd: i+1]
     valid_window = window[~np.isnan(window)]
     if len(valid_window) == 0:
         return None
@@ -1853,8 +1852,8 @@ def _md_pine_pivothigh(arr, i, prd):
 def _md_pine_pivotlow(arr, i, prd):
     if i < 2 * prd:
         return None
-    center = i - prd
-    window = arr[i - 2 * prd: i + 1]
+    center = i-prd
+    window = arr[i-2 * prd: i+1]
     valid_window = window[~np.isnan(window)]
     if len(valid_window) == 0:
         return None
@@ -1873,7 +1872,7 @@ def _md_nz(val, default=0.0):
 
 
 def _md_get_back(arr, i, n):
-    idx = i - n
+    idx = i-n
     if idx < 0 or idx >= len(arr):
         return np.nan
     return arr[idx]
@@ -1892,9 +1891,9 @@ def _md_positive_regular_positive_hidden_divergence(
     close_1 = _md_get_back(close, i, 1)
 
     gate = (
-        dontconfirm or
-        (not np.isnan(src_0) and not np.isnan(src_1) and src_0 > src_1) or
-        (not np.isnan(close_0) and not np.isnan(close_1) and close_0 > close_1)
+            dontconfirm or
+            (not np.isnan(src_0) and not np.isnan(src_1) and src_0 > src_1) or
+            (not np.isnan(close_0) and not np.isnan(close_1) and close_0 > close_1)
     )
     if not gate:
         return divlen
@@ -1910,7 +1909,7 @@ def _md_positive_regular_positive_hidden_divergence(
         if pl_pos == 0:
             break
 
-        length = i - pl_pos + prd
+        length = i-pl_pos+prd
         if length > maxbars:
             break
         if length <= 5:
@@ -1933,17 +1932,17 @@ def _md_positive_regular_positive_hidden_divergence(
         if np.isnan(close_sp):
             continue
 
-        span = length - startpoint
+        span = length-startpoint
         if span == 0:
             continue
 
-        slope1 = (src_sp - src_len) / span
-        virtual_line1 = src_sp - slope1
-        slope2 = (close_sp - _md_nz(close_len)) / span
-        virtual_line2 = close_sp - slope2
+        slope1 = (src_sp-src_len) / span
+        virtual_line1 = src_sp-slope1
+        slope2 = (close_sp-_md_nz(close_len)) / span
+        virtual_line2 = close_sp-slope2
 
         arrived = True
-        for y in range(1 + startpoint, length):
+        for y in range(1+startpoint, length):
             src_y = _md_get_back(src, i, y)
             close_y = _md_get_back(close, i, y)
             if np.isnan(src_y):
@@ -1976,9 +1975,9 @@ def _md_negative_regular_negative_hidden_divergence(
     close_1 = _md_get_back(close, i, 1)
 
     gate = (
-        dontconfirm or
-        (not np.isnan(src_0) and not np.isnan(src_1) and src_0 < src_1) or
-        (not np.isnan(close_0) and not np.isnan(close_1) and close_0 < close_1)
+            dontconfirm or
+            (not np.isnan(src_0) and not np.isnan(src_1) and src_0 < src_1) or
+            (not np.isnan(close_0) and not np.isnan(close_1) and close_0 < close_1)
     )
     if not gate:
         return divlen
@@ -1994,7 +1993,7 @@ def _md_negative_regular_negative_hidden_divergence(
         if ph_pos == 0:
             break
 
-        length = i - ph_pos + prd
+        length = i-ph_pos+prd
         if length > maxbars:
             break
         if length <= 5:
@@ -2017,17 +2016,17 @@ def _md_negative_regular_negative_hidden_divergence(
         if np.isnan(close_sp):
             continue
 
-        span = length - startpoint
+        span = length-startpoint
         if span == 0:
             continue
 
-        slope1 = (src_sp - src_len) / span
-        virtual_line1 = src_sp - slope1
-        slope2 = (close_sp - _md_nz(close_len)) / span
-        virtual_line2 = close_sp - slope2
+        slope1 = (src_sp-src_len) / span
+        virtual_line1 = src_sp-slope1
+        slope2 = (close_sp-_md_nz(close_len)) / span
+        virtual_line2 = close_sp-slope2
 
         arrived = True
-        for y in range(1 + startpoint, length):
+        for y in range(1+startpoint, length):
             src_y = _md_get_back(src, i, y)
             close_y = _md_get_back(close, i, y)
             if np.isnan(src_y):
@@ -2190,7 +2189,7 @@ def calculate_index_divergences(
                 if name not in active_names_neg:
                     active_names_neg.append(name)
 
-        total = pos_reg + neg_reg + pos_hid + neg_hid
+        total = pos_reg+neg_reg+pos_hid+neg_hid
         if total < showlimit:
             continue
 
@@ -2227,7 +2226,7 @@ def calculate_index_divergences(
             })
             remove_last_neg_divs = True
 
-    all_final = pos_label_history + neg_label_history
+    all_final = pos_label_history+neg_label_history
     all_final.sort(key=lambda x: x['bar'])
 
     if verbose:
@@ -2237,16 +2236,16 @@ def calculate_index_divergences(
         print(f"   Bearish (top) labels    : {len(neg_label_history)}")
         for entry in all_final:
             side = "BULLISH" if entry['type'] == 'bottom' else "BEARISH"
-            cnt = entry['pos_reg_div'] + entry['pos_hid_div'] if entry['type'] == 'bottom' \
-                else entry['neg_reg_div'] + entry['neg_hid_div']
+            cnt = entry['pos_reg_div']+entry['pos_hid_div'] if entry['type'] == 'bottom' \
+                else entry['neg_reg_div']+entry['neg_hid_div']
             print(f"   [{side:7s}] {entry['Datetime']}  close={entry['Close']:.2f}  "
                   f"agree={cnt}  indicators=({entry['indicators']})")
         print("-" * 100)
 
     if not all_final:
         return pd.DataFrame(columns=['Close', 'pos_reg_div', 'neg_reg_div', 'pos_hid_div',
-                                      'neg_hid_div', 'total_divergences',
-                                      'divergence_indicators', 'label_type'])
+                                     'neg_hid_div', 'total_divergences',
+                                     'divergence_indicators', 'label_type'])
 
     out_rows = []
     for entry in all_final:
@@ -2257,8 +2256,8 @@ def calculate_index_divergences(
             'neg_reg_div': entry['neg_reg_div'],
             'pos_hid_div': entry['pos_hid_div'],
             'neg_hid_div': entry['neg_hid_div'],
-            'total_divergences': (entry['pos_reg_div'] + entry['neg_reg_div'] +
-                                   entry['pos_hid_div'] + entry['neg_hid_div']),
+            'total_divergences': (entry['pos_reg_div']+entry['neg_reg_div']+
+                                  entry['pos_hid_div']+entry['neg_hid_div']),
             'divergence_indicators': entry['indicators'],
             'label_type': entry['type'],
         })
@@ -2267,19 +2266,19 @@ def calculate_index_divergences(
     return out
 
 
-# =====================================================================================
-# ================================  MAIN STRATEGY  ===================================
-# =====================================================================================
 
 def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
-                 index_data: pd.DataFrame = None,
-                 multi_div_pivot_period: int = 5,
-                 multi_div_min_count: int = 1,
-                 multi_div_maxpp: int = 10,
-                 multi_div_maxbars: int = 100,
-                 multi_div_search: str = "Regular",
-                 multi_div_showlast: bool = False,
-                 multi_div_align_tolerance: "pd.Timedelta|None" = None) -> pd.DataFrame:
+                index_data: pd.DataFrame = None,
+                multi_div_pivot_period: int = 5,
+                multi_div_min_count: int = 1,
+                multi_div_maxpp: int = 10,
+                multi_div_maxbars: int = 100,
+                multi_div_search: str = "Regular",
+                multi_div_showlast: bool = False,
+                multi_div_align_tolerance: "pd.Timedelta|None" = None,
+                multi_div_start_time: dt.time = dt.time(10, 0),
+                multi_div_stoch_oversold: float = 20.0,
+                multi_div_stoch_overbought: float = 80.0) -> pd.DataFrame:
     """
     `data` -- OPTION PREMIUM candles (either the CE chain or the PE chain --
               call this function once per side, same as before).
@@ -2293,6 +2292,24 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
               2x the index feed's own median bar interval. If your feeds
               have irregular gaps (illiquid option strikes, missing
               minutes), pass a wider explicit value, e.g. pd.Timedelta(minutes=10).
+    `multi_div_start_time` -- MULTI_INDICATOR_BULLISH/BEARISH_DIVERGENCE
+              signals are only queued for candles at or after this time of
+              day (default 10:00). Every other detector's own time gating
+              is unaffected.
+    `multi_div_stoch_oversold` / `multi_div_stoch_overbought` -- the
+              MULTI_INDICATOR_BULLISH_DIVERGENCE branch additionally
+              requires the underlying INDEX's own Stochastic %K (computed
+              on the index's own candle sequence, then aligned onto the
+              option timeline) to be at or below `multi_div_stoch_oversold`
+              (oversold) before it is queued for CE; the
+              MULTI_INDICATOR_BEARISH_DIVERGENCE branch requires it to be
+              at or above `multi_div_stoch_overbought` (overbought) before
+              it is queued for PE. This is deliberately the INDEX's
+              stochastic, not the option premium's own -- the divergence
+              engine itself runs entirely on index data, so the
+              confirmation gate uses the same source for consistency
+              (and so it will match whatever you see on your index chart,
+              e.g. TradingView's Nifty Stoch panel).
 
     Bullish (bottom) divergence label on the index -> feeds the CE pending
     queue (buy call). Bearish (top) divergence label on the index -> feeds
@@ -2342,9 +2359,9 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
     data['signal_type'] = ''
     data['rating_score'] = np.nan
 
-    high_low = data['High'] - data['Low']
-    high_close = np.abs(data['High'] - data['Close'].shift())
-    low_close = np.abs(data['Low'] - data['Close'].shift())
+    high_low = data['High']-data['Low']
+    high_close = np.abs(data['High']-data['Close'].shift())
+    low_close = np.abs(data['Low']-data['Close'].shift())
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     data['ATR'] = tr.rolling(14).mean()
     data['ATR_MA'] = data['ATR'].rolling(20).mean()
@@ -2355,16 +2372,16 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
     data['EMA30'] = data['Close'].ewm(span=30, adjust=False).mean()
     data['EMA50'] = data['Close'].ewm(span=50, adjust=False).mean()
 
-    data['range'] = data['High'] - data['Low']
-    data['body'] = (data['Close'] - data['Open']).abs()
+    data['range'] = data['High']-data['Low']
+    data['body'] = (data['Close']-data['Open']).abs()
     data['body_pct'] = data['body'] / (data['range'].replace(0, np.nan))
-    data['close_pos'] = (data['Close'] - data['Low']) / (data['range'].replace(0, np.nan))
+    data['close_pos'] = (data['Close']-data['Low']) / (data['range'].replace(0, np.nan))
     data['is_bullish'] = data['Close'] > data['Open']
 
     data['vol_ma20'] = data['Volume'].rolling(20).mean()
-    data['vol_ratio'] = data['Volume'] / (data['vol_ma20'] + 1e-9)
+    data['vol_ratio'] = data['Volume'] / (data['vol_ma20']+1e-9)
 
-    data['hlc3'] = (data['High'] + data['Low'] + data['Close']) / 3
+    data['hlc3'] = (data['High']+data['Low']+data['Close']) / 3
     data['ema_trend'] = np.where(data['hlc3'] >= data['EMA5'], 1, -1)
 
     def _wilder_rsi(close: pd.Series, period: int = 14) -> pd.Series:
@@ -2374,16 +2391,30 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
         avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
         rs = avg_gain / (avg_loss.replace(0, np.nan))
-        rsi = 100 - (100 / (1 + rs))
+        rsi = 100-(100 / (1+rs))
         return rsi.fillna(50)
 
     data['RSI'] = _wilder_rsi(data['Close'], 14)
 
     ema12 = data['Close'].ewm(span=12, adjust=False).mean()
     ema26 = data['Close'].ewm(span=26, adjust=False).mean()
-    data['MACD'] = ema12 - ema26
+    data['MACD'] = ema12-ema26
     data['MACD_signal'] = data['MACD'].ewm(span=9, adjust=False).mean()
-    data['MACD_hist'] = data['MACD'] - data['MACD_signal']
+    data['MACD_hist'] = data['MACD']-data['MACD_signal']
+
+    def _stochastic_k(high, low, close, k_period=14, smooth_k=3):
+        lowest_low = low.rolling(k_period).min()
+        highest_high = high.rolling(k_period).max()
+        raw_k = 100 * (close-lowest_low) / (highest_high-lowest_low).replace(0, np.nan)
+        return raw_k.rolling(smooth_k).mean()
+
+    # Stochastic %K on the OPTION candle itself. Kept as a general-purpose
+    # diagnostic column only (e.g. for your own charting/inspection of the
+    # option data) -- it is NOT used as the multi-indicator-divergence gate
+    # any more. The actual gate now uses the INDEX's own Stochastic %K,
+    # computed further down (as `idx_STOCH_K`) once index_data is aligned
+    # onto this timeline, so it matches what you see on your index chart.
+    data['STOCH_K'] = _stochastic_k(data['High'], data['Low'], data['Close'], k_period=14, smooth_k=3)
 
     # NOTE: RSI/MACD above are kept only as general-purpose diagnostic columns
     # on the option data (e.g. for your own charting/inspection). They are no
@@ -2392,7 +2423,9 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
     # RSI/MACD/Stoch/CCI/MOM/OBV/VWMACD/CMF/MFI internally via
     # _md_calculate_indicators(). The old option-data Stoch/CCI/MOM/OBV/
     # VWMACD/CMF/MFI block has been removed since nothing on the option side
-    # consumed it any more.
+    # consumed it any more -- and as of this version, STOCH_K above is a pure
+    # diagnostic too; the multi-div gate reads idx_STOCH_K instead (see the
+    # index alignment block below).
 
     def psar(high, low, close, iaf=0.02, maxaf=0.2):
         length = len(high)
@@ -2404,36 +2437,36 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         trend[0] = 1
         ep[0] = high[0]
         for i in range(1, length):
-            if trend[i - 1] == 1:
-                sar[i] = min(sar[i - 1] + af[i - 1] * (ep[i - 1] - sar[i - 1]), low[i - 1])
+            if trend[i-1] == 1:
+                sar[i] = min(sar[i-1]+af[i-1] * (ep[i-1]-sar[i-1]), low[i-1])
                 if low[i] < sar[i]:
                     trend[i] = -1
-                    sar[i] = ep[i - 1]
+                    sar[i] = ep[i-1]
                     ep[i] = low[i]
                     af[i] = iaf
                 else:
                     trend[i] = 1
-                    if high[i] > ep[i - 1]:
+                    if high[i] > ep[i-1]:
                         ep[i] = high[i]
-                        af[i] = min(af[i - 1] + iaf, maxaf)
+                        af[i] = min(af[i-1]+iaf, maxaf)
                     else:
-                        ep[i] = ep[i - 1]
-                        af[i] = af[i - 1]
+                        ep[i] = ep[i-1]
+                        af[i] = af[i-1]
             else:
-                sar[i] = max(sar[i - 1] - af[i - 1] * (sar[i - 1] - ep[i - 1]), high[i - 1])
+                sar[i] = max(sar[i-1]-af[i-1] * (sar[i-1]-ep[i-1]), high[i-1])
                 if high[i] > sar[i]:
                     trend[i] = 1
-                    sar[i] = ep[i - 1]
+                    sar[i] = ep[i-1]
                     ep[i] = high[i]
                     af[i] = iaf
                 else:
                     trend[i] = -1
-                    if low[i] < ep[i - 1]:
+                    if low[i] < ep[i-1]:
                         ep[i] = low[i]
-                        af[i] = min(af[i - 1] + iaf, maxaf)
+                        af[i] = min(af[i-1]+iaf, maxaf)
                     else:
-                        ep[i] = ep[i - 1]
-                        af[i] = af[i - 1]
+                        ep[i] = ep[i-1]
+                        af[i] = af[i-1]
         return sar, trend
 
     data['PSAR'], data['PSAR_trend'] = psar(data['High'].values, data['Low'].values, data['Close'].values)
@@ -2441,14 +2474,14 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
     def is_range_bound(idx, lookback=12, threshold_pct=0.85):
         if idx < max(lookback, 20):
             return False
-        window = data.iloc[idx - lookback:idx + 1]
+        window = data.iloc[idx-lookback:idx+1]
         c = data.iloc[idx]
-        prev = data.iloc[idx - 1] if idx > 0 else c
-        price_range_pct = (window['High'].max() - window['Low'].min()) / window['Close'].iloc[-1] * 100
-        psar_window = data['PSAR_trend'].iloc[idx - lookback:idx + 1]
+        prev = data.iloc[idx-1] if idx > 0 else c
+        price_range_pct = (window['High'].max()-window['Low'].min()) / window['Close'].iloc[-1] * 100
+        psar_window = data['PSAR_trend'].iloc[idx-lookback:idx+1]
         psar_flips = (psar_window.diff() != 0).sum()
         no_breakout = c['High'] <= prev['High'] * 1.002
-        recent_bodies = data['body_pct'].iloc[max(0, idx - 7):idx]
+        recent_bodies = data['body_pct'].iloc[max(0, idx-7):idx]
         small_body_condition = (recent_bodies < 0.48).mean() >= 0.65
         is_range = (
                 price_range_pct < threshold_pct or
@@ -2463,56 +2496,56 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         atr_now = data['ATR'].iloc[idx]
         if pd.isna(atr_now) or atr_now == 0:
             return False
-        window = data.iloc[idx - lookback + 1:idx + 1]
+        window = data.iloc[idx-lookback+1:idx+1]
         checks = []
-        ema_slope = abs(data['EMA5'].iloc[idx] - data['EMA5'].iloc[idx - 5])
+        ema_slope = abs(data['EMA5'].iloc[idx]-data['EMA5'].iloc[idx-5])
         checks.append(ema_slope < 0.08 * atr_now)
-        range_points = window['High'].max() - window['Low'].min()
+        range_points = window['High'].max()-window['Low'].min()
         checks.append(range_points < 1.8 * atr_now)
         overlap_count = 0
-        for j in range(idx - lookback + 1, idx + 1):
+        for j in range(idx-lookback+1, idx+1):
             cj = data.iloc[j]
-            pj = data.iloc[j - 1]
+            pj = data.iloc[j-1]
             if cj['High'] <= pj['High'] and cj['Low'] >= pj['Low']:
                 overlap_count += 1
         checks.append((overlap_count / lookback) >= 0.70)
         atr_ma_now = data['ATR_MA'].iloc[idx]
         checks.append((not pd.isna(atr_ma_now)) and atr_now < atr_ma_now)
-        psar_distance = abs(c['Close'] - c['PSAR'])
+        psar_distance = abs(c['Close']-c['PSAR'])
         checks.append(psar_distance < 0.3 * atr_now)
-        recent_high = data['High'].iloc[idx - lookback:idx].max()
+        recent_high = data['High'].iloc[idx-lookback:idx].max()
         checks.append(c['Close'] < recent_high * 1.002)
         return sum(checks) >= 3
 
     data['consolidation'] = False
     for i in range(20, n):
-        win = data.iloc[i - 20:i]
-        rng = (win['High'].max() - win['Low'].min()) / win['Close'].iloc[-1]
+        win = data.iloc[i-20:i]
+        rng = (win['High'].max()-win['Low'].min()) / win['Close'].iloc[-1]
         data.loc[data.index[i], 'consolidation'] = rng < 0.019
 
     base_morning_dates_fired = set()
 
     def _confirmed_swing_low(pivot_idx, left=3, right=3):
-        if pivot_idx - left < 0:
+        if pivot_idx-left < 0:
             return False
-        window = data['Low'].iloc[pivot_idx - left:pivot_idx + right + 1]
+        window = data['Low'].iloc[pivot_idx-left:pivot_idx+right+1]
         return data['Low'].iloc[pivot_idx] == window.min()
 
     def _confirmed_swing_high(pivot_idx, left=3, right=3):
-        if pivot_idx - left < 0:
+        if pivot_idx-left < 0:
             return False
-        window = data['High'].iloc[pivot_idx - left:pivot_idx + right + 1]
+        window = data['High'].iloc[pivot_idx-left:pivot_idx+right+1]
         return data['High'].iloc[pivot_idx] == window.max()
 
     def _last_confirmed_swing_lows(idx, count=2, left=3, right=3, max_scan=80):
         found = []
-        latest_possible = idx - right
+        latest_possible = idx-right
         p = latest_possible
         scanned = 0
         while p >= left and len(found) < count and scanned < max_scan:
             if _confirmed_swing_low(p, left, right):
                 found.append(p)
-                p -= (left + 1)
+                p -= (left+1)
             else:
                 p -= 1
             scanned += 1
@@ -2554,7 +2587,20 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                   f"to avoid silent merge_asof mismatches against option data.")
             idx_df.index = idx_df.index.tz_localize(None)
         idx_df.index.name = 'Datetime'
-        idx_df = idx_df.sort_index()[['Open', 'High', 'Low', 'Close', 'Volume']].add_prefix('idx_')
+        idx_df = idx_df.sort_index()
+
+        # Stochastic %K on the INDEX's own candle sequence (its natural bar
+        # interval), computed BEFORE alignment onto the option timeline.
+        # This MUST happen here and not after the merge_asof below: once
+        # merged, index rows get forward-filled/duplicated across however
+        # many option candles fall in each index bar, and rolling a
+        # min/max window over that duplicated series would corrupt the
+        # calculation. Computing it on idx_df's own untouched row sequence
+        # keeps it identical to what you'd see on the index's own chart
+        # (e.g. TradingView's Nifty Stoch panel).
+        idx_df['STOCH_K'] = _stochastic_k(idx_df['High'], idx_df['Low'], idx_df['Close'], k_period=14, smooth_k=3)
+
+        idx_df = idx_df.sort_index()[['Open', 'High', 'Low', 'Close', 'Volume', 'STOCH_K']].add_prefix('idx_')
 
         # Median bar interval of the index feed -- used to size the alignment
         # tolerance so labels don't linger across many option candles, and
@@ -2588,12 +2634,13 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         print("⚠️  index_data not supplied -- MULTI_INDICATOR_DIVERGENCE branch and the "
               "index volume-profile filter are both DISABLED for this run. Every other "
               "branch still runs normally on the option data.")
+        data['idx_STOCH_K'] = np.nan
 
     if div_labels is not None and not div_labels.empty and use_index_filter:
         dl = div_labels.sort_index().reset_index()  # columns: Datetime, Close, pos_reg_div, ...
         dl = dl.rename(columns={'Datetime': '_div_label_time'})
         dl = dl[['_div_label_time', 'label_type', 'divergence_indicators',
-                  'pos_reg_div', 'neg_reg_div', 'pos_hid_div', 'neg_hid_div']]
+                 'pos_reg_div', 'neg_reg_div', 'pos_hid_div', 'neg_hid_div']]
         dl_sorted = dl.sort_values('_div_label_time')
         data_reset = data.reset_index()  # 'Datetime' column
         data_reset = pd.merge_asof(
@@ -2631,10 +2678,10 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
     VP_VALUE_AREA_PCT = 0.70
 
     def _compute_index_volume_profile(idx, lookback=VP_LOOKBACK, num_bins=VP_BINS,
-                                       value_area_pct=VP_VALUE_AREA_PCT):
+                                      value_area_pct=VP_VALUE_AREA_PCT):
         if not use_index_filter:
             return None
-        window = data.iloc[max(0, idx - lookback + 1):idx + 1]
+        window = data.iloc[max(0, idx-lookback+1):idx+1]
         window = window.dropna(subset=['idx_High', 'idx_Low', 'idx_Close', 'idx_Volume'])
         if len(window) < max(10, lookback // 3):
             return None
@@ -2642,39 +2689,39 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         vp_low = window['idx_Low'].min()
         if vp_high <= vp_low:
             return None
-        bin_edges = np.linspace(vp_low, vp_high, num_bins + 1)
+        bin_edges = np.linspace(vp_low, vp_high, num_bins+1)
         bin_vols = np.zeros(num_bins)
         for _, row in window.iterrows():
             h, l, v = row['idx_High'], row['idx_Low'], row['idx_Volume']
             if v <= 0 or h <= l or pd.isna(v):
                 continue
-            lo_bin = max(0, min(num_bins - 1, int(np.searchsorted(bin_edges, l, side='right')) - 1))
-            hi_bin = max(0, min(num_bins - 1, int(np.searchsorted(bin_edges, h, side='right')) - 1))
-            span = hi_bin - lo_bin + 1
-            bin_vols[lo_bin:hi_bin + 1] += v / span
+            lo_bin = max(0, min(num_bins-1, int(np.searchsorted(bin_edges, l, side='right'))-1))
+            hi_bin = max(0, min(num_bins-1, int(np.searchsorted(bin_edges, h, side='right'))-1))
+            span = hi_bin-lo_bin+1
+            bin_vols[lo_bin:hi_bin+1] += v / span
         total_vol = bin_vols.sum()
         if total_vol <= 0:
             return None
         poc_bin = int(np.argmax(bin_vols))
-        poc_price = (bin_edges[poc_bin] + bin_edges[poc_bin + 1]) / 2
+        poc_price = (bin_edges[poc_bin]+bin_edges[poc_bin+1]) / 2
         target_vol = total_vol * value_area_pct
         acc_vol = bin_vols[poc_bin]
         lo, hi = poc_bin, poc_bin
-        while acc_vol < target_vol and (lo > 0 or hi < num_bins - 1):
-            left_vol = bin_vols[lo - 1] if lo > 0 else -1
-            right_vol = bin_vols[hi + 1] if hi < num_bins - 1 else -1
+        while acc_vol < target_vol and (lo > 0 or hi < num_bins-1):
+            left_vol = bin_vols[lo-1] if lo > 0 else -1
+            right_vol = bin_vols[hi+1] if hi < num_bins-1 else -1
             if right_vol >= left_vol:
                 hi += 1
                 acc_vol += bin_vols[hi]
             else:
                 lo -= 1
                 acc_vol += bin_vols[lo]
-        vah = bin_edges[hi + 1]
+        vah = bin_edges[hi+1]
         val = bin_edges[lo]
         cur_close = data['idx_Close'].iloc[idx]
         if pd.isna(cur_close):
             return None
-        cur_bin = max(0, min(num_bins - 1, int(np.searchsorted(bin_edges, cur_close, side='right')) - 1))
+        cur_bin = max(0, min(num_bins-1, int(np.searchsorted(bin_edges, cur_close, side='right'))-1))
         avg_vol = bin_vols.mean()
         is_lvn = bin_vols[cur_bin] < 0.6 * avg_vol
         return {'poc': poc_price, 'vah': vah, 'val': val, 'cur_close': cur_close, 'is_lvn': is_lvn}
@@ -2704,7 +2751,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         return True
 
     # ====================== DETECTORS (unchanged) ======================
-
 
     def detect_base(idx):
         if idx < 20 or is_range_bound(idx, lookback=12, threshold_pct=0.85) or is_choppy_market(idx):
@@ -2766,26 +2812,27 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
             'target': target,
             'stop': stop,
         }
+
     def detect_v_shape(idx):
         if idx < 14 or is_range_bound(idx, lookback=14, threshold_pct=0.95) or is_choppy_market(idx):
             return False, {}
         lookback = 9
-        window = data.iloc[idx - lookback:idx + 1]
+        window = data.iloc[idx-lookback:idx+1]
         low_idx_rel = window['Low'].values.argmin()
-        pivot_idx = idx - lookback + low_idx_rel
-        bars_since_pivot = idx - pivot_idx
+        pivot_idx = idx-lookback+low_idx_rel
+        bars_since_pivot = idx-pivot_idx
         if bars_since_pivot < 0 or bars_since_pivot > 1:
             return False, {}
-        if data['Low'].iloc[pivot_idx] > data['Low'].iloc[max(0, pivot_idx - 6):pivot_idx + 7].min():
+        if data['Low'].iloc[pivot_idx] > data['Low'].iloc[max(0, pivot_idx-6):pivot_idx+7].min():
             return False, {}
-        left_start = max(0, pivot_idx - 8)
-        left_window = data.iloc[left_start:pivot_idx + 1]
+        left_start = max(0, pivot_idx-8)
+        left_window = data.iloc[left_start:pivot_idx+1]
         swing_high = left_window['High'].max()
         pivot_low = data['Low'].iloc[pivot_idx]
-        decline_pct = (swing_high - pivot_low) / swing_high * 100 if swing_high > 0 else 0
-        points_drop = swing_high - pivot_low
+        decline_pct = (swing_high-pivot_low) / swing_high * 100 if swing_high > 0 else 0
+        points_drop = swing_high-pivot_low
         red_streak = 0
-        for j in range(pivot_idx, left_start - 1, -1):
+        for j in range(pivot_idx, left_start-1, -1):
             cj = data.iloc[j]
             if cj['is_bullish']:
                 break
@@ -2798,21 +2845,21 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
             return False, {}
         ema5_below_found = any(
             (data.iloc[j]['Low'] < data.iloc[j].get('EMA5', np.inf))
-            for j in range(left_start, pivot_idx + 1)
+            for j in range(left_start, pivot_idx+1)
         )
         if not ema5_below_found and 'EMA5' in data.columns:
             return False, {}
         c = data.iloc[idx]
-        candle_range = c['High'] - c['Low']
-        lower_wick = min(c['Open'], c['Close']) - c['Low']
+        candle_range = c['High']-c['Low']
+        lower_wick = min(c['Open'], c['Close'])-c['Low']
         lower_wick_pct = lower_wick / candle_range if candle_range > 0 else 0
-        upper_wick_pct = (c['High'] - max(c['Open'], c['Close'])) / candle_range if candle_range > 0 else 0
+        upper_wick_pct = (c['High']-max(c['Open'], c['Close'])) / candle_range if candle_range > 0 else 0
         is_prev_long_wick_red = False
         if idx > 0:
-            pc = data.iloc[idx - 1]
-            p_range = pc['High'] - pc['Low']
+            pc = data.iloc[idx-1]
+            p_range = pc['High']-pc['Low']
             if p_range > 0 and not pc['is_bullish']:
-                p_lower = min(pc['Open'], pc['Close']) - pc['Low']
+                p_lower = min(pc['Open'], pc['Close'])-pc['Low']
                 if p_lower / p_range >= 0.52:
                     is_prev_long_wick_red = True
         pattern_type = None
@@ -2827,21 +2874,21 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
             pattern_type = 'GREEN_AFTER_WICK'
         if pattern_type is None:
             box_min_candles = 3
-            box_start = pivot_idx + 1
-            box_end = idx - 1
-            if box_end - box_start + 1 >= box_min_candles:
-                box_window = data.iloc[box_start:box_end + 1]
+            box_start = pivot_idx+1
+            box_end = idx-1
+            if box_end-box_start+1 >= box_min_candles:
+                box_window = data.iloc[box_start:box_end+1]
                 box_high = box_window['High'].max()
                 box_low = box_window['Low'].min()
-                box_range = box_high - box_low
-                decline_size = swing_high - pivot_low
+                box_range = box_high-box_low
+                decline_size = swing_high-pivot_low
                 box_is_tight = decline_size > 0 and box_range <= 0.45 * decline_size
                 box_breakout_confirmed = c['Close'] > box_high and c['is_bullish']
                 if box_is_tight and box_breakout_confirmed:
                     pattern_type = 'BOX_BREAKOUT'
         if pattern_type is None:
             return False, {}
-        recovery_pct = (c['Close'] - pivot_low) / (swing_high - pivot_low + 1e-9)
+        recovery_pct = (c['Close']-pivot_low) / (swing_high-pivot_low+1e-9)
         min_recovery = 0.14 if 'WICK' in pattern_type else 0.30
         if recovery_pct < min_recovery:
             return False, {}
@@ -2860,8 +2907,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
             'recovery_pct': round(recovery_pct * 100, 2),
             'lower_wick_pct': round(lower_wick_pct * 100, 2), 'vol': round(c['vol_ratio'] * 100, 1)
         }
-
-    
 
     def detect_continuation(idx):
         if idx < 10 or is_range_bound(idx, lookback=10, threshold_pct=0.9) or is_choppy_market(idx):
@@ -2917,26 +2962,26 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
             'strength': 'MEDIUM',
             'vol': round(c['vol_ratio'] * 100, 1)
         }
-    
+
     def detect_box_consolidation_breakout(idx, box_lookback=12, min_candles_in_box=8):
-        if idx < box_lookback + 5 or is_choppy_market(idx):
+        if idx < box_lookback+5 or is_choppy_market(idx):
             return False, {}
         atr_now = data['ATR'].iloc[idx]
         if pd.isna(atr_now) or atr_now == 0:
             return False, {}
-        box_window = data.iloc[idx - box_lookback:idx]
+        box_window = data.iloc[idx-box_lookback:idx]
         box_high = box_window['High'].max()
         box_low = box_window['Low'].min()
-        box_range = box_high - box_low
-        pre_box_start = idx - box_lookback
+        box_range = box_high-box_low
+        pre_box_start = idx-box_lookback
         pre_box_lookback = box_lookback * 2
-        pre_start_idx = max(0, pre_box_start - pre_box_lookback)
+        pre_start_idx = max(0, pre_box_start-pre_box_lookback)
         pre_window = data.iloc[pre_start_idx:pre_box_start]
         if len(pre_window) < 3:
             return False, {}
         pre_high = pre_window['High'].max()
         pre_low = pre_window['Low'].min()
-        prior_fall = pre_high - pre_low
+        prior_fall = pre_high-pre_low
         high_loc = pre_window['High'].idxmax()
         low_loc = pre_window['Low'].idxmin()
         if not (high_loc < low_loc and prior_fall > 30):
@@ -2947,16 +2992,16 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         if small_body_ratio < 0.30:
             return False, {}
         overlap_count = 0
-        for j in range(idx - box_lookback + 1, idx):
+        for j in range(idx-box_lookback+1, idx):
             cj = data.iloc[j]
-            pj = data.iloc[j - 1]
+            pj = data.iloc[j-1]
             if cj['High'] <= pj['High'] * 1.0015 and cj['Low'] >= pj['Low'] * 0.9985:
                 overlap_count += 1
-        if (overlap_count / (box_lookback - 1)) < 0.25:
+        if (overlap_count / (box_lookback-1)) < 0.25:
             return False, {}
         c = data.iloc[idx]
         breakout_confirmed = (c['Close'] > box_high and c['is_bullish']
-                               and c['body_pct'] >= 0.20 and c['close_pos'] >= 0.25)
+                              and c['body_pct'] >= 0.20 and c['close_pos'] >= 0.25)
         if not breakout_confirmed:
             return False, {}
         if c['vol_ratio'] < 0.65:
@@ -2968,14 +3013,14 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         }
 
     def detect_fall_box_breakout(idx, min_red_streak=4, max_wait=8):
-        if idx < min_red_streak + 6 or is_choppy_market(idx):
+        if idx < min_red_streak+6 or is_choppy_market(idx):
             return False, {}
         c = data.iloc[idx]
         if not c['is_bullish']:
             return False, {}
-        for gap in range(1, max_wait + 1):
-            end_idx = idx - gap
-            if end_idx < min_red_streak + 1:
+        for gap in range(1, max_wait+1):
+            end_idx = idx-gap
+            if end_idx < min_red_streak+1:
                 continue
             if data.iloc[end_idx]['is_bullish']:
                 continue
@@ -2984,40 +3029,40 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
             while j >= 0 and not data.iloc[j]['is_bullish']:
                 red_streak += 1
                 j -= 1
-            streak_start_idx = j + 1
+            streak_start_idx = j+1
             if red_streak <= min_red_streak:
                 continue
-            if end_idx - 1 < 0:
+            if end_idx-1 < 0:
                 continue
             last_red_idx = end_idx
-            second_last_red_idx = end_idx - 1
+            second_last_red_idx = end_idx-1
             red1 = data.iloc[last_red_idx]
             red2 = data.iloc[second_last_red_idx]
             box_high = max(red1['Open'], red1['Close'], red2['Open'], red2['Close'])
             box_low = min(red1['Open'], red1['Close'], red2['Open'], red2['Close'])
-            streak_high = data['High'].iloc[streak_start_idx:last_red_idx + 1].max()
-            streak_low = data['Low'].iloc[streak_start_idx:last_red_idx + 1].min()
-            total_fall = streak_high - streak_low
+            streak_high = data['High'].iloc[streak_start_idx:last_red_idx+1].max()
+            streak_low = data['Low'].iloc[streak_start_idx:last_red_idx+1].min()
+            total_fall = streak_high-streak_low
             if total_fall <= 40:
                 continue
             atr_now = data['ATR'].iloc[idx]
             if pd.isna(atr_now) or atr_now == 0:
                 continue
-            if (streak_high - streak_low) < 1.5 * atr_now:
+            if (streak_high-streak_low) < 1.5 * atr_now:
                 continue
             hammer_idx = None
-            for h in range(last_red_idx + 1, idx):
+            for h in range(last_red_idx+1, idx):
                 hc = data.iloc[h]
-                hc_range = hc['High'] - hc['Low']
+                hc_range = hc['High']-hc['Low']
                 if hc_range <= 0:
                     continue
-                hc_body_pct = abs(hc['Close'] - hc['Open']) / hc_range
-                hc_upper_pct = (hc['High'] - max(hc['Open'], hc['Close'])) / hc_range
-                hc_lower_pct = (min(hc['Open'], hc['Close']) - hc['Low']) / hc_range
+                hc_body_pct = abs(hc['Close']-hc['Open']) / hc_range
+                hc_upper_pct = (hc['High']-max(hc['Open'], hc['Close'])) / hc_range
+                hc_lower_pct = (min(hc['Open'], hc['Close'])-hc['Low']) / hc_range
                 if hc_lower_pct >= 0.50 and hc_body_pct <= 0.30 and hc_upper_pct <= 0.10:
                     hammer_idx = h
                     break
-            if hammer_idx is not None and hammer_idx == idx - 1:
+            if hammer_idx is not None and hammer_idx == idx-1:
                 if c['vol_ratio'] < 0.55:
                     continue
                 return True, {
@@ -3026,7 +3071,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                     'vol': round(c['vol_ratio'] * 100, 1)
                 }
             already_broken = False
-            for k in range(last_red_idx + 1, idx):
+            for k in range(last_red_idx+1, idx):
                 ck = data.iloc[k]
                 if ck['Close'] > box_high and ck['is_bullish'] and ck['body_pct'] >= 0.20:
                     already_broken = True
@@ -3047,30 +3092,30 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
     ob_fired = set()
 
     def detect_order_block_reversal(idx, left=3, right=3, structure_lookback=40, max_ob_age=40):
-        if idx < structure_lookback + right + 5 or is_choppy_market(idx):
+        if idx < structure_lookback+right+5 or is_choppy_market(idx):
             return False, {}
         swing_lows = _last_confirmed_swing_lows(idx, count=1, left=left, right=right, max_scan=structure_lookback)
         if not swing_lows:
             return False, {}
         pivot_idx = swing_lows[0]
-        struct_start = max(0, pivot_idx - structure_lookback)
+        struct_start = max(0, pivot_idx-structure_lookback)
         if pivot_idx <= struct_start:
             return False, {}
         structure_high = data['High'].iloc[struct_start:pivot_idx].max()
         if pd.isna(structure_high):
             return False, {}
         bos_idx = None
-        for k in range(pivot_idx + 1, idx + 1):
+        for k in range(pivot_idx+1, idx+1):
             ck = data.iloc[k]
             if ck['Close'] > structure_high and ck['is_bullish'] and ck['body_pct'] >= 0.45:
                 bos_idx = k
                 break
         if bos_idx is None or bos_idx >= idx:
             return False, {}
-        if (idx - bos_idx) > max_ob_age:
+        if (idx-bos_idx) > max_ob_age:
             return False, {}
         ob_idx = None
-        for k in range(bos_idx - 1, pivot_idx - 1, -1):
+        for k in range(bos_idx-1, pivot_idx-1, -1):
             if not data.iloc[k]['is_bullish']:
                 ob_idx = k
                 break
@@ -3081,7 +3126,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         ob = data.iloc[ob_idx]
         ob_high = max(ob['Open'], ob['Close'])
         ob_low = min(ob['Open'], ob['Close'])
-        between = data.iloc[ob_idx + 1:idx]
+        between = data.iloc[ob_idx+1:idx]
         if not between.empty and (between['Close'] < ob_low).any():
             return False, {}
         c = data.iloc[idx]
@@ -3101,18 +3146,18 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         entry = data['Close'].iloc[idx]
         FIXED_SL_POINTS = 11
         FIXED_TARGET_POINTS = 30
-        stop = entry - FIXED_SL_POINTS
-        target = entry + FIXED_TARGET_POINTS
-        rr = abs(target - entry) / (abs(entry - stop) + 1e-9)
+        stop = entry-FIXED_SL_POINTS
+        target = entry+FIXED_TARGET_POINTS
+        rr = abs(target-entry) / (abs(entry-stop)+1e-9)
         return entry, stop, target, rr
 
     def calculate_levels_bear(idx, condition):
         entry = data['Close'].iloc[idx]
         FIXED_SL_POINTS = 11
         FIXED_TARGET_POINTS = 30
-        stop = entry + FIXED_SL_POINTS
-        target = entry - FIXED_TARGET_POINTS
-        rr = abs(entry - target) / (abs(stop - entry) + 1e-9)
+        stop = entry+FIXED_SL_POINTS
+        target = entry-FIXED_TARGET_POINTS
+        rr = abs(entry-target) / (abs(stop-entry)+1e-9)
         return entry, stop, target, rr
 
     def get_quality(rr):
@@ -3127,10 +3172,10 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         detector's own confidence, the RR-derived quality bucket (this
         dominates -- a PREMIUM RR candidate always outranks a MEDIUM one
         regardless of confidence), and priority as a tiebreaker only."""
-        return confidence * 0.6 + _QUALITY_WEIGHT[quality] * 20 - priority * 1.0
+        return confidence * 0.6+_QUALITY_WEIGHT[quality] * 20-priority * 1.0
 
     def _write_signal(idx, side, condition, sig_data, confidence, entry, stop, target, rr,
-                       quality, score, wait_note=""):
+                      quality, score, wait_note=""):
         data.loc[data.index[idx], 'st_sig'] = 1
         data.loc[data.index[idx], 'condition'] = condition
         data.loc[data.index[idx], 'quality'] = quality
@@ -3162,7 +3207,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
     COOLDOWN_CANDLES = 1
     last_signal_idx = -10 ** 9
 
-    pending_signals = []       # CE (bullish) branches awaiting ema_trend == 1 confirmation
+    pending_signals = []  # CE (bullish) branches awaiting ema_trend == 1 confirmation
     pending_signals_bear = []  # PE (bearish) branches awaiting ema_trend == -1 confirmation
 
     multi_div_bull_seen = 0
@@ -3179,7 +3224,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         # ---- STEP 1a: evaluate pending CE (bullish) confirmation queue ----
         still_pending = []
         for p in pending_signals:
-            age = idx - p['detect_idx']
+            age = idx-p['detect_idx']
             if age < 0:
                 still_pending.append(p)
                 continue
@@ -3207,7 +3252,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         # ---- STEP 1b: evaluate pending PE (bearish) confirmation queue ----
         still_pending_bear = []
         for p in pending_signals_bear:
-            age = idx - p['detect_idx']
+            age = idx-p['detect_idx']
             if age < 0:
                 still_pending_bear.append(p)
                 continue
@@ -3249,7 +3294,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 })
 
         # ---- STEP 3: fire the single best-rated candidate for this candle ----
-        if candidates_this_idx and (idx - last_signal_idx) >= COOLDOWN_CANDLES:
+        if candidates_this_idx and (idx-last_signal_idx) >= COOLDOWN_CANDLES:
             best = max(candidates_this_idx, key=lambda x: x['score'])
             result = _write_signal(
                 idx, best['side'], best['condition'], best['data'], best['confidence'],
@@ -3263,7 +3308,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
             # already handled this candle -- skip fresh detection below
             continue
 
-        if idx - last_signal_idx < COOLDOWN_CANDLES:
+        if idx-last_signal_idx < COOLDOWN_CANDLES:
             continue
 
         # ---- STEP 4: fresh detection (feeds pending queues for future candles) ----
@@ -3271,29 +3316,36 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         if b_det:
             base_morning_dates_fired.add(data.index[idx].date())
             pending_signals.append({'detect_idx': idx, 'condition': 'BASE_MORNING',
-                                     'data': b_data, 'confidence': 82, 'priority': 1})
+                                    'data': b_data, 'confidence': 82, 'priority': 1})
 
         v_det, v_data = detect_v_shape(idx)
         if v_det:
             pending_signals.append({'detect_idx': idx, 'condition': 'V_SHAPE_REVERSAL',
-                                     'data': v_data, 'confidence': 76, 'priority': 2})
+                                    'data': v_data, 'confidence': 76, 'priority': 2})
 
         c_det, c_data = detect_continuation(idx)
         if c_det:
             pending_signals.append({'detect_idx': idx, 'condition': 'BULLISH_CONTINUATION',
-                                     'data': c_data, 'confidence': 66, 'priority': 3})
+                                    'data': c_data, 'confidence': 66, 'priority': 3})
 
         box_det, box_data = detect_box_consolidation_breakout(idx)
         if box_det:
             pending_signals.append({'detect_idx': idx, 'condition': 'CONSOLIDATION_BOX_BREAKOUT',
-                                     'data': box_data, 'confidence': 74, 'priority': 4})
+                                    'data': box_data, 'confidence': 74, 'priority': 4})
 
         fb_det, fb_data = detect_fall_box_breakout(idx)
         if fb_det:
             pending_signals.append({'detect_idx': idx, 'condition': fb_data['pattern_type'],
-                                     'data': fb_data, 'confidence': 80, 'priority': 2})
+                                    'data': fb_data, 'confidence': 80, 'priority': 2})
 
         # ---- Multi-indicator divergence (INDEX-driven) -> pending queues ----
+        # CHANGE 1: only allowed to queue at/after multi_div_start_time (default 10:00).
+        # CHANGE 2: gated by the INDEX's own Stochastic %K (idx_STOCH_K, aligned
+        #           from the index candle sequence, NOT the option premium's own
+        #           stochastic) -- bullish divergence needs it OVERSOLD
+        #           (<= multi_div_stoch_oversold) before it's queued for CE;
+        #           bearish divergence needs it OVERBOUGHT
+        #           (>= multi_div_stoch_overbought) before it's queued for PE.
         if use_multi_div:
             row_label = data['label_type'].iloc[idx] if 'label_type' in data.columns else None
             if isinstance(row_label, str):
@@ -3304,17 +3356,34 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 neg_hid = data['neg_hid_div'].iloc[idx] if 'neg_hid_div' in data.columns else 0
 
                 src_time = data['_div_label_time'].iloc[idx] if '_div_label_time' in data.columns else data.index[idx]
+                tm_now = data.index[idx].time()
+                after_start_time = tm_now >= multi_div_start_time
+                stoch_now = data['idx_STOCH_K'].iloc[idx]
+                stoch_known = not pd.isna(stoch_now)
+                stoch_oversold = stoch_known and stoch_now <= multi_div_stoch_oversold
+                stoch_overbought = stoch_known and stoch_now >= multi_div_stoch_overbought
+                stoch_str = f"{stoch_now:.1f}" if stoch_known else "n/a"
 
                 if row_label == 'bottom' and src_time != last_multi_div_bull_time:
                     last_multi_div_bull_time = src_time
                     multi_div_bull_seen += 1
                     agree_count = int(pos_reg+pos_hid)
-                    if multi_div_side in ('CE', 'BOTH'):
+                    if not after_start_time:
                         print(f"[MULTI-DIV] BULLISH #{multi_div_bull_seen} @ {data.index[idx]} "
-                              f"| agree={agree_count} | indicators=({indicators_str}) -> queued for CE")
+                              f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
+                              f"(before {multi_div_start_time.strftime('%H:%M')} cutoff)")
+                    elif not stoch_oversold:
+                        print(f"[MULTI-DIV] BULLISH #{multi_div_bull_seen} @ {data.index[idx]} "
+                              f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
+                              f"(index Stoch %K={stoch_str}, not oversold <= {multi_div_stoch_oversold})")
+                    elif multi_div_side in ('CE', 'BOTH'):
+                        print(f"[MULTI-DIV] BULLISH #{multi_div_bull_seen} @ {data.index[idx]} "
+                              f"| agree={agree_count} | indicators=({indicators_str}) | "
+                              f"index Stoch %K={stoch_str} (oversold) -> queued for CE")
                         pending_signals.append({
                             'detect_idx': idx, 'condition': 'MULTI_INDICATOR_BULLISH_DIVERGENCE',
-                            'data': {'agree_count': agree_count, 'pos_reg_div': pos_reg, 'pos_hid_div': pos_hid},
+                            'data': {'agree_count': agree_count, 'pos_reg_div': pos_reg,
+                                     'pos_hid_div': pos_hid, 'stoch_k': stoch_now},
                             'confidence': 78, 'priority': 2
                         })
                         multi_div_bull_queued += 1
@@ -3327,12 +3396,22 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                     last_multi_div_bear_time = src_time
                     multi_div_bear_seen += 1
                     agree_count = int(neg_reg+neg_hid)
-                    if multi_div_side in ('PE', 'BOTH'):
+                    if not after_start_time:
                         print(f"[MULTI-DIV] BEARISH #{multi_div_bear_seen} @ {data.index[idx]} "
-                              f"| agree={agree_count} | indicators=({indicators_str}) -> queued for PE")
+                              f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
+                              f"(before {multi_div_start_time.strftime('%H:%M')} cutoff)")
+                    elif not stoch_overbought:
+                        print(f"[MULTI-DIV] BEARISH #{multi_div_bear_seen} @ {data.index[idx]} "
+                              f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
+                              f"(index Stoch %K={stoch_str}, not overbought >= {multi_div_stoch_overbought})")
+                    elif multi_div_side in ('PE', 'BOTH'):
+                        print(f"[MULTI-DIV] BEARISH #{multi_div_bear_seen} @ {data.index[idx]} "
+                              f"| agree={agree_count} | indicators=({indicators_str}) | "
+                              f"index Stoch %K={stoch_str} (overbought) -> queued for PE")
                         pending_signals_bear.append({
                             'detect_idx': idx, 'condition': 'MULTI_INDICATOR_BEARISH_DIVERGENCE',
-                            'data': {'agree_count': agree_count, 'neg_reg_div': neg_reg, 'neg_hid_div': neg_hid},
+                            'data': {'agree_count': agree_count, 'neg_reg_div': neg_reg,
+                                     'neg_hid_div': neg_hid, 'stoch_k': stoch_now},
                             'confidence': 78, 'priority': 2
                         })
                         multi_div_bear_queued += 1
@@ -3363,7 +3442,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
               f"{'Quality':<10} {'RR':<7} {'Score':<7} {'Conf':<6}")
         print("-" * 115)
         for sig in signals_list[-25:]:
-            print(f"{str(sig['datetime']):<26} {sig['close']:<10.2f} {sig.get('signal_type','CE'):<5} "
+            print(f"{str(sig['datetime']):<26} {sig['close']:<10.2f} {sig.get('signal_type', 'CE'):<5} "
                   f"{sig['condition']:<32} {sig['quality']:<10} {sig['rr']:<7.2f} "
                   f"{sig['rating_score']:<7.1f} {sig['confidence']:<6.1f}")
 
@@ -3389,7 +3468,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         print(f"⭐ AVG RATING SCORE: {np.mean([s['rating_score'] for s in signals_list]):.1f}")
 
     return data
-
 
 
 
