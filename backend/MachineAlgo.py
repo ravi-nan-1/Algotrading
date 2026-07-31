@@ -1784,8 +1784,6 @@ def super_trendbkk(symbol: str, data: pd.DataFrame) -> pd.DataFrame:
 
 
 
-
-
 import pandas as pd
 import numpy as np
 import datetime as dt
@@ -1797,6 +1795,14 @@ except ImportError as e:
     raise ImportError(
         "pandas_ta is required for the multi-indicator divergence engine "
         "(pip install pandas_ta)"
+    ) from e
+
+try:
+    from scipy.signal import argrelextrema
+except ImportError as e:
+    raise ImportError(
+        "scipy is required for the standalone find_swing_levels() utility "
+        "(pip install scipy)"
     ) from e
 
 
@@ -2266,6 +2272,75 @@ def calculate_index_divergences(
     return out
 
 
+# ============================================================================
+# SWING LEVEL CLUSTERING (tolerance-based horizontal levels)
+# ============================================================================
+
+def _md_cluster_levels(prices, tol):
+    """
+    Groups nearby swing prices into horizontal levels, exactly like your
+    get_levels() -- shared so both the standalone find_swing_levels()
+    utility and the causal in-loop lookup inside super_trend() use the
+    identical clustering rule.
+    """
+    levels = []
+    for price in sorted(prices):
+        found = False
+        for i, (level, count, touches) in enumerate(levels):
+            if abs(price-level) <= tol:
+                levels[i] = (level, count+1, touches+[price])
+                found = True
+                break
+        if not found:
+            levels.append((price, 1, [price]))
+    result = []
+    for level, count, touches in levels:
+        avg_level = round(sum(touches) / len(touches), 2)
+        result.append({
+            'Level': avg_level,
+            'Touches': count,
+            'Min': min(touches),
+            'Max': max(touches)
+        })
+    if not result:
+        return pd.DataFrame(columns=['Level', 'Touches', 'Min', 'Max'])
+    return pd.DataFrame(result).sort_values('Level').reset_index(drop=True)
+
+
+def find_swing_levels(df: pd.DataFrame, order: int = 5, tolerance: float = 8.0):
+    """
+    Finds clean horizontal levels from swing highs and lows across the
+    WHOLE dataframe passed in.
+
+    STANDALONE / OFFLINE USE ONLY. argrelextrema looks both left AND right
+    of every candidate point, so pivots inside the last `order` bars of
+    whatever slice you hand it are provisional -- they can still flip as
+    new candles arrive. That's fine for an end-of-day "show me the levels"
+    print, but it's exactly the kind of repaint you've spent a long time
+    stamping out of super_trend() elsewhere. super_trend() does NOT call
+    this function internally -- it uses `_levels_asof()` instead, which
+    only clusters pivots that were already confirmed (non-repainting) as
+    of the current bar. Use this one for manual/offline inspection.
+    """
+    data = df.copy()
+    if not isinstance(data.index, pd.DatetimeIndex):
+        data.index = pd.to_datetime(data.index)
+    data = data[~data.index.duplicated(keep='last')].sort_index()
+    high_idx = argrelextrema(data['High'].values, np.greater_equal, order=order)[0]
+    low_idx = argrelextrema(data['Low'].values, np.less_equal, order=order)[0]
+    swing_highs = data.iloc[high_idx]['High'].copy()
+    swing_lows = data.iloc[low_idx]['Low'].copy()
+
+    resistance = _md_cluster_levels(swing_highs.tolist(), tolerance)
+    support = _md_cluster_levels(swing_lows.tolist(), tolerance)
+    print(f"Found {len(resistance)} Resistance Levels")
+    print(f"Found {len(support)} Support Levels\n")
+    print("=== RESISTANCE LEVELS ===")
+    print(resistance.to_string(index=False))
+    print("\n=== SUPPORT LEVELS ===")
+    print(support.to_string(index=False))
+    return resistance, support, swing_highs, swing_lows
+
 
 def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 index_data: pd.DataFrame = None,
@@ -2278,7 +2353,19 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 multi_div_align_tolerance: "pd.Timedelta|None" = None,
                 multi_div_start_time: dt.time = dt.time(10, 0),
                 multi_div_stoch_oversold: float = 20.0,
-                multi_div_stoch_overbought: float = 80.0) -> pd.DataFrame:
+                multi_div_stoch_overbought: float = 80.0,
+                multi_div_level_lookback: int = 8,
+                multi_div_level_maxwait: int = 8,
+                multi_div_swing_prd: int = 5,
+                multi_div_level_tolerance: float = 8.0,
+                multi_div_breakout_buffer_atr_mult: float = 0.15,
+                multi_div_breakout_buffer_points: float = 0.0,
+                multi_div_enable_base_breakout: bool = True,
+                multi_div_base_min_candles: int = 3,
+                multi_div_base_max_candles: int = 8,
+                multi_div_base_range_pct: float = 0.0035,
+                multi_div_base_ema_lag: int = 2,
+                multi_div_level_max_distance: float = 25.0) -> pd.DataFrame:
     """
     `data` -- OPTION PREMIUM candles (either the CE chain or the PE chain --
               call this function once per side, same as before).
@@ -2311,12 +2398,87 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
               (and so it will match whatever you see on your index chart,
               e.g. TradingView's Nifty Stoch panel).
 
-    Bullish (bottom) divergence label on the index -> feeds the CE pending
-    queue (buy call). Bearish (top) divergence label on the index -> feeds
-    the PE pending queue (buy put). Both are still gated by your EMA5/HLC3
-    ema_trend confirmation exactly like every other pending-queue branch,
-    and both still pass through the index volume-profile rejection filter
-    before they're allowed to fire.
+    `multi_div_level_lookback` -- unused fallback slot retained for
+              backward compatibility with older call sites; the level is
+              now always taken from the clustered-swing-level table (see
+              `multi_div_level_tolerance` below), never from a rolling
+              N-candle high/low.
+    `multi_div_level_tolerance` -- points. Confirmed INDEX swing highs (or
+              lows) within this many points of each other are merged into
+              a single clustered level, exactly like `find_swing_levels()`
+              / `_md_cluster_levels()`. At the moment a divergence fires,
+              the level used is: take the current INDEX price -> filter
+              every clustered resistance (for bullish) / support (for
+              bearish) level that sits on the correct side of price ->
+              sort by distance -> pick the NEAREST one. This is computed
+              causally (`_levels_asof()`): only pivots already confirmed
+              by the current bar are eligible, so it cannot repaint.
+    `multi_div_level_max_distance` -- Maximum allowed distance (in index
+              points) between the current INDEX price and the nearest
+              qualifying clustered level at the moment the divergence is
+              detected. If nothing clusters within this distance on the
+              correct side of price, the divergence is skipped outright --
+              it never enters the level watch queue at all. This prevents
+              watching a stale/far-away level that price would take
+              forever to reach (and that the fixed SL/TP would resolve
+              long before it's ever broken).
+    `multi_div_swing_prd` -- pivot confirmation width (bars on each side)
+              used to detect INDEX swing highs/lows that feed the level
+              clustering above, same non-repainting pivot logic as the
+              divergence engine itself (a pivot at bar i-prd only becomes
+              visible once bar i closes).
+    `multi_div_breakout_buffer_atr_mult` / `multi_div_breakout_buffer_points`
+              -- the level must be cleared by whichever buffer is larger:
+              `INDEX ATR * multi_div_breakout_buffer_atr_mult`, or a flat
+              `multi_div_breakout_buffer_points`. This filters out
+              wick-through/1-tick fake breakouts. Set both to 0 to require
+              only a plain close-through-the-level break.
+    `multi_div_level_maxwait` -- how many candles the level is allowed to
+              sit unbroken before the divergence signal is cancelled
+              outright (never reaches the pending queue at all).
+
+    Every watched divergence is checked against TWO independent trigger
+    paths each candle -- whichever fires first wins, the other is simply
+    never evaluated again for that watch item:
+
+      Path A ("swing_breakout") -- the original break-of-level logic
+      above (now against the nearest CLUSTERED level, not a single raw
+      pivot). Catches fast, explosive V-shaped reversals.
+
+      Path B ("base_breakout", new) -- catches the slower accumulation /
+      compression setups where price never cleanly breaks the level,
+      instead grinding sideways in a tight range with rising lows (or
+      falling highs, mirrored for bearish) while sellers (buyers) get
+      absorbed. Enabled via `multi_div_enable_base_breakout`. Starting
+      `multi_div_base_min_candles` candles after the divergence, each
+      candle re-measures the base formed over the last
+      `multi_div_base_max_candles`: it fires once (a) the base's own
+      high-low range is under `multi_div_base_range_pct` of price,
+      (b) the base's lows are non-decreasing / highs are non-increasing
+      (buyers/sellers absorbing, not breaking down/up further),
+      (c) the INDEX's own EMA5 has turned up/down over the last
+      `multi_div_base_ema_lag` candles, and (d) the current candle is a
+      bullish/bearish close beyond the base's own high/low. This is
+      "break the base" rather than "break the clustered level" -- the
+      base's own high/low is usually much closer to price than the
+      level, so it fires earlier on these compression setups.
+
+    Bullish (bottom) divergence label on the index -> at the divergence
+    bar, takes the current INDEX price, filters every clustered
+    resistance level ABOVE it, sorts them, and picks the NEAREST one as
+    resistance (skipped entirely if nothing qualifying is within
+    `multi_div_level_max_distance` points) and WAITS. Only once the INDEX
+    closes above resistance + buffer does it get pushed into the CE
+    pending queue (buy call). Bearish (top) divergence label -> mirror
+    image: filters every clustered support level BELOW price, picks the
+    nearest, and waits for an INDEX close below support - buffer before
+    it's pushed into the PE pending queue (buy put). If the level isn't
+    broken within `multi_div_level_maxwait` candles, the signal is
+    cancelled and never reaches the pending queue. Once it does reach the
+    pending queue, it is still gated by your EMA5/HLC3 ema_trend
+    confirmation exactly like every other pending-queue branch, and still
+    passes through the index volume-profile rejection filter before it's
+    allowed to fire.
     """
     if 'Datetime' in data.columns:
         data = data.set_index('Datetime')
@@ -2408,24 +2570,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         raw_k = 100 * (close-lowest_low) / (highest_high-lowest_low).replace(0, np.nan)
         return raw_k.rolling(smooth_k).mean()
 
-    # Stochastic %K on the OPTION candle itself. Kept as a general-purpose
-    # diagnostic column only (e.g. for your own charting/inspection of the
-    # option data) -- it is NOT used as the multi-indicator-divergence gate
-    # any more. The actual gate now uses the INDEX's own Stochastic %K,
-    # computed further down (as `idx_STOCH_K`) once index_data is aligned
-    # onto this timeline, so it matches what you see on your index chart.
     data['STOCH_K'] = _stochastic_k(data['High'], data['Low'], data['Close'], k_period=14, smooth_k=3)
-
-    # NOTE: RSI/MACD above are kept only as general-purpose diagnostic columns
-    # on the option data (e.g. for your own charting/inspection). They are no
-    # longer inputs to any divergence detector -- the multi-indicator
-    # divergence engine now runs entirely on index_data, computing its own
-    # RSI/MACD/Stoch/CCI/MOM/OBV/VWMACD/CMF/MFI internally via
-    # _md_calculate_indicators(). The old option-data Stoch/CCI/MOM/OBV/
-    # VWMACD/CMF/MFI block has been removed since nothing on the option side
-    # consumed it any more -- and as of this version, STOCH_K above is a pure
-    # diagnostic too; the multi-div gate reads idx_STOCH_K instead (see the
-    # index alignment block below).
 
     def psar(high, low, close, iaf=0.02, maxaf=0.2):
         length = len(high)
@@ -2576,6 +2721,8 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
     # a backward as-of merge, so at any option candle idx we only ever see index
     # information timestamped <= that candle's own timestamp.
     use_index_filter = index_data is not None
+    _pivot_high_events = []   # list[(confirm_bar_pos_in_idx_df, price)] -- causal, non-repainting
+    _pivot_low_events = []
     if use_index_filter:
         idx_df = index_data.copy()
         if 'Datetime' in idx_df.columns:
@@ -2589,22 +2736,34 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         idx_df.index.name = 'Datetime'
         idx_df = idx_df.sort_index()
 
-        # Stochastic %K on the INDEX's own candle sequence (its natural bar
-        # interval), computed BEFORE alignment onto the option timeline.
-        # This MUST happen here and not after the merge_asof below: once
-        # merged, index rows get forward-filled/duplicated across however
-        # many option candles fall in each index bar, and rolling a
-        # min/max window over that duplicated series would corrupt the
-        # calculation. Computing it on idx_df's own untouched row sequence
-        # keeps it identical to what you'd see on the index's own chart
-        # (e.g. TradingView's Nifty Stoch panel).
         idx_df['STOCH_K'] = _stochastic_k(idx_df['High'], idx_df['Low'], idx_df['Close'], k_period=14, smooth_k=3)
 
-        idx_df = idx_df.sort_index()[['Open', 'High', 'Low', 'Close', 'Volume', 'STOCH_K']].add_prefix('idx_')
+        _idx_hl = idx_df['High']-idx_df['Low']
+        _idx_hc = np.abs(idx_df['High']-idx_df['Close'].shift())
+        _idx_lc = np.abs(idx_df['Low']-idx_df['Close'].shift())
+        idx_df['ATR'] = pd.concat([_idx_hl, _idx_hc, _idx_lc], axis=1).max(axis=1).rolling(14).mean()
 
-        # Median bar interval of the index feed -- used to size the alignment
-        # tolerance so labels don't linger across many option candles, and
-        # don't get missed if the two feeds aren't perfectly synced.
+        # ---- Causal (non-repainting) swing-high/low pivot detection ----
+        # A pivot at bar position p only becomes known once bar p+prd closes.
+        # We keep the FULL history of confirmed pivots (not just the latest one)
+        # so that at any later bar we can cluster "every pivot confirmed so far"
+        # into horizontal levels via _md_cluster_levels().
+        _idx_high_arr = idx_df['High'].values.astype(float)
+        _idx_low_arr = idx_df['Low'].values.astype(float)
+        for _i in range(len(idx_df)):
+            _ph = _md_pine_pivothigh(_idx_high_arr, _i, multi_div_swing_prd)
+            _pl = _md_pine_pivotlow(_idx_low_arr, _i, multi_div_swing_prd)
+            if _ph is not None:
+                _pivot_high_events.append((_i, float(_ph)))
+            if _pl is not None:
+                _pivot_low_events.append((_i, float(_pl)))
+
+        idx_df['EMA5'] = idx_df['Close'].ewm(span=6, adjust=False).mean()
+        idx_df['bar_pos'] = np.arange(len(idx_df))
+
+        idx_df = idx_df.sort_index()[['Open', 'High', 'Low', 'Close', 'Volume', 'STOCH_K',
+                                       'ATR', 'EMA5', 'bar_pos']].add_prefix('idx_')
+
         if len(idx_df) > 1:
             median_interval = pd.Series(idx_df.index).diff().dropna().median()
         else:
@@ -2635,6 +2794,46 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
               "index volume-profile filter are both DISABLED for this run. Every other "
               "branch still runs normally on the option data.")
         data['idx_STOCH_K'] = np.nan
+        data['idx_ATR'] = np.nan
+        data['idx_EMA5'] = np.nan
+        data['idx_Close'] = np.nan
+        data['idx_High'] = np.nan
+        data['idx_Low'] = np.nan
+        data['idx_Open'] = np.nan
+        data['idx_bar_pos'] = np.nan
+
+    # ---- Causal clustered-level lookup: "current price -> nearest qualifying level" ----
+    def _levels_asof(current_bar_pos, tolerance):
+        """Clusters only pivots CONFIRMED by current_bar_pos (i.e. pivot's own
+        confirm-index <= current_bar_pos). Non-repainting: the set of pivots
+        eligible at bar i is a strict subset of what's eligible at bar i+1."""
+        if pd.isna(current_bar_pos):
+            empty = pd.DataFrame(columns=['Level', 'Touches', 'Min', 'Max'])
+            return empty, empty
+        cp = int(current_bar_pos)
+        highs = [p for (pos, p) in _pivot_high_events if pos <= cp]
+        lows = [p for (pos, p) in _pivot_low_events if pos <= cp]
+        resistance_df = _md_cluster_levels(highs, tolerance)
+        support_df = _md_cluster_levels(lows, tolerance)
+        return resistance_df, support_df
+
+    def _nearest_level_above(levels_df, price):
+        """Filter all levels above price, sort ascending, return the first (nearest)."""
+        if levels_df is None or levels_df.empty:
+            return None
+        above = levels_df[levels_df['Level'] > price].sort_values('Level')
+        if above.empty:
+            return None
+        return above.iloc[0]
+
+    def _nearest_level_below(levels_df, price):
+        """Filter all levels below price, sort descending, return the first (nearest)."""
+        if levels_df is None or levels_df.empty:
+            return None
+        below = levels_df[levels_df['Level'] < price].sort_values('Level', ascending=False)
+        if below.empty:
+            return None
+        return below.iloc[0]
 
     if div_labels is not None and not div_labels.empty and use_index_filter:
         dl = div_labels.sort_index().reset_index()  # columns: Datetime, Close, pos_reg_div, ...
@@ -2664,14 +2863,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         data['label_type'] = np.nan
         data['divergence_indicators'] = np.nan
         data['_div_label_time'] = pd.NaT
-
-    # A label can legitimately be the nearest-preceding match for more than one
-    # option candle (if option candles are more frequent than index candles, or
-    # timestamps aren't perfectly synced). We de-duplicate that inside the main
-    # loop below by comparing each row's `_div_label_time` (the SOURCE label's
-    # own timestamp, carried through the merge) against the last one already
-    # consumed -- not the option candle's own timestamp, which would differ on
-    # every row and defeat the de-dup.
 
     VP_LOOKBACK = 50
     VP_BINS = 24
@@ -2760,13 +2951,10 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         if current_date in base_morning_dates_fired:
             return False, {}
 
-        # --- Locate the first 6 candles of the day (the "opening range") ---
         day_mask = data.index.date == current_date
         day_start_idx = np.where(day_mask)[0][0]
-        or_end_idx = day_start_idx+6  # opening range = first 6 candles (9:15-9:33 on 3min bars)
+        or_end_idx = day_start_idx+6
 
-        # Only look for a breakout AFTER the opening range is fully formed,
-        # and keep the existing morning window as the outer bound
         if idx < or_end_idx:
             return False, {}
         if not (dt.time(9, 33) <= tm <= dt.time(9, 55)):
@@ -2779,8 +2967,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         if or_range <= 0:
             return False, {}
 
-        # Reject if the opening range itself is too wide (already trending/volatile,
-        # not a real "base") or too narrow (dead market, breakout is just noise)
         or_range_pct = or_range / or_low
         if or_range_pct > 0.012 or or_range_pct < 0.002:
             return False, {}
@@ -2794,14 +2980,13 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         momentum = (c['Close']-c['Open']) / (c['High']-c['Low']+1e-9) > 0.62
         vol_ok = c['vol_ratio'] > 1.20
 
-        # The actual breakout condition: close must clear the opening range high
         breakout = c['Close'] > or_high * 1.001
 
         if not (uptrend and strong_body and momentum and vol_ok and breakout):
             return False, {}
 
-        target = round(or_high+or_range, 2)  # measured-move target = OR high + OR range
-        stop = round(or_low, 2)  # structural stop = opening range low
+        target = round(or_high+or_range, 2)
+        stop = round(or_low, 2)
 
         return True, {
             'pattern_type': 'BASE_MORNING',
@@ -2922,24 +3107,20 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         ema20 = data['EMA20'].iloc[idx]
         ema30 = data['EMA30'].iloc[idx]
 
-        # Strong trend
         trend_ok = (
                 c['Close'] > ema10 > ema20 > ema30 and
                 (ema10-ema20) > data['ATR'].iloc[idx] * 0.10 and
                 (ema20-ema30) > data['ATR'].iloc[idx] * 0.05
         )
 
-        # Strong momentum candle
         body_ok = (
                 c['is_bullish'] and
                 c['body_pct'] >= 0.60 and
                 c['close_pos'] >= 0.70
         )
 
-        # Above average volume
         vol_ok = c['vol_ratio'] >= 1.15
 
-        # Real pullback
         recent_low = data['Close'].iloc[idx-4:idx].min()
         recent_high = data['High'].iloc[idx-4:idx].max()
 
@@ -2948,7 +3129,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 recent_low > ema20
         )
 
-        # Clean breakout
         breakout = (
                 c['Close'] > recent_high * 1.002 and
                 c['High'] > recent_high
@@ -3210,18 +3390,183 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
     pending_signals = []  # CE (bullish) branches awaiting ema_trend == 1 confirmation
     pending_signals_bear = []  # PE (bearish) branches awaiting ema_trend == -1 confirmation
 
+    level_watch_bull = []
+    level_watch_bear = []
+
     multi_div_bull_seen = 0
     multi_div_bear_seen = 0
+    multi_div_bull_watched = 0
+    multi_div_bear_watched = 0
     multi_div_bull_queued = 0
     multi_div_bear_queued = 0
+    multi_div_bull_queued_swing = 0
+    multi_div_bull_queued_base = 0
+    multi_div_bear_queued_swing = 0
+    multi_div_bear_queued_base = 0
+    multi_div_bull_cancelled = 0
+    multi_div_bear_cancelled = 0
     last_multi_div_bull_time = None
     last_multi_div_bear_time = None
 
     for idx in range(18, n):
 
-        candidates_this_idx = []  # each fully-priced, rated, ready to fire
+        candidates_this_idx = []
 
-        # ---- STEP 1a: evaluate pending CE (bullish) confirmation queue ----
+        idx_close_now = data['idx_Close'].iloc[idx] if 'idx_Close' in data.columns else np.nan
+        still_watch_bull = []
+        for w in level_watch_bull:
+            age = idx-w['detect_idx']
+            if age <= 0:
+                still_watch_bull.append(w)
+                continue
+            if age > multi_div_level_maxwait:
+                multi_div_bull_cancelled += 1
+                print(f"[MULTI-DIV LEVEL] BULLISH watch @ {w['data'].get('label_time', '')} "
+                      f"CANCELLED -- resistance {w['level']:.2f} not broken within "
+                      f"{multi_div_level_maxwait} candles")
+                continue
+            if pd.isna(idx_close_now):
+                still_watch_bull.append(w)
+                continue
+
+            triggered = False
+            trigger_path = None
+            trigger_note = ""
+
+            _idx_atr_now = data['idx_ATR'].iloc[idx] if 'idx_ATR' in data.columns else np.nan
+            _atr_buf = _idx_atr_now * multi_div_breakout_buffer_atr_mult if not pd.isna(_idx_atr_now) else 0.0
+            _buffer = max(_atr_buf, multi_div_breakout_buffer_points)
+            if idx_close_now > w['level']+_buffer:
+                triggered = True
+                trigger_path = 'swing_breakout'
+                trigger_note = (f"index close {idx_close_now:.2f} > resistance {w['level']:.2f} "
+                                 f"+ buffer {_buffer:.2f}")
+
+            if not triggered and multi_div_enable_base_breakout and age >= multi_div_base_min_candles:
+                base_start = max(w['detect_idx']+1, idx-multi_div_base_max_candles+1)
+                base_window = data.iloc[base_start:idx+1]
+                base_high_s = base_window['idx_High']
+                base_low_s = base_window['idx_Low']
+                if base_high_s.notna().sum() >= multi_div_base_min_candles and base_low_s.min() > 0:
+                    base_high = base_high_s.max()
+                    base_low = base_low_s.min()
+                    base_range_pct = (base_high-base_low) / base_low
+                    half = max(1, len(base_window) // 2)
+                    first_half_low = base_low_s.iloc[:half].min()
+                    second_half_low = base_low_s.iloc[half:].min() if len(base_window) > half else first_half_low
+                    higher_low_intact = (pd.isna(first_half_low) or pd.isna(second_half_low)
+                                          or second_half_low >= first_half_low * 0.999)
+                    ema_now = data['idx_EMA5'].iloc[idx] if 'idx_EMA5' in data.columns else np.nan
+                    ema_prev = data['idx_EMA5'].iloc[max(0, idx-multi_div_base_ema_lag)] if 'idx_EMA5' in data.columns else np.nan
+                    ema_turning_up = (not pd.isna(ema_now)) and (not pd.isna(ema_prev)) and ema_now > ema_prev
+                    idx_open_now = data['idx_Open'].iloc[idx] if 'idx_Open' in data.columns else np.nan
+                    bullish_candle = (not pd.isna(idx_open_now)) and idx_close_now > idx_open_now
+                    base_compressed = base_range_pct < multi_div_base_range_pct
+                    base_broken = idx_close_now > base_high
+                    if base_compressed and higher_low_intact and ema_turning_up and bullish_candle and base_broken:
+                        triggered = True
+                        trigger_path = 'base_breakout'
+                        trigger_note = (f"base range {base_range_pct*100:.2f}% over "
+                                         f"{len(base_window)} candles, higher-lows intact, "
+                                         f"index EMA5 turning up, close {idx_close_now:.2f} "
+                                         f"> base high {base_high:.2f}")
+
+            if triggered:
+                print(f"[MULTI-DIV LEVEL] BULLISH {trigger_path.upper()} CONFIRMED @ "
+                      f"{data.index[idx]} ({trigger_note}, waited {age} candle(s)) -> "
+                      f"queued for CE (ema_trend confirmation)")
+                pending_signals.append({
+                    'detect_idx': idx, 'condition': 'MULTI_INDICATOR_BULLISH_DIVERGENCE',
+                    'data': {**w['data'], 'level': w['level'], 'break_age': age,
+                             'entry_path': trigger_path},
+                    'confidence': 78, 'priority': 2
+                })
+                multi_div_bull_queued += 1
+                if trigger_path == 'swing_breakout':
+                    multi_div_bull_queued_swing += 1
+                else:
+                    multi_div_bull_queued_base += 1
+                continue
+            still_watch_bull.append(w)
+        level_watch_bull = still_watch_bull
+
+        still_watch_bear = []
+        for w in level_watch_bear:
+            age = idx-w['detect_idx']
+            if age <= 0:
+                still_watch_bear.append(w)
+                continue
+            if age > multi_div_level_maxwait:
+                multi_div_bear_cancelled += 1
+                print(f"[MULTI-DIV LEVEL] BEARISH watch @ {w['data'].get('label_time', '')} "
+                      f"CANCELLED -- support {w['level']:.2f} not broken within "
+                      f"{multi_div_level_maxwait} candles")
+                continue
+            if pd.isna(idx_close_now):
+                still_watch_bear.append(w)
+                continue
+
+            triggered = False
+            trigger_path = None
+            trigger_note = ""
+
+            _idx_atr_now = data['idx_ATR'].iloc[idx] if 'idx_ATR' in data.columns else np.nan
+            _atr_buf = _idx_atr_now * multi_div_breakout_buffer_atr_mult if not pd.isna(_idx_atr_now) else 0.0
+            _buffer = max(_atr_buf, multi_div_breakout_buffer_points)
+            if idx_close_now < w['level']-_buffer:
+                triggered = True
+                trigger_path = 'swing_breakout'
+                trigger_note = (f"index close {idx_close_now:.2f} < support {w['level']:.2f} "
+                                 f"- buffer {_buffer:.2f}")
+
+            if not triggered and multi_div_enable_base_breakout and age >= multi_div_base_min_candles:
+                base_start = max(w['detect_idx']+1, idx-multi_div_base_max_candles+1)
+                base_window = data.iloc[base_start:idx+1]
+                base_high_s = base_window['idx_High']
+                base_low_s = base_window['idx_Low']
+                if base_low_s.notna().sum() >= multi_div_base_min_candles and base_low_s.min() > 0:
+                    base_high = base_high_s.max()
+                    base_low = base_low_s.min()
+                    base_range_pct = (base_high-base_low) / base_low
+                    half = max(1, len(base_window) // 2)
+                    first_half_high = base_high_s.iloc[:half].max()
+                    second_half_high = base_high_s.iloc[half:].max() if len(base_window) > half else first_half_high
+                    lower_high_intact = (pd.isna(first_half_high) or pd.isna(second_half_high)
+                                          or second_half_high <= first_half_high * 1.001)
+                    ema_now = data['idx_EMA5'].iloc[idx] if 'idx_EMA5' in data.columns else np.nan
+                    ema_prev = data['idx_EMA5'].iloc[max(0, idx-multi_div_base_ema_lag)] if 'idx_EMA5' in data.columns else np.nan
+                    ema_turning_down = (not pd.isna(ema_now)) and (not pd.isna(ema_prev)) and ema_now < ema_prev
+                    idx_open_now = data['idx_Open'].iloc[idx] if 'idx_Open' in data.columns else np.nan
+                    bearish_candle = (not pd.isna(idx_open_now)) and idx_close_now < idx_open_now
+                    base_compressed = base_range_pct < multi_div_base_range_pct
+                    base_broken = idx_close_now < base_low
+                    if base_compressed and lower_high_intact and ema_turning_down and bearish_candle and base_broken:
+                        triggered = True
+                        trigger_path = 'base_breakout'
+                        trigger_note = (f"base range {base_range_pct*100:.2f}% over "
+                                         f"{len(base_window)} candles, lower-highs intact, "
+                                         f"index EMA5 turning down, close {idx_close_now:.2f} "
+                                         f"< base low {base_low:.2f}")
+
+            if triggered:
+                print(f"[MULTI-DIV LEVEL] BEARISH {trigger_path.upper()} CONFIRMED @ "
+                      f"{data.index[idx]} ({trigger_note}, waited {age} candle(s)) -> "
+                      f"queued for PE (ema_trend confirmation)")
+                pending_signals_bear.append({
+                    'detect_idx': idx, 'condition': 'MULTI_INDICATOR_BEARISH_DIVERGENCE',
+                    'data': {**w['data'], 'level': w['level'], 'break_age': age,
+                             'entry_path': trigger_path},
+                    'confidence': 78, 'priority': 2
+                })
+                multi_div_bear_queued += 1
+                if trigger_path == 'swing_breakout':
+                    multi_div_bear_queued_swing += 1
+                else:
+                    multi_div_bear_queued_base += 1
+                continue
+            still_watch_bear.append(w)
+        level_watch_bear = still_watch_bear
+
         still_pending = []
         for p in pending_signals:
             age = idx-p['detect_idx']
@@ -3229,7 +3574,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 still_pending.append(p)
                 continue
             if age > confirm_max_wait:
-                continue  # expired
+                continue
             trend_now = data['ema_trend'].iloc[idx]
             if trend_now == 1:
                 if index_volume_profile_confirms_bullish(idx):
@@ -3244,12 +3589,11 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                             'data': p['data'], 'score': score,
                             'wait_note': f"(confirmed after {age} candle(s) via ema_trend)"
                         })
-                continue  # one-shot: consumed whether or not it wins the rating
+                continue
             else:
                 still_pending.append(p)
         pending_signals = still_pending
 
-        # ---- STEP 1b: evaluate pending PE (bearish) confirmation queue ----
         still_pending_bear = []
         for p in pending_signals_bear:
             age = idx-p['detect_idx']
@@ -3277,7 +3621,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 still_pending_bear.append(p)
         pending_signals_bear = still_pending_bear
 
-        # ---- STEP 2: Order-Block branch (unchanged: immediate, no ema-trend gate) ----
         ob_anchor_for_candidate = None
         ob_result = detect_order_block_reversal(idx)
         if ob_result[0]:
@@ -3293,7 +3636,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                     'wait_note': "", '_ob_anchor': ob_anchor_idx
                 })
 
-        # ---- STEP 3: fire the single best-rated candidate for this candle ----
         if candidates_this_idx and (idx-last_signal_idx) >= COOLDOWN_CANDLES:
             best = max(candidates_this_idx, key=lambda x: x['score'])
             result = _write_signal(
@@ -3305,13 +3647,11 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
             last_signal_idx = idx
             if '_ob_anchor' in best:
                 ob_fired.add(best['_ob_anchor'])
-            # already handled this candle -- skip fresh detection below
             continue
 
         if idx-last_signal_idx < COOLDOWN_CANDLES:
             continue
 
-        # ---- STEP 4: fresh detection (feeds pending queues for future candles) ----
         b_det, b_data = detect_base(idx)
         if b_det:
             base_morning_dates_fired.add(data.index[idx].date())
@@ -3338,14 +3678,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
             pending_signals.append({'detect_idx': idx, 'condition': fb_data['pattern_type'],
                                     'data': fb_data, 'confidence': 80, 'priority': 2})
 
-        # ---- Multi-indicator divergence (INDEX-driven) -> pending queues ----
-        # CHANGE 1: only allowed to queue at/after multi_div_start_time (default 10:00).
-        # CHANGE 2: gated by the INDEX's own Stochastic %K (idx_STOCH_K, aligned
-        #           from the index candle sequence, NOT the option premium's own
-        #           stochastic) -- bullish divergence needs it OVERSOLD
-        #           (<= multi_div_stoch_oversold) before it's queued for CE;
-        #           bearish divergence needs it OVERBOUGHT
-        #           (>= multi_div_stoch_overbought) before it's queued for PE.
         if use_multi_div:
             row_label = data['label_type'].iloc[idx] if 'label_type' in data.columns else None
             if isinstance(row_label, str):
@@ -3377,16 +3709,41 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                               f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
                               f"(index Stoch %K={stoch_str}, not oversold <= {multi_div_stoch_oversold})")
                     elif multi_div_side in ('CE', 'BOTH'):
-                        print(f"[MULTI-DIV] BULLISH #{multi_div_bull_seen} @ {data.index[idx]} "
-                              f"| agree={agree_count} | indicators=({indicators_str}) | "
-                              f"index Stoch %K={stoch_str} (oversold) -> queued for CE")
-                        pending_signals.append({
-                            'detect_idx': idx, 'condition': 'MULTI_INDICATOR_BULLISH_DIVERGENCE',
-                            'data': {'agree_count': agree_count, 'pos_reg_div': pos_reg,
-                                     'pos_hid_div': pos_hid, 'stoch_k': stoch_now},
-                            'confidence': 78, 'priority': 2
-                        })
-                        multi_div_bull_queued += 1
+                        # ---- Nearest CLUSTERED resistance level above current price ----
+                        idx_close_at_div = data['idx_Close'].iloc[idx] if 'idx_Close' in data.columns else np.nan
+                        current_bar_pos = data['idx_bar_pos'].iloc[idx] if 'idx_bar_pos' in data.columns else np.nan
+                        resistance = np.nan
+                        level_source = ""
+                        touches = None
+
+                        if not pd.isna(idx_close_at_div):
+                            resistance_df, _sup_unused = _levels_asof(current_bar_pos, multi_div_level_tolerance)
+                            nearest = _nearest_level_above(resistance_df, idx_close_at_div)
+                            if nearest is not None and (nearest['Level']-idx_close_at_div) <= multi_div_level_max_distance:
+                                resistance = float(nearest['Level'])
+                                touches = int(nearest['Touches'])
+                                level_source = (f"clustered swing-high level (touches={touches}, "
+                                                 f"tol={multi_div_level_tolerance}pt)")
+
+                        if pd.isna(resistance):
+                            print(f"[MULTI-DIV] BULLISH #{multi_div_bull_seen} @ {data.index[idx]} "
+                                  f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
+                                  f"(no clustered resistance within {multi_div_level_max_distance:.0f} pts "
+                                  f"above price {idx_close_at_div:.2f})")
+                        else:
+                            print(f"[MULTI-DIV] BULLISH #{multi_div_bull_seen} @ {data.index[idx]} "
+                                  f"| agree={agree_count} | indicators=({indicators_str}) | "
+                                  f"index Stoch %K={stoch_str} (oversold) -> WATCHING resistance "
+                                  f"{resistance:.2f} [{level_source}, "
+                                  f"{resistance-idx_close_at_div:.1f} pts away] "
+                                  f"({multi_div_level_maxwait}-candle breakout window)")
+                            level_watch_bull.append({
+                                'detect_idx': idx, 'level': resistance,
+                                'data': {'agree_count': agree_count, 'pos_reg_div': pos_reg,
+                                         'pos_hid_div': pos_hid, 'stoch_k': stoch_now,
+                                         'label_time': data.index[idx], 'level_source': level_source}
+                            })
+                            multi_div_bull_watched += 1
                     else:
                         print(f"[MULTI-DIV] BULLISH #{multi_div_bull_seen} @ {data.index[idx]} "
                               f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
@@ -3405,16 +3762,41 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                               f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
                               f"(index Stoch %K={stoch_str}, not overbought >= {multi_div_stoch_overbought})")
                     elif multi_div_side in ('PE', 'BOTH'):
-                        print(f"[MULTI-DIV] BEARISH #{multi_div_bear_seen} @ {data.index[idx]} "
-                              f"| agree={agree_count} | indicators=({indicators_str}) | "
-                              f"index Stoch %K={stoch_str} (overbought) -> queued for PE")
-                        pending_signals_bear.append({
-                            'detect_idx': idx, 'condition': 'MULTI_INDICATOR_BEARISH_DIVERGENCE',
-                            'data': {'agree_count': agree_count, 'neg_reg_div': neg_reg,
-                                     'neg_hid_div': neg_hid, 'stoch_k': stoch_now},
-                            'confidence': 78, 'priority': 2
-                        })
-                        multi_div_bear_queued += 1
+                        # ---- Nearest CLUSTERED support level below current price ----
+                        idx_close_at_div = data['idx_Close'].iloc[idx] if 'idx_Close' in data.columns else np.nan
+                        current_bar_pos = data['idx_bar_pos'].iloc[idx] if 'idx_bar_pos' in data.columns else np.nan
+                        support = np.nan
+                        level_source = ""
+                        touches = None
+
+                        if not pd.isna(idx_close_at_div):
+                            _res_unused, support_df = _levels_asof(current_bar_pos, multi_div_level_tolerance)
+                            nearest = _nearest_level_below(support_df, idx_close_at_div)
+                            if nearest is not None and (idx_close_at_div-nearest['Level']) <= multi_div_level_max_distance:
+                                support = float(nearest['Level'])
+                                touches = int(nearest['Touches'])
+                                level_source = (f"clustered swing-low level (touches={touches}, "
+                                                 f"tol={multi_div_level_tolerance}pt)")
+
+                        if pd.isna(support):
+                            print(f"[MULTI-DIV] BEARISH #{multi_div_bear_seen} @ {data.index[idx]} "
+                                  f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
+                                  f"(no clustered support within {multi_div_level_max_distance:.0f} pts "
+                                  f"below price {idx_close_at_div:.2f})")
+                        else:
+                            print(f"[MULTI-DIV] BEARISH #{multi_div_bear_seen} @ {data.index[idx]} "
+                                  f"| agree={agree_count} | indicators=({indicators_str}) | "
+                                  f"index Stoch %K={stoch_str} (overbought) -> WATCHING support "
+                                  f"{support:.2f} [{level_source}, "
+                                  f"{idx_close_at_div-support:.1f} pts away] "
+                                  f"({multi_div_level_maxwait}-candle breakdown window)")
+                            level_watch_bear.append({
+                                'detect_idx': idx, 'level': support,
+                                'data': {'agree_count': agree_count, 'neg_reg_div': neg_reg,
+                                         'neg_hid_div': neg_hid, 'stoch_k': stoch_now,
+                                         'label_time': data.index[idx], 'level_source': level_source}
+                            })
+                            multi_div_bear_watched += 1
                     else:
                         print(f"[MULTI-DIV] BEARISH #{multi_div_bear_seen} @ {data.index[idx]} "
                               f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
@@ -3424,17 +3806,26 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
     print(f"\n📊 SIGNALS GENERATED: {len(signals_list)}\n")
     if use_multi_div:
         print("🔎 MULTI-INDICATOR DIVERGENCE FUNNEL (index-driven branch):")
-        print(f"   Bullish labels detected on index : {multi_div_bull_seen}  "
-              f"(queued for CE confirmation: {multi_div_bull_queued})")
-        print(f"   Bearish labels detected on index : {multi_div_bear_seen}  "
-              f"(queued for PE confirmation: {multi_div_bear_queued})")
+        print(f"   Bullish labels detected on index      : {multi_div_bull_seen}")
+        print(f"     -> put on resistance watch          : {multi_div_bull_watched}")
+        print(f"     -> queued via swing breakout (CE)    : {multi_div_bull_queued_swing}")
+        print(f"     -> queued via base breakout (CE)     : {multi_div_bull_queued_base}")
+        print(f"     -> cancelled (neither path fired)    : {multi_div_bull_cancelled}  "
+              f"(still open at end of run: {len(level_watch_bull)})")
+        print(f"   Bearish labels detected on index      : {multi_div_bear_seen}")
+        print(f"     -> put on support watch             : {multi_div_bear_watched}")
+        print(f"     -> queued via swing breakdown (PE)   : {multi_div_bear_queued_swing}")
+        print(f"     -> queued via base breakdown (PE)    : {multi_div_bear_queued_base}")
+        print(f"     -> cancelled (neither path fired)    : {multi_div_bear_cancelled}  "
+              f"(still open at end of run: {len(level_watch_bear)})")
         md_fired = [s for s in signals_list if 'MULTI_INDICATOR' in s['condition']]
         md_fired_bull = sum(1 for s in md_fired if s['signal_type'] == 'CE')
         md_fired_bear = sum(1 for s in md_fired if s['signal_type'] == 'PE')
-        print(f"   Actually FIRED as trades         : {len(md_fired)}  "
+        print(f"   Actually FIRED as trades              : {len(md_fired)}  "
               f"(CE: {md_fired_bull}, PE: {md_fired_bear})")
-        print("   [Everything queued-but-not-fired was dropped by: ema_trend never confirming "
-              "within confirm_max_wait, the index volume-profile filter, the RR quality gate, "
+        print("   [Everything watched-but-not-fired was dropped by: neither trigger path firing "
+              "within multi_div_level_maxwait, ema_trend never confirming within "
+              "confirm_max_wait, the index volume-profile filter, the RR quality gate, "
               "cooldown, or losing the cross-branch rating to a higher-scored candidate.]\n")
 
     if signals_list:
@@ -3468,7 +3859,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         print(f"⭐ AVG RATING SCORE: {np.mean([s['rating_score'] for s in signals_list]):.1f}")
 
     return data
-
 
 
 
