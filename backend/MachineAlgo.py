@@ -31,6 +31,22 @@ import requests
 
 from collections import deque, Counter
 
+try:
+    import pandas_ta as ta
+except ImportError as e:
+    raise ImportError(
+        "pandas_ta is required for the multi-indicator divergence engine "
+        "(pip install pandas_ta)"
+    ) from e
+
+try:
+    from scipy.signal import argrelextrema
+except ImportError as e:
+    raise ImportError(
+        "scipy is required for the standalone find_swing_levels() utility "
+        "(pip install scipy)"
+    ) from e
+
 
 ssl_context = ssl.create_default_context(cafile=certifi.where())
 
