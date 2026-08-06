@@ -846,27 +846,10 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 continuation_level_min_move_points: float = 0.0,
                 continuation_level_min_move_pct: float = 0.0,
                 multi_div_level_max_distance: float = 25.0) -> pd.DataFrame:
-    """
-    Divergence level lookup uses find_swing_levels() (non-repainting: it is
-    always called on a causal slice of the index data). All helper functions
-    used by this strategy are defined as nested functions below so that the
-    whole engine lives inside super_trend(). Behaviour is unchanged from the
-    module-level version -- only the code organisation changed.
+    
 
-    Level-lookup flow (divergence branch only)
-    -------------------------------------------
-    1. current_bar_pos = integer position of the index candle where the
-       divergence label fired (idx_df['bar_pos'] / 'idx_bar_pos').
-    2. Slice the index dataframe causally: idx_df_raw.iloc[:current_bar_pos+1]
-       so no future candles leak in.
-    3. find_swing_levels(idx_slice, order=multi_div_swing_order,
-       tolerance=multi_div_level_tolerance, silent=True) -> (resistance, support).
-    4. BULLISH -> _nearest_level_above(resistance, price)
-       BEARISH -> _nearest_level_below(support, price)
-    5. Apply multi_div_level_max_distance gate, fire signal immediately.
-    """
     # ------------------------------------------------------------------
-    # Nested helpers (moved in from module scope -- logic unchanged)
+    # Nested helpers
     # ------------------------------------------------------------------
     def _md_calculate_indicators(df):
         close = df['Close']
@@ -1440,7 +1423,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         return resistance, support, swing_highs, swing_lows
 
     # ------------------------------------------------------------------
-    # Standard setup (unchanged)
+    # Standard setup
     # ------------------------------------------------------------------
     if 'Datetime' in data.columns:
         data = data.set_index('Datetime')
@@ -1634,32 +1617,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
 
     base_morning_dates_fired = set()
 
-    def _confirmed_swing_low(pivot_idx, left=3, right=3):
-        if pivot_idx - left < 0:
-            return False
-        window = data['Low'].iloc[pivot_idx - left:pivot_idx + right + 1]
-        return data['Low'].iloc[pivot_idx] == window.min()
-
-    def _confirmed_swing_high(pivot_idx, left=3, right=3):
-        if pivot_idx - left < 0:
-            return False
-        window = data['High'].iloc[pivot_idx - left:pivot_idx + right + 1]
-        return data['High'].iloc[pivot_idx] == window.max()
-
-    def _last_confirmed_swing_lows(idx, count=2, left=3, right=3, max_scan=80):
-        found = []
-        latest_possible = idx - right
-        p = latest_possible
-        scanned = 0
-        while p >= left and len(found) < count and scanned < max_scan:
-            if _confirmed_swing_low(p, left, right):
-                found.append(p)
-                p -= (left + 1)
-            else:
-                p -= 1
-            scanned += 1
-        return found
-
     # ====================== INDEX-DRIVEN MULTI-INDICATOR DIVERGENCE ======================
     use_multi_div = index_data is not None
     div_labels = None
@@ -1681,7 +1638,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
 
     # ---- Align index candles onto the option-data timeline ----
     use_index_filter = index_data is not None
-
     idx_df_raw = None
 
     if use_index_filter:
@@ -1765,10 +1721,8 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
 
     def _swing_levels_asof(current_bar_pos):
         """
-        Return (resistance_df, support_df) from find_swing_levels() using
-        only index bars confirmed by integer position `current_bar_pos`.
-        Non-repainting: idx_df_raw.iloc[:current_bar_pos + 1] excludes all
-        future candles.
+        Return (resistance_df, support_df) using only index bars up to
+        current_bar_pos. Non-repainting -- no future candles leak in.
         """
         empty = pd.DataFrame(columns=['Level', 'Touches', 'Min', 'Max'])
         if idx_df_raw is None or pd.isna(current_bar_pos):
@@ -1778,10 +1732,8 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         if cp + 1 < min_bars:
             return empty, empty
         safe_cp = cp - multi_div_swing_order
-
         if safe_cp < 2 * multi_div_swing_order:
             return empty, empty
-
         causal_slice = idx_df_raw.iloc[:safe_cp + 1]
         resistance_df, support_df, _, _ = find_swing_levels(
             causal_slice,
@@ -1791,30 +1743,10 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
             min_move_points=multi_div_level_min_move_points,
             min_move_pct=multi_div_level_min_move_pct,
         )
-
         return resistance_df, support_df
 
-    def report_swing_levels(resistance_df, support_df, tag=""):
-        print(f"\n📋 SWING LEVELS{f' [{tag}]' if tag else ''}")
-        if resistance_df is not None and not resistance_df.empty:
-            print("  RESISTANCE (formed by rallies):")
-            for _, r in resistance_df.sort_values('Level').iterrows():
-                print(f"    {r['Level']:.2f}  touches={int(r['Touches'])}  "
-                      f"rally_into_it: max={r['MaxMove']:.1f} avg={r['AvgMove']:.1f} min={r['MinMove']:.1f}")
-        else:
-            print("  RESISTANCE: none")
-        if support_df is not None and not support_df.empty:
-            print("  SUPPORT (formed by sell-offs):")
-            for _, r in support_df.sort_values('Level').iterrows():
-                print(f"    {r['Level']:.2f}  touches={int(r['Touches'])}  "
-                      f"selloff_into_it: max={r['MaxMove']:.1f} avg={r['AvgMove']:.1f} min={r['MinMove']:.1f}")
-        else:
-            print("  SUPPORT: none")
-
     def _continuation_swing_levels_asof(idx, order=5, tolerance=8.0):
-        """
-        Returns (resistance_df, support_df, reference_price, source_tag).
-        """
+        """Returns (resistance_df, support_df, reference_price, source_tag)."""
         empty = pd.DataFrame(columns=['Level', 'Touches', 'Min', 'Max'])
 
         if use_index_filter and idx_df_raw is not None:
@@ -1833,7 +1765,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 min_move_pct=continuation_level_min_move_pct,
             )
             return resistance_df, support_df, ref_price, 'index'
-
         else:
             safe_cp = idx - order
             ref_price = data['Close'].iloc[idx]
@@ -1848,7 +1779,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
             return resistance_df, support_df, ref_price, 'option'
 
     # ------------------------------------------------------------------
-    # Divergence label alignment (unchanged)
+    # Divergence label alignment
     # ------------------------------------------------------------------
     if div_labels is not None and not div_labels.empty and use_index_filter:
         dl = div_labels.sort_index().reset_index()
@@ -1879,21 +1810,17 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         data['divergence_indicators'] = np.nan
         data['_div_label_time'] = pd.NaT
 
-    # ====================== DETECTORS (unchanged) ======================
+    # ====================== DETECTORS ======================
 
     def detect_v_shape(idx):
-
         if idx < 14 or is_range_bound(idx, lookback=14, threshold_pct=0.95) or is_choppy_market(idx):
             return False, {}
 
-        # ================================================================
-        # PIVOT DETECTION
-        # ================================================================
         lookback = 9
-        window = data.iloc[idx-lookback:idx+1]
+        window = data.iloc[idx - lookback:idx + 1]
         low_idx_rel = window['Low'].values.argmin()
-        pivot_idx = idx-lookback+low_idx_rel
-        bars_since_pivot = idx-pivot_idx
+        pivot_idx = idx - lookback + low_idx_rel
+        bars_since_pivot = idx - pivot_idx
 
         MAX_BARS_SINCE_PIVOT = 2
         if bars_since_pivot < 0 or bars_since_pivot > MAX_BARS_SINCE_PIVOT:
@@ -1901,44 +1828,26 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
 
         pivot_low = data['Low'].iloc[pivot_idx]
 
-        # Pivot must be the dominant local low
-        local_min = data['Low'].iloc[max(0, pivot_idx-6):pivot_idx+7].min()
+        local_min = data['Low'].iloc[max(0, pivot_idx - 6):pivot_idx + 7].min()
         if pivot_low > local_min:
             return False, {}
 
-        # ================================================================
-        # LEFT SIDE: ladder-style decline (each candle lower than previous)
-        # ================================================================
-        left_start = max(0, pivot_idx-8)
-        left_window = data.iloc[left_start:pivot_idx+1]
+        left_start = max(0, pivot_idx - 8)
+        left_window = data.iloc[left_start:pivot_idx + 1]
         swing_high = left_window['High'].max()
-        decline_pct = (swing_high-pivot_low) / swing_high * 100 if swing_high > 0 else 0
-        points_drop = swing_high-pivot_low
+        decline_pct = (swing_high - pivot_low) / swing_high * 100 if swing_high > 0 else 0
+        points_drop = swing_high - pivot_low
 
-        # Strict decline threshold
         if not (points_drop >= 25 and decline_pct >= 1.2):
             return False, {}
 
-        # ----------------------------------------------------------------
-        # LADDER CHECK (left side): each red candle must step lower
-        # no body overlap between consecutive candles
-        # ----------------------------------------------------------------
         def is_ladder_down(start_idx, end_idx):
-            """
-            Returns (is_ladder, streak_count)
-            Candles must be:
-              - Red (bearish)
-              - Real body (body_pct >= 0.35)
-              - Each candle's HIGH <= previous candle's LOW + small tolerance
-                (no overlap — true ladder step-down)
-            """
             streak = 0
             prev_low = None
             prev_high = None
-            for j in range(start_idx, end_idx+1):
+            for j in range(start_idx, end_idx + 1):
                 cj = data.iloc[j]
                 if cj['is_bullish']:
-                    # reset — a green candle breaks the ladder
                     prev_low = None
                     prev_high = None
                     streak = 0
@@ -1949,10 +1858,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                     streak = 0
                     continue
                 if prev_low is not None:
-                    # Current candle HIGH must not overlap previous candle LOW
-                    # Allow tiny 0.1pt tolerance for near-touch
-                    if cj['High'] > prev_low+0.10:
-                        # Overlap detected — reset streak
+                    if cj['High'] > prev_low + 0.10:
                         prev_low = cj['Low']
                         prev_high = cj['High']
                         streak = 1
@@ -1966,42 +1872,29 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         if ladder_streak < 2:
             return False, {}
 
-        # Price must have touched below EMA5 during the decline
         if 'EMA5' in data.columns:
             ema5_below_found = any(
                 data.iloc[j]['Low'] < data['EMA5'].iloc[j]
-                for j in range(left_start, pivot_idx+1)
+                for j in range(left_start, pivot_idx + 1)
                 if not pd.isna(data['EMA5'].iloc[j])
             )
             if not ema5_below_found:
                 return False, {}
 
-        # ================================================================
-        # RIGHT SIDE: ladder-style recovery (each candle higher than previous)
-        # ================================================================
         c = data.iloc[idx]
-        prev = data.iloc[idx-1]
-        candle_range = c['High']-c['Low']
+        prev = data.iloc[idx - 1]
+        candle_range = c['High'] - c['Low']
         if candle_range == 0:
             return False, {}
 
-        lower_wick = min(c['Open'], c['Close'])-c['Low']
+        lower_wick = min(c['Open'], c['Close']) - c['Low']
         lower_wick_pct = lower_wick / candle_range
-        upper_wick_pct = (c['High']-max(c['Open'], c['Close'])) / candle_range
+        upper_wick_pct = (c['High'] - max(c['Open'], c['Close'])) / candle_range
 
-        # ----------------------------------------------------------------
-        # LADDER CHECK (right side): recovery candles must step higher
-        # each candle's LOW >= previous candle's HIGH - small tolerance
-        # ----------------------------------------------------------------
         def is_ladder_up(start_idx, end_idx):
-            """
-            Returns streak count of non-overlapping bullish ladder candles.
-            Each candle's LOW must be >= previous candle's HIGH - tolerance
-            (no overlap — true ladder step-up)
-            """
             streak = 0
             prev_high = None
-            for j in range(start_idx, end_idx+1):
+            for j in range(start_idx, end_idx + 1):
                 cj = data.iloc[j]
                 if not cj['is_bullish']:
                     prev_high = None
@@ -2012,9 +1905,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                     streak = 0
                     continue
                 if prev_high is not None:
-                    # Current candle LOW must not overlap previous candle HIGH
-                    if cj['Low'] < prev_high-0.10:
-                        # Overlap — reset
+                    if cj['Low'] < prev_high - 0.10:
                         prev_high = cj['High']
                         streak = 1
                         continue
@@ -2022,71 +1913,57 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 streak += 1
             return streak
 
-        # Check right-side ladder from pivot+1 to current bar
-        right_start = pivot_idx+1
+        right_start = pivot_idx + 1
         if right_start <= idx:
             right_ladder_streak = is_ladder_up(right_start, idx)
         else:
             right_ladder_streak = 0
 
-        # Need at least 1 ladder step on the right (the current candle itself counts)
         if right_ladder_streak < 1:
             return False, {}
 
-        # ================================================================
-        # PATTERN CLASSIFICATION
-        # ================================================================
-
-        # Previous candle: hammer red
         is_prev_hammer_red = False
         if idx > 0:
-            p_range = prev['High']-prev['Low']
+            p_range = prev['High'] - prev['Low']
             if p_range > 0 and not prev['is_bullish']:
-                p_lower = min(prev['Open'], prev['Close'])-prev['Low']
+                p_lower = min(prev['Open'], prev['Close']) - prev['Low']
                 if p_lower / p_range >= 0.55:
                     is_prev_hammer_red = True
 
         pattern_type = None
 
-        # Strong green — must clear previous candle high (no overlap left behind)
         if (c['is_bullish'] and
                 c['body_pct'] >= 0.60 and
                 c['close_pos'] >= 0.65 and
-                c['Close'] > prev['High'] and  # clears prev high
-                c['Low'] >= prev['Low']-0.10):  # no downside overlap
+                c['Close'] > prev['High'] and
+                c['Low'] >= prev['Low'] - 0.10):
             pattern_type = 'GREEN'
 
-        # Hammer / pinbar
         elif (lower_wick_pct >= 0.60 and
               upper_wick_pct <= 0.20 and
               c['close_pos'] >= 0.40 and
-              c['High'] <= prev['High']+0.10):  # not spiking into prev range wildly
+              c['High'] <= prev['High'] + 0.10):
             pattern_type = 'WICK'
 
-        # Green after hammer
         elif (is_prev_hammer_red and
               c['is_bullish'] and
               c['body_pct'] >= 0.50 and
               c['Close'] > prev['Close'] and
-              c['Low'] >= prev['Low']-0.10):  # no overlap back into prev body
+              c['Low'] >= prev['Low'] - 0.10):
             pattern_type = 'GREEN_AFTER_WICK'
 
-        # Box breakout
         if pattern_type is None and bars_since_pivot >= 2:
-            box_start = pivot_idx+1
-            box_end = idx-1
-            if box_end-box_start+1 >= 2:
-                box_window = data.iloc[box_start:box_end+1]
+            box_start = pivot_idx + 1
+            box_end = idx - 1
+            if box_end - box_start + 1 >= 2:
+                box_window = data.iloc[box_start:box_end + 1]
                 box_high = box_window['High'].max()
                 box_low = box_window['Low'].min()
-                box_range = box_high-box_low
-                decline_size = swing_high-pivot_low
+                box_range = box_high - box_low
+                decline_size = swing_high - pivot_low
 
-                # Tight consolidation
                 box_is_tight = decline_size > 0 and box_range <= 0.35 * decline_size
-
-                # Breakout candle must not overlap box range on the downside
-                no_downside_overlap = c['Low'] >= box_low-0.10
+                no_downside_overlap = c['Low'] >= box_low - 0.10
 
                 box_breakout_confirmed = (
                         c['Close'] > box_high and
@@ -2100,10 +1977,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         if pattern_type is None:
             return False, {}
 
-        # ================================================================
-        # RECOVERY & BREAKOUT CHECKS
-        # ================================================================
-        recovery_pct = (c['Close']-pivot_low) / (swing_high-pivot_low+1e-9)
+        recovery_pct = (c['Close'] - pivot_low) / (swing_high - pivot_low + 1e-9)
 
         min_recovery = 0.18 if 'WICK' in pattern_type else 0.28
         if recovery_pct < min_recovery:
@@ -2117,18 +1991,12 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         if breakout_price < recent_high * 0.990:
             return False, {}
 
-        # ================================================================
-        # VOLUME: must show conviction
-        # ================================================================
         if c['vol_ratio'] < 1.10:
             return False, {}
 
-        # ================================================================
-        # EMA5 TREND CONFIRMATION
-        # ================================================================
         if 'EMA5' in data.columns:
             ema5_now = data['EMA5'].iloc[idx]
-            ema5_prev = data['EMA5'].iloc[idx-1]
+            ema5_prev = data['EMA5'].iloc[idx - 1]
             if not pd.isna(ema5_now) and not pd.isna(ema5_prev):
                 if not (ema5_now >= ema5_prev or c['Close'] > ema5_now):
                     return False, {}
@@ -2152,56 +2020,45 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         }
 
     def detect_base(idx):
-        # (unchanged -- this method never had any logging)
-
         if idx < 10:
             return False, {}
 
-        # Skip range/choppy markets
         if is_range_bound(idx, lookback=10, threshold_pct=0.90) or is_choppy_market(idx):
             return False, {}
 
         tm = data.index[idx].time()
 
-        # Trade only between 9:30 and 10:00
         if not (dt.time(9, 30) <= tm <= dt.time(10, 0)):
             return False, {}
 
         current_date = data.index[idx].date()
 
-        # Only one morning trade per day
         if current_date in base_morning_dates_fired:
             return False, {}
 
-        # Need at least 3 bars to form the pattern
         if idx < 2:
             return False, {}
 
-        # -------- Candle references --------
-        red = data.iloc[idx-2]  # potential red candle
-        green1 = data.iloc[idx-1]  # first green
-        green2 = data.iloc[idx]  # second green (current)
+        red = data.iloc[idx - 2]
+        green1 = data.iloc[idx - 1]
+        green2 = data.iloc[idx]
 
-        ema5_red = data["EMA5"].iloc[idx-2]
+        ema5_red = data["EMA5"].iloc[idx - 2]
 
-        # 1. Red candle that opens AND closes below EMA5
         is_red = red["Close"] < red["Open"]
         red_below_ema = (red["Open"] < ema5_red) and (red["Close"] < ema5_red)
 
         if not (is_red and red_below_ema):
             return False, {}
 
-        # 2. Next candle must be green
         is_green1 = green1["Close"] > green1["Open"]
         if not is_green1:
             return False, {}
 
-        # 3. Current candle must be green
         is_green2 = green2["Close"] > green2["Open"]
         if not is_green2:
             return False, {}
 
-        # 4. Condition: second green closes above the red candle's open
         if green2["Close"] > red["Open"]:
             return True, {
                 "pattern_type": "BASE_MORNING",
@@ -2210,13 +2067,10 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 "green2_close": round(green2["Close"], 2),
             }
         else:
-            # Condition not met → wait for next green candle (no signal yet)
             return False, {}
 
-
-
     continuation_state = {}
-    CONTINUATION_LEVEL_COOLDOWN = 10
+    CONTINUATION_LEVEL_COOLDOWN = 1
 
     def detect_continuation(idx, swing_order=5, level_tolerance=8.0,
                             max_level_distance_atr_mult=2.5,
@@ -2225,17 +2079,15 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
             return False, {}
 
         c = data.iloc[idx]
-        prev = data.iloc[idx-1]
+        prev = data.iloc[idx - 1]
         ts = data.index[idx]
 
-        # ================================================================
-        # SETUP 1: EMA5 fall + reversal -- side gated
-        # ================================================================
+        # SETUP 1: EMA5 fall + reversal
         if idx >= 2 and multi_div_side in ('CE', 'BOTH'):
             g1, g2 = prev, c
             if g1['is_bullish'] and g2['is_bullish']:
-                red = data.iloc[idx-2]
-                ema5_red = data['EMA5'].iloc[idx-2]
+                red = data.iloc[idx - 2]
+                ema5_red = data['EMA5'].iloc[idx - 2]
                 red_below_ema5 = (
                         (not red['is_bullish']) and not pd.isna(ema5_red) and
                         red['Open'] < ema5_red and red['Close'] < ema5_red
@@ -2243,28 +2095,19 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 if red_below_ema5:
                     broke_red_high = g2['Close'] > red['High']
                     vol_ok = g2['vol_ratio'] >= 1.0
-                    print(f"[CONTINUATION] EMA5_FALL_REVERSAL check @ {ts} | side={multi_div_side} | "
-                          f"red candle @ {data.index[idx-2]} (O={red['Open']:.2f} "
-                          f"C={red['Close']:.2f} EMA5={ema5_red:.2f}, fully below EMA5) | "
-                          f"red.High={red['High']:.2f} | g1_close={g1['Close']:.2f} (green) | "
-                          f"g2_close={g2['Close']:.2f} (green) | broke_red_high={broke_red_high} | "
-                          f"vol_ratio={g2['vol_ratio']:.2f}")
+
                     if broke_red_high and vol_ok:
-                        print(f"[CONTINUATION] >>> CE SIGNAL (EMA5_FALL_REVERSAL) @ {ts} | "
-                              f"entry={g2['Close']:.2f} | trigger_level(red_high)={red['High']:.2f} | "
-                              f"red_candle_time={data.index[idx-2]}")
+
                         return True, {
                             'side': 'CE',
                             'pattern_type': 'CONTINUATION_EMA5_FALL_REVERSAL',
                             'level': round(red['High'], 2),
                             'level_source': 'red_candle_high',
-                            'red_candle_time': str(data.index[idx-2]),
+                            'red_candle_time': str(data.index[idx - 2]),
                             'vol': round(g2['vol_ratio'] * 100, 1),
                         }
 
-        # ================================================================
         # SETUP 2: swing-level breakout (CE only)
-        # ================================================================
         resistance_df, _support_unused, ref_price, source = _continuation_swing_levels_asof(
             idx, order=swing_order, tolerance=level_tolerance
         )
@@ -2286,11 +2129,10 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         max_dist = atr_now * max_level_distance_atr_mult
 
         ema15_now = data['EMA15'].iloc[idx]
-        ema15_prev = data['EMA15'].iloc[idx-1]
+        ema15_prev = data['EMA15'].iloc[idx - 1]
 
-        # ---------------- CE: breakout of nearest resistance (side gated) ----------------
         if multi_div_side in ('CE', 'BOTH'):
-            dist_before = level-ref_price
+            dist_before = level - ref_price
             if 0 < dist_before <= max_dist:
                 two_green_above_ema15 = (
                         c['is_bullish'] and prev['is_bullish'] and
@@ -2298,16 +2140,9 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 )
                 broke_level = ref_price > level
                 vol_ok = c['vol_ratio'] >= 1.0
-                print(f"[CONTINUATION] SWING_BREAKOUT check @ {ts} | side={multi_div_side} | "
-                      f"source={source} | ref_price={ref_price:.2f} | "
-                      f"nearest_resistance={level:.2f} (touches={touches}, "
-                      f"dist_before={dist_before:.2f}, max_dist={max_dist:.2f}) | "
-                      f"2_green_above_ema15={two_green_above_ema15} | broke_level={broke_level} | "
-                      f"vol_ratio={c['vol_ratio']:.2f}")
+
                 if two_green_above_ema15 and broke_level and vol_ok:
-                    print(f"[CONTINUATION] >>> CE SIGNAL (SWING_BREAKOUT) @ {ts} | "
-                          f"entry={c['Close']:.2f} | broken_level={level:.2f} | touches={touches} | "
-                          f"level_source={source}")
+
                     continuation_state.setdefault('fired_levels_ce', {})[level_bucket] = idx
                     return True, {
                         'side': 'CE',
@@ -2448,61 +2283,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
             }
         return False, {}
 
-    ob_fired = set()
-
-    def detect_order_block_reversal(idx, left=3, right=3, structure_lookback=40, max_ob_age=40):
-        if idx < structure_lookback + right + 5 or is_choppy_market(idx):
-            return False, {}
-        swing_lows = _last_confirmed_swing_lows(
-            idx, count=1, left=left, right=right, max_scan=structure_lookback
-        )
-        if not swing_lows:
-            return False, {}
-        pivot_idx = swing_lows[0]
-        struct_start = max(0, pivot_idx - structure_lookback)
-        if pivot_idx <= struct_start:
-            return False, {}
-        structure_high = data['High'].iloc[struct_start:pivot_idx].max()
-        if pd.isna(structure_high):
-            return False, {}
-        bos_idx = None
-        for k in range(pivot_idx + 1, idx + 1):
-            ck = data.iloc[k]
-            if ck['Close'] > structure_high and ck['is_bullish'] and ck['body_pct'] >= 0.45:
-                bos_idx = k
-                break
-        if bos_idx is None or bos_idx >= idx:
-            return False, {}
-        if (idx - bos_idx) > max_ob_age:
-            return False, {}
-        ob_idx = None
-        for k in range(bos_idx - 1, pivot_idx - 1, -1):
-            if not data.iloc[k]['is_bullish']:
-                ob_idx = k
-                break
-        if ob_idx is None:
-            return False, {}
-        if ob_idx in ob_fired:
-            return False, {}
-        ob = data.iloc[ob_idx]
-        ob_high = max(ob['Open'], ob['Close'])
-        ob_low = min(ob['Open'], ob['Close'])
-        between = data.iloc[ob_idx + 1:idx]
-        if not between.empty and (between['Close'] < ob_low).any():
-            return False, {}
-        c = data.iloc[idx]
-        tapped_zone = c['Low'] <= ob_high and c['Low'] >= ob_low * 0.997
-        rejection = c['is_bullish'] and c['Close'] >= ob_low and c['close_pos'] >= 0.55
-        if not (tapped_zone and rejection):
-            return False, {}
-        if c['vol_ratio'] < 0.60:
-            return False, {}
-        return True, {
-            'pattern_type': 'ORDER_BLOCK_RETEST', 'ob_idx': int(ob_idx),
-            'ob_high': round(ob_high, 2), 'ob_low': round(ob_low, 2),
-            'bos_idx': int(bos_idx), 'vol': round(c['vol_ratio'] * 100, 1)
-        }, ob_idx
-
     # ====================== LEVELS, QUALITY, RATING ======================
     def calculate_levels(idx, condition):
         entry = data['Close'].iloc[idx]
@@ -2579,7 +2359,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
 
         idx_close_now = data['idx_Close'].iloc[idx] if 'idx_Close' in data.columns else np.nan
 
-        # ---- Pending CE confirmation (unchanged) ----
+        # ---- Pending CE confirmation ----
         still_pending = []
         for p in pending_signals:
             age = idx - p['detect_idx']
@@ -2606,7 +2386,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 still_pending.append(p)
         pending_signals = still_pending
 
-        # ---- Pending PE confirmation (unchanged) ----
+        # ---- Pending PE confirmation ----
         still_pending_bear = []
         for p in pending_signals_bear:
             age = idx - p['detect_idx']
@@ -2633,21 +2413,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                 still_pending_bear.append(p)
         pending_signals_bear = still_pending_bear
 
-        # ---- Order block (unchanged) ----
-        ob_result = detect_order_block_reversal(idx)
-        if ob_result[0]:
-            ob_det, ob_data, ob_anchor_idx = ob_result
-            entry, stop, target, rr = calculate_levels(idx, 'ORDER_BLOCK')
-            quality = get_quality(rr)
-            if quality != "REJECT":
-                score = _rating_score(78, quality, 2)
-                candidates_this_idx.append({
-                    'side': 'CE', 'condition': 'ORDER_BLOCK_RETEST', 'quality': quality,
-                    'entry': entry, 'stop': stop, 'target': target, 'rr': rr,
-                    'confidence': 78, 'priority': 2, 'data': ob_data, 'score': score,
-                    'wait_note': "", '_ob_anchor': ob_anchor_idx
-                })
-
+        # ---- Fire best candidate from pending confirmations ----
         if candidates_this_idx and (idx - last_signal_idx) >= COOLDOWN_CANDLES:
             best = max(candidates_this_idx, key=lambda x: x['score'])
             result = _write_signal(
@@ -2657,13 +2423,12 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
             )
             signals_list.append(result)
             last_signal_idx = idx
-            if '_ob_anchor' in best:
-                ob_fired.add(best['_ob_anchor'])
             continue
 
         if idx - last_signal_idx < COOLDOWN_CANDLES:
             continue
 
+        # ---- Fresh pattern detection ----
         b_det, b_data = detect_base(idx)
         if b_det:
             base_morning_dates_fired.add(data.index[idx].date())
@@ -2696,7 +2461,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
 
         # ================================================================
         # MULTI-INDICATOR DIVERGENCE -- fires signal IMMEDIATELY on label
-        # (no level_watch queue, no base_breakout queue)
         # ================================================================
         if use_multi_div:
             row_label = data['label_type'].iloc[idx] if 'label_type' in data.columns else None
@@ -2737,7 +2501,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                               f"<= {multi_div_stoch_oversold})")
 
                     elif multi_div_side in ('CE', 'BOTH'):
-                        # Fire immediately as CE signal
                         entry, stop, target, rr = calculate_levels(idx, 'MULTI_INDICATOR_BULLISH_DIVERGENCE')
                         quality = get_quality(rr)
                         if quality == "REJECT":
@@ -2794,7 +2557,6 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                               f">= {multi_div_stoch_overbought})")
 
                     elif multi_div_side in ('PE', 'BOTH'):
-                        # Fire immediately as PE signal
                         entry, stop, target, rr = calculate_levels_bear(idx, 'MULTI_INDICATOR_BEARISH_DIVERGENCE')
                         quality = get_quality(rr)
                         if quality == "REJECT":
@@ -2831,7 +2593,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
                               f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
                               f"(this run is {multi_div_side}-side only)")
 
-    # ====================== SUMMARY (unchanged) ======================
+    # ====================== SUMMARY ======================
     print(f"\n📊 SIGNALS GENERATED: {len(signals_list)}\n")
     if use_multi_div:
         md_fired = [s for s in signals_list if 'MULTI_INDICATOR' in s['condition']]
@@ -2875,6 +2637,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
         print(f"⭐ AVG RATING SCORE: {np.mean([s['rating_score'] for s in signals_list]):.1f}")
 
     return data
+
 
 
 
