@@ -29,6 +29,8 @@ from pymongo import MongoClient
 import sklearn
 import requests
 
+from collections import deque, Counter
+
 
 ssl_context = ssl.create_default_context(cafile=certifi.where())
 
