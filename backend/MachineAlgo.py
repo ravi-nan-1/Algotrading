@@ -817,41 +817,29 @@ Return ONLY JSON:
     except Exception as e:
         return _no_trade_response(f"LLM error: {e}")
 
-def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
-                index_data: pd.DataFrame = None,
-                multi_div_pivot_period: int = 5,
-                multi_div_min_count: int = 1,
-                multi_div_maxpp: int = 10,
-                multi_div_maxbars: int = 100,
-                multi_div_search: str = "Regular",
-                multi_div_showlast: bool = False,
-                multi_div_align_tolerance: "pd.Timedelta|None" = None,
-                multi_div_start_time: dt.time = dt.time(10, 0),
-                multi_div_stoch_oversold: float = 20.0,
-                multi_div_stoch_overbought: float = 80.0,
-                multi_div_level_lookback: int = 8,
-                multi_div_level_maxwait: int = 8,
-                multi_div_swing_order: int = 5,
-                multi_div_level_tolerance: float = 8.0,
-                multi_div_breakout_buffer_atr_mult: float = 0.15,
-                multi_div_breakout_buffer_points: float = 0.0,
-                multi_div_enable_base_breakout: bool = True,
-                multi_div_base_min_candles: int = 3,
-                multi_div_base_max_candles: int = 8,
-                multi_div_base_range_pct: float = 0.0035,
-                multi_div_base_ema_lag: int = 2,
-                multi_div_min_pivot_atr_mult: float = 0.0,
-                multi_div_level_min_move_points: float = 0.0,
-                multi_div_level_min_move_pct: float = 0.0,
-                continuation_level_min_move_points: float = 0.0,
-                continuation_level_min_move_pct: float = 0.0,
-                multi_div_level_max_distance: float = 25.0) -> pd.DataFrame:
-    
+def super_trend(
+    symbol: str,
+    data: pd.DataFrame,
+    pivot_period: int = 5,
+    min_count: int = 1,
+    maxpp: int = 10,
+    maxbars: int = 100,
+    search: str = "Regular",              # "Regular" | "Hidden" | "Regular/Hidden"
+    showlast: bool = False,
+    dontconfirm: bool = False,
+    source: str = "Close",                # "Close" (Pine default) or anything else -> Low
+    start_time: dt.time = dt.time(10, 0),
+    stoch_oversold: float = 30.0,
+    min_pivot_atr_mult: float = 0.0,
+    cooldown_candles: int = 1,
+    verbose: bool = True,
+) -> pd.DataFrame:
+
 
     # ------------------------------------------------------------------
     # Nested helpers
     # ------------------------------------------------------------------
-    def _md_calculate_indicators(df):
+    def _calculate_indicators(df):
         close = df['Close']
         high = df['High']
         low = df['Low']
@@ -883,22 +871,7 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
 
         return df
 
-    def _md_pine_pivothigh(arr, i, prd):
-        if i < 2 * prd:
-            return None
-        center = i - prd
-        window = arr[i - 2 * prd: i + 1]
-        valid_window = window[~np.isnan(window)]
-        if len(valid_window) == 0:
-            return None
-        center_val = arr[center]
-        if np.isnan(center_val):
-            return None
-        if center_val == np.max(valid_window):
-            return center_val
-        return None
-
-    def _md_pine_pivotlow(arr, i, prd):
+    def _pine_pivotlow(arr, i, prd):
         if i < 2 * prd:
             return None
         center = i - prd
@@ -913,32 +886,32 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
             return center_val
         return None
 
-    def _md_nz(val, default=0.0):
+    def _nz(val, default=0.0):
         if val is None or (isinstance(val, float) and np.isnan(val)):
             return default
         return val
 
-    def _md_get_back(arr, i, n):
+    def _get_back(arr, i, n):
         idx = i - n
         if idx < 0 or idx >= len(arr):
             return np.nan
         return arr[idx]
 
-    def _md_positive_regular_positive_hidden_divergence(
-            i, src, close, prsc, pl_positions, pl_vals,
-            prd, maxpp, maxbars, dontconfirm, cond
-    ):
+    def _positive_divergence(i, src, close, prsc, pl_positions, pl_vals,
+                              prd, maxpp, maxbars, dontconfirm, cond):
+        """cond=1 -> regular positive (bullish) divergence.
+        cond=2 -> hidden positive (bullish) divergence."""
         divlen = 0
 
-        src_0 = _md_get_back(src, i, 0)
-        src_1 = _md_get_back(src, i, 1)
-        close_0 = _md_get_back(close, i, 0)
-        close_1 = _md_get_back(close, i, 1)
+        src_0 = _get_back(src, i, 0)
+        src_1 = _get_back(src, i, 1)
+        close_0 = _get_back(close, i, 0)
+        close_1 = _get_back(close, i, 1)
 
         gate = (
-                dontconfirm or
-                (not np.isnan(src_0) and not np.isnan(src_1) and src_0 > src_1) or
-                (not np.isnan(close_0) and not np.isnan(close_1) and close_0 > close_1)
+            dontconfirm or
+            (not np.isnan(src_0) and not np.isnan(src_1) and src_0 > src_1) or
+            (not np.isnan(close_0) and not np.isnan(close_1) and close_0 > close_1)
         )
         if not gate:
             return divlen
@@ -960,20 +933,20 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
             if length <= 5:
                 continue
 
-            src_sp = _md_get_back(src, i, startpoint)
-            src_len = _md_get_back(src, i, length)
-            prsc_sp = _md_get_back(prsc, i, startpoint)
+            src_sp = _get_back(src, i, startpoint)
+            src_len = _get_back(src, i, length)
+            prsc_sp = _get_back(prsc, i, startpoint)
 
             if np.isnan(src_sp) or np.isnan(src_len) or np.isnan(prsc_sp):
                 continue
 
-            cond1_check = (cond == 1 and src_sp > src_len and prsc_sp < _md_nz(pl_val))
-            cond2_check = (cond == 2 and src_sp < src_len and prsc_sp > _md_nz(pl_val))
+            cond1_check = (cond == 1 and src_sp > src_len and prsc_sp < _nz(pl_val))
+            cond2_check = (cond == 2 and src_sp < src_len and prsc_sp > _nz(pl_val))
             if not (cond1_check or cond2_check):
                 continue
 
-            close_sp = _md_get_back(close, i, startpoint)
-            close_len = _md_get_back(close, i, length)
+            close_sp = _get_back(close, i, startpoint)
+            close_len = _get_back(close, i, length)
             if np.isnan(close_sp):
                 continue
 
@@ -983,17 +956,17 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
 
             slope1 = (src_sp - src_len) / span
             virtual_line1 = src_sp - slope1
-            slope2 = (close_sp - _md_nz(close_len)) / span
+            slope2 = (close_sp - _nz(close_len)) / span
             virtual_line2 = close_sp - slope2
 
             arrived = True
             for y in range(1 + startpoint, length):
-                src_y = _md_get_back(src, i, y)
-                close_y = _md_get_back(close, i, y)
+                src_y = _get_back(src, i, y)
+                close_y = _get_back(close, i, y)
                 if np.isnan(src_y):
                     arrived = False
                     break
-                close_y_nz = _md_nz(close_y)
+                close_y_nz = _nz(close_y)
                 if src_y < virtual_line1 or close_y_nz < virtual_line2:
                     arrived = False
                     break
@@ -1006,1635 +979,192 @@ def super_trend(symbol: str, data: pd.DataFrame, confirm_max_wait: int = 4,
 
         return divlen
 
-    def _md_negative_regular_negative_hidden_divergence(
-            i, src, close, prsc, ph_positions, ph_vals,
-            prd, maxpp, maxbars, dontconfirm, cond
-    ):
-        divlen = 0
 
-        src_0 = _md_get_back(src, i, 0)
-        src_1 = _md_get_back(src, i, 1)
-        close_0 = _md_get_back(close, i, 0)
-        close_1 = _md_get_back(close, i, 1)
-
-        gate = (
-                dontconfirm or
-                (not np.isnan(src_0) and not np.isnan(src_1) and src_0 < src_1) or
-                (not np.isnan(close_0) and not np.isnan(close_1) and close_0 < close_1)
-        )
-        if not gate:
-            return divlen
-
-        startpoint = 0 if dontconfirm else 1
-        n_pivots = len(ph_positions)
-
-        for x in range(maxpp):
-            if x >= n_pivots:
-                break
-            ph_pos = ph_positions[x]
-            ph_val = ph_vals[x]
-            if ph_pos == 0:
-                break
-
-            length = i - ph_pos + prd
-            if length > maxbars:
-                break
-            if length <= 5:
-                continue
-
-            src_sp = _md_get_back(src, i, startpoint)
-            src_len = _md_get_back(src, i, length)
-            prsc_sp = _md_get_back(prsc, i, startpoint)
-
-            if np.isnan(src_sp) or np.isnan(src_len) or np.isnan(prsc_sp):
-                continue
-
-            cond1_check = (cond == 1 and src_sp < src_len and prsc_sp > _md_nz(ph_val))
-            cond2_check = (cond == 2 and src_sp > src_len and prsc_sp < _md_nz(ph_val))
-            if not (cond1_check or cond2_check):
-                continue
-
-            close_sp = _md_get_back(close, i, startpoint)
-            close_len = _md_get_back(close, i, length)
-            if np.isnan(close_sp):
-                continue
-
-            span = length - startpoint
-            if span == 0:
-                continue
-
-            slope1 = (src_sp - src_len) / span
-            virtual_line1 = src_sp - slope1
-            slope2 = (close_sp - _md_nz(close_len)) / span
-            virtual_line2 = close_sp - slope2
-
-            arrived = True
-            for y in range(1 + startpoint, length):
-                src_y = _md_get_back(src, i, y)
-                close_y = _md_get_back(close, i, y)
-                if np.isnan(src_y):
-                    arrived = False
-                    break
-                close_y_nz = _md_nz(close_y)
-                if src_y > virtual_line1 or close_y_nz > virtual_line2:
-                    arrived = False
-                    break
-                virtual_line1 -= slope1
-                virtual_line2 -= slope2
-
-            if arrived:
-                divlen = length
-                break
-
-        return divlen
-
-    def calculate_index_divergences(
-            index_df, prd=5, source="Close", searchdiv="Regular", showlimit=3,
-            maxpp=10, maxbars=100, dontconfirm=False, showlast=False,
-            calcmacd=True, calcmacda=True, calcrsi=True, calcstoc=True,
-            calccci=True, calcmom=True, calcobv=True, calcvwmacd=True,
-            calccmf=True, calcmfi=True, verbose=True,
-            min_pivot_atr_mult: float = 0.0,
-    ):
-        df = index_df.copy()
-        if 'Datetime' in df.columns:
-            df = df.set_index('Datetime')
-        if not isinstance(df.index, pd.DatetimeIndex):
-            df.index = pd.to_datetime(df.index)
-        df = df.sort_index()
-
-        df = _md_calculate_indicators(df)
-
-        close = df['Close'].values.astype(float)
-        high = df['High'].values.astype(float)
-        low = df['Low'].values.astype(float)
-
-        _hl = df['High'] - df['Low']
-        _hc = (df['High'] - df['Close'].shift()).abs()
-        _lc = (df['Low'] - df['Close'].shift()).abs()
-        _atr_arr = pd.concat([_hl, _hc, _lc], axis=1).max(axis=1).rolling(14).mean().values
-
-        def _md_pivot_is_significant(val, opp_positions, opp_vals):
-            if min_pivot_atr_mult <= 0:
-                return True
-            if len(opp_positions) == 0 or opp_positions[0] == 0:
-                return True
-            atr_now = _atr_arr[i] if i < len(_atr_arr) else np.nan
-            if np.isnan(atr_now) or atr_now == 0:
-                return True
-            amplitude = abs(val - opp_vals[0])
-            return amplitude >= (atr_now * min_pivot_atr_mult)
-
-        ph_source = close if source == "Close" else high
-        pl_source = close if source == "Close" else low
-        prsc_pos = close if source == "Close" else low
-        prsc_neg = close if source == "Close" else high
-
-        ind_list = [
-            ("MACD", calcmacd, df['macd'].values.astype(float)),
-            ("Hist", calcmacda, df['deltamacd'].values.astype(float)),
-            ("RSI", calcrsi, df['rsi'].values.astype(float)),
-            ("Stoch", calcstoc, df['stk'].values.astype(float)),
-            ("CCI", calccci, df['cci'].values.astype(float)),
-            ("MOM", calcmom, df['moment'].values.astype(float)),
-            ("OBV", calcobv, df['obv'].values.astype(float)),
-            ("VWMACD", calcvwmacd, df['vwmacd'].values.astype(float)),
-            ("CMF", calccmf, df['cmf'].values.astype(float)),
-            ("MFI", calcmfi, df['mfi'].values.astype(float)),
-        ]
-
-        do_regular = searchdiv in ("Regular", "Regular/Hidden")
-        do_hidden = searchdiv in ("Hidden", "Regular/Hidden")
-
-        MAXARR = 20
-        ph_positions = deque([0] * MAXARR, maxlen=MAXARR)
-        ph_vals = deque([0.0] * MAXARR, maxlen=MAXARR)
-        pl_positions = deque([0] * MAXARR, maxlen=MAXARR)
-        pl_vals = deque([0.0] * MAXARR, maxlen=MAXARR)
-
-        n_ = len(df)
-
-        remove_last_pos_divs = False
-        remove_last_neg_divs = False
-
-        pos_label_history = []
-        neg_label_history = []
-
-        for i in range(n_):
-            ph = _md_pine_pivothigh(ph_source, i, prd)
-            pl = _md_pine_pivotlow(pl_source, i, prd)
-
-            if ph is not None:
-                ph_positions.appendleft(i)
-                ph_vals.appendleft(ph)
-            if pl is not None:
-                pl_positions.appendleft(i)
-                pl_vals.appendleft(pl)
-
-            if pl is not None:
-                remove_last_pos_divs = False
-            if ph is not None:
-                remove_last_neg_divs = False
-
-            if i < 2 * prd:
-                continue
-
-            pos_reg = neg_reg = pos_hid = neg_hid = 0
-            active_names_pos = []
-            active_names_neg = []
-
-            for name, enabled, indicator in ind_list:
-                if not enabled:
-                    continue
-
-                d = [0, 0, 0, 0]
-
-                if do_regular:
-                    d[0] = _md_positive_regular_positive_hidden_divergence(
-                        i, indicator, close, prsc_pos, pl_positions, pl_vals,
-                        prd, maxpp, maxbars, dontconfirm, cond=1
-                    )
-                    d[1] = _md_negative_regular_negative_hidden_divergence(
-                        i, indicator, close, prsc_neg, ph_positions, ph_vals,
-                        prd, maxpp, maxbars, dontconfirm, cond=1
-                    )
-                if do_hidden:
-                    d[2] = _md_positive_regular_positive_hidden_divergence(
-                        i, indicator, close, prsc_pos, pl_positions, pl_vals,
-                        prd, maxpp, maxbars, dontconfirm, cond=2
-                    )
-                    d[3] = _md_negative_regular_negative_hidden_divergence(
-                        i, indicator, close, prsc_neg, ph_positions, ph_vals,
-                        prd, maxpp, maxbars, dontconfirm, cond=2
-                    )
-
-                if d[0]:
-                    pos_reg += 1
-                    active_names_pos.append(name)
-                if d[1]:
-                    neg_reg += 1
-                    active_names_neg.append(name)
-                if d[2]:
-                    pos_hid += 1
-                    if name not in active_names_pos:
-                        active_names_pos.append(name)
-                if d[3]:
-                    neg_hid += 1
-                    if name not in active_names_neg:
-                        active_names_neg.append(name)
-
-            total = pos_reg + neg_reg + pos_hid + neg_hid
-            if total < showlimit:
-                continue
-
-            has_pos = (pos_reg > 0 or pos_hid > 0)
-            has_neg = (neg_reg > 0 or neg_hid > 0)
-
-            if has_pos:
-                if showlast:
-                    pos_label_history.clear()
-                else:
-                    if remove_last_pos_divs and pos_label_history:
-                        pos_label_history.pop()
-
-                pos_label_history.append({
-                    'bar': i, 'Datetime': df.index[i], 'Close': df['Close'].iloc[i],
-                    'pos_reg_div': pos_reg, 'pos_hid_div': pos_hid,
-                    'neg_reg_div': 0, 'neg_hid_div': 0,
-                    'indicators': ', '.join(active_names_pos), 'type': 'bottom'
-                })
-                remove_last_pos_divs = True
-
-            if has_neg:
-                if showlast:
-                    neg_label_history.clear()
-                else:
-                    if remove_last_neg_divs and neg_label_history:
-                        neg_label_history.pop()
-
-                neg_label_history.append({
-                    'bar': i, 'Datetime': df.index[i], 'Close': df['Close'].iloc[i],
-                    'pos_reg_div': 0, 'pos_hid_div': 0,
-                    'neg_reg_div': neg_reg, 'neg_hid_div': neg_hid,
-                    'indicators': ', '.join(active_names_neg), 'type': 'top'
-                })
-                remove_last_neg_divs = True
-
-        all_final = pos_label_history + neg_label_history
-        all_final.sort(key=lambda x: x['bar'])
-
-        if verbose:
-            print("-" * 100)
-            print(f"🔎 MULTI-INDICATOR DIVERGENCE ENGINE (INDEX data) -- surviving labels: {len(all_final)}")
-            print(f"   Bullish (bottom) labels : {len(pos_label_history)}")
-            print(f"   Bearish (top) labels    : {len(neg_label_history)}")
-            for entry in all_final:
-                side = "BULLISH" if entry['type'] == 'bottom' else "BEARISH"
-                cnt = entry['pos_reg_div'] + entry['pos_hid_div'] if entry['type'] == 'bottom' \
-                    else entry['neg_reg_div'] + entry['neg_hid_div']
-                print(f"   [{side:7s}] {entry['Datetime']}  close={entry['Close']:.2f}  "
-                      f"agree={cnt}  indicators=({entry['indicators']})")
-            print("-" * 100)
-
-        if not all_final:
-            return pd.DataFrame(columns=['Close', 'pos_reg_div', 'neg_reg_div', 'pos_hid_div',
-                                         'neg_hid_div', 'total_divergences',
-                                         'divergence_indicators', 'label_type'])
-
-        out_rows = []
-        for entry in all_final:
-            out_rows.append({
-                'Datetime': entry['Datetime'],
-                'Close': entry['Close'],
-                'pos_reg_div': entry['pos_reg_div'],
-                'neg_reg_div': entry['neg_reg_div'],
-                'pos_hid_div': entry['pos_hid_div'],
-                'neg_hid_div': entry['neg_hid_div'],
-                'total_divergences': (entry['pos_reg_div'] + entry['neg_reg_div'] +
-                                      entry['pos_hid_div'] + entry['neg_hid_div']),
-                'divergence_indicators': entry['indicators'],
-                'label_type': entry['type'],
-            })
-
-        out = pd.DataFrame(out_rows).set_index('Datetime')
-        return out
-
-    def _md_cluster_levels(prices, tol):
-        """Groups nearby swing prices into horizontal levels."""
-        levels = []
-        for price in sorted(prices):
-            found = False
-            for i, (level, count, touches) in enumerate(levels):
-                if abs(price - level) <= tol:
-                    levels[i] = (level, count + 1, touches + [price])
-                    found = True
-                    break
-            if not found:
-                levels.append((price, 1, [price]))
-        result = []
-        for level, count, touches in levels:
-            avg_level = round(sum(touches) / len(touches), 2)
-            result.append({
-                'Level': avg_level,
-                'Touches': count,
-                'Min': min(touches),
-                'Max': max(touches)
-            })
-        if not result:
-            return pd.DataFrame(columns=['Level', 'Touches', 'Min', 'Max'])
-        return pd.DataFrame(result).sort_values('Level').reset_index(drop=True)
-
-    def _zigzag_moves(swing_highs_pos, swing_lows_pos):
-        pivots = [(pos, 'H', val) for pos, val in swing_highs_pos.items()]
-        pivots += [(pos, 'L', val) for pos, val in swing_lows_pos.items()]
-        pivots.sort(key=lambda x: x[0])
-
-        move_at_high = {}
-        move_at_low = {}
-        last_opposite = {}
-
-        for pos, kind, val in pivots:
-            if kind == 'H':
-                prev_low = last_opposite.get('L')
-                if prev_low is not None:
-                    move_at_high[pos] = val - prev_low
-                last_opposite['H'] = val
-            else:
-                prev_high = last_opposite.get('H')
-                if prev_high is not None:
-                    move_at_low[pos] = prev_high - val
-                last_opposite['L'] = val
-
-        return move_at_high, move_at_low
-
-    def _md_cluster_levels_with_moves(prices_with_moves, tol):
-        levels = []
-        for price, move in sorted(prices_with_moves, key=lambda t: t[0]):
-            found = False
-            for i, (level, count, touches, moves) in enumerate(levels):
-                if abs(price - level) <= tol:
-                    levels[i] = (level, count + 1, touches + [price], moves + [move])
-                    found = True
-                    break
-            if not found:
-                levels.append((price, 1, [price], [move]))
-
-        result = []
-        for level, count, touches, moves in levels:
-            avg_level = round(sum(touches) / len(touches), 2)
-            valid_moves = [m for m in moves if m is not None]
-            result.append({
-                'Level': avg_level,
-                'Touches': count,
-                'Min': min(touches),
-                'Max': max(touches),
-                'MaxMove': round(max(valid_moves), 2) if valid_moves else np.nan,
-                'AvgMove': round(sum(valid_moves) / len(valid_moves), 2) if valid_moves else np.nan,
-                'MinMove': round(min(valid_moves), 2) if valid_moves else np.nan,
-            })
-        if not result:
-            return pd.DataFrame(columns=['Level', 'Touches', 'Min', 'Max', 'MaxMove', 'AvgMove', 'MinMove'])
-        return pd.DataFrame(result).sort_values('Level').reset_index(drop=True)
-
-    def find_swing_levels(df_, order=5, tolerance=8.0, silent=False,
-                          min_move_points: float = 0.0,
-                          min_move_pct: float = 0.0):
-        data_ = df_.copy()
-        if not isinstance(data_.index, pd.DatetimeIndex):
-            data_.index = pd.to_datetime(data_.index)
-        data_ = data_[~data_.index.duplicated(keep='last')].sort_index()
-
-        high_idx = argrelextrema(data_['High'].values, np.greater_equal, order=order)[0]
-        low_idx = argrelextrema(data_['Low'].values, np.less_equal, order=order)[0]
-        swing_highs = data_.iloc[high_idx]['High'].copy()
-        swing_lows = data_.iloc[low_idx]['Low'].copy()
-
-        swing_highs_pos = pd.Series(swing_highs.values, index=high_idx)
-        swing_lows_pos = pd.Series(swing_lows.values, index=low_idx)
-
-        move_at_high, move_at_low = _zigzag_moves(swing_highs_pos, swing_lows_pos)
-
-        def _passes_move_filter(pos, val, move_map):
-            if min_move_points <= 0 and min_move_pct <= 0:
-                return True
-            mv = move_map.get(pos)
-            if mv is None:
-                return False
-            if min_move_points > 0 and mv < min_move_points:
-                return False
-            if min_move_pct > 0 and val > 0 and (mv / val * 100) < min_move_pct:
-                return False
-            return True
-
-        high_prices_with_moves = [
-            (val, move_at_high.get(pos))
-            for pos, val in swing_highs_pos.items()
-            if _passes_move_filter(pos, val, move_at_high)
-        ]
-        low_prices_with_moves = [
-            (val, move_at_low.get(pos))
-            for pos, val in swing_lows_pos.items()
-            if _passes_move_filter(pos, val, move_at_low)
-        ]
-
-        resistance = _md_cluster_levels_with_moves(high_prices_with_moves, tolerance)
-        support = _md_cluster_levels_with_moves(low_prices_with_moves, tolerance)
-
-        return resistance, support, swing_highs, swing_lows
-
-    # ------------------------------------------------------------------
-    # Standard setup
-    # ------------------------------------------------------------------
     if 'Datetime' in data.columns:
         data = data.set_index('Datetime')
     if not isinstance(data.index, pd.DatetimeIndex):
         data.index = pd.to_datetime(data.index)
     if data.index.tz is not None:
-        print(f"⚠️  Option data Datetime index is tz-aware ({data.index.tz}) -- stripping tz "
-              f"to avoid silent merge_asof mismatches against index_data.")
+        if verbose:
+            print(f"⚠️  Datetime index is tz-aware ({data.index.tz}) -- stripping tz.")
         data.index = data.index.tz_localize(None)
     data.index.name = 'Datetime'
 
     data = data.copy()
+    data = data[~data.index.duplicated(keep='last')].sort_index()
     n = len(data)
 
-    _symbol_tokens = symbol.upper().split()
-    if 'CE' in _symbol_tokens and 'PE' not in _symbol_tokens:
-        multi_div_side = 'CE'
-    elif 'PE' in _symbol_tokens and 'CE' not in _symbol_tokens:
-        multi_div_side = 'PE'
-    else:
-        multi_div_side = 'BOTH'
-        print(f"⚠️  Could not determine CE/PE from symbol '{symbol}' -- multi-indicator "
-              f"divergence side-filtering is DISABLED for this run (both bullish and "
-              f"bearish labels will be queued, same as before).")
-
-    print("=" * 100)
-    print(f"🚀 ENHANCED RANGE-BOUND STRATEGY → {symbol} | Data Points: {n}")
-    print("=" * 100)
+    if verbose:
+        print("=" * 100)
+        print(f"🚀 MULTI-INDICATOR BULLISH DIVERGENCE ENGINE → {symbol} | Data Points: {n}")
+        print("=" * 100)
 
     data['st_sig'] = 0
-    data['condition'] = ''
-    data['quality'] = ''
-    data['entry_price'] = np.nan
-    data['stop_loss'] = np.nan
-    data['take_profit'] = np.nan
-    data['risk_reward'] = np.nan
-    data['confidence'] = 0.0
+    data['agree_count'] = 0
+    data['divergence_indicators'] = ''
     data['reason'] = ''
-    data['signal_type'] = ''
-    data['rating_score'] = np.nan
 
-    high_low = data['High'] - data['Low']
-    high_close = np.abs(data['High'] - data['Close'].shift())
-    low_close = np.abs(data['Low'] - data['Close'].shift())
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    data['ATR'] = tr.rolling(14).mean()
-    data['ATR_MA'] = data['ATR'].rolling(20).mean()
+    data = _calculate_indicators(data)
 
-    data['EMA5'] = data['Close'].ewm(span=6, adjust=False).mean()
-    data['EMA10'] = data['Close'].ewm(span=10, adjust=False).mean()
-    data['EMA15'] = data['Close'].ewm(span=15, adjust=False).mean()
-    data['EMA20'] = data['Close'].ewm(span=20, adjust=False).mean()
-    data['EMA30'] = data['Close'].ewm(span=30, adjust=False).mean()
-    data['EMA50'] = data['Close'].ewm(span=50, adjust=False).mean()
+    close = data['Close'].values.astype(float)
+    low = data['Low'].values.astype(float)
 
-    data['range'] = data['High'] - data['Low']
-    data['body'] = (data['Close'] - data['Open']).abs()
-    data['body_pct'] = data['body'] / (data['range'].replace(0, np.nan))
-    data['close_pos'] = (data['Close'] - data['Low']) / (data['range'].replace(0, np.nan))
-    data['is_bullish'] = data['Close'] > data['Open']
+    _hl = data['High'] - data['Low']
+    _hc = (data['High'] - data['Close'].shift()).abs()
+    _lc = (data['Low'] - data['Close'].shift()).abs()
+    atr_arr = pd.concat([_hl, _hc, _lc], axis=1).max(axis=1).rolling(14).mean().values
 
-    data['vol_ma20'] = data['Volume'].rolling(20).mean()
-    data['vol_ratio'] = data['Volume'] / (data['vol_ma20'] + 1e-9)
+    def _pivot_is_significant(i, val, opp_positions, opp_vals):
+        if min_pivot_atr_mult <= 0:
+            return True
+        if len(opp_positions) == 0 or opp_positions[0] == 0:
+            return True
+        atr_now = atr_arr[i] if i < len(atr_arr) else np.nan
+        if np.isnan(atr_now) or atr_now == 0:
+            return True
+        amplitude = abs(val - opp_vals[0])
+        return amplitude >= (atr_now * min_pivot_atr_mult)
 
-    data['hlc3'] = (data['High'] + data['Low'] + data['Close']) / 3
-    data['ema_trend'] = np.where(data['hlc3'] >= data['EMA5'], 1, -1)
+    pl_source = close if source == "Close" else low
+    prsc_pos = close if source == "Close" else low
 
-    def _wilder_rsi(close: pd.Series, period: int = 14) -> pd.Series:
-        delta = close.diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
-        avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
-        rs = avg_gain / (avg_loss.replace(0, np.nan))
-        rsi = 100 - (100 / (1 + rs))
-        return rsi.fillna(50)
+    ind_list = [
+        ("MACD", data['macd'].values.astype(float)),
+        ("Hist", data['deltamacd'].values.astype(float)),
+        ("RSI", data['rsi'].values.astype(float)),
+        ("Stoch", data['stk'].values.astype(float)),
+        ("CCI", data['cci'].values.astype(float)),
+        ("MOM", data['moment'].values.astype(float)),
+        ("OBV", data['obv'].values.astype(float)),
+        ("VWMACD", data['vwmacd'].values.astype(float)),
+        ("CMF", data['cmf'].values.astype(float)),
+        ("MFI", data['mfi'].values.astype(float)),
+    ]
 
-    data['RSI'] = _wilder_rsi(data['Close'], 14)
+    do_regular = search in ("Regular", "Regular/Hidden")
+    do_hidden = search in ("Hidden", "Regular/Hidden")
 
-    ema12 = data['Close'].ewm(span=12, adjust=False).mean()
-    ema26 = data['Close'].ewm(span=26, adjust=False).mean()
-    data['MACD'] = ema12 - ema26
-    data['MACD_signal'] = data['MACD'].ewm(span=9, adjust=False).mean()
-    data['MACD_hist'] = data['MACD'] - data['MACD_signal']
+    MAXARR = 20
+    pl_positions = deque([0] * MAXARR, maxlen=MAXARR)
+    pl_vals = deque([0.0] * MAXARR, maxlen=MAXARR)
+    # No pivot-high tracking in this long-only build -- see module docstring.
+    _no_opp_positions = deque([0] * MAXARR, maxlen=MAXARR)
+    _no_opp_vals = deque([0.0] * MAXARR, maxlen=MAXARR)
 
-    def _stochastic_k(high, low, close, k_period=14, smooth_k=3):
-        lowest_low = low.rolling(k_period).min()
-        highest_high = high.rolling(k_period).max()
-        raw_k = 100 * (close - lowest_low) / (highest_high - lowest_low).replace(0, np.nan)
-        return raw_k.rolling(smooth_k).mean()
+    remove_last_pos_divs = False
+    pos_label_history = []   # each: {'bar', 'agree_count', 'indicators'}
 
-    data['STOCH_K'] = _stochastic_k(data['High'], data['Low'], data['Close'], k_period=14, smooth_k=3)
+    for i in range(n):
+        pl = _pine_pivotlow(pl_source, i, pivot_period)
 
-    def psar(high, low, close, iaf=0.02, maxaf=0.2):
-        length = len(high)
-        sar = np.zeros(length)
-        trend = np.zeros(length, dtype=int)
-        af = np.full(length, iaf)
-        ep = np.zeros(length)
-        sar[0] = low[0]
-        trend[0] = 1
-        ep[0] = high[0]
-        for i in range(1, length):
-            if trend[i - 1] == 1:
-                sar[i] = min(sar[i - 1] + af[i - 1] * (ep[i - 1] - sar[i - 1]), low[i - 1])
-                if low[i] < sar[i]:
-                    trend[i] = -1
-                    sar[i] = ep[i - 1]
-                    ep[i] = low[i]
-                    af[i] = iaf
-                else:
-                    trend[i] = 1
-                    if high[i] > ep[i - 1]:
-                        ep[i] = high[i]
-                        af[i] = min(af[i - 1] + iaf, maxaf)
-                    else:
-                        ep[i] = ep[i - 1]
-                        af[i] = af[i - 1]
-            else:
-                sar[i] = max(sar[i - 1] - af[i - 1] * (sar[i - 1] - ep[i - 1]), high[i - 1])
-                if high[i] > sar[i]:
-                    trend[i] = 1
-                    sar[i] = ep[i - 1]
-                    ep[i] = high[i]
-                    af[i] = iaf
-                else:
-                    trend[i] = -1
-                    if low[i] < ep[i - 1]:
-                        ep[i] = low[i]
-                        af[i] = min(af[i - 1] + iaf, maxaf)
-                    else:
-                        ep[i] = ep[i - 1]
-                        af[i] = af[i - 1]
-        return sar, trend
+        if pl is not None:
+            if _pivot_is_significant(i, pl, _no_opp_positions, _no_opp_vals):
+                pl_positions.appendleft(i)
+                pl_vals.appendleft(pl)
+            remove_last_pos_divs = False
 
-    data['PSAR'], data['PSAR_trend'] = psar(
-        data['High'].values, data['Low'].values, data['Close'].values
-    )
+        if i < 2 * pivot_period:
+            continue
 
-    def is_range_bound(idx, lookback=12, threshold_pct=0.85):
-        if idx < max(lookback, 20):
-            return False
-        window = data.iloc[idx - lookback:idx + 1]
-        c = data.iloc[idx]
-        prev = data.iloc[idx - 1] if idx > 0 else c
-        price_range_pct = (window['High'].max() - window['Low'].min()) / window['Close'].iloc[-1] * 100
-        psar_window = data['PSAR_trend'].iloc[idx - lookback:idx + 1]
-        psar_flips = (psar_window.diff() != 0).sum()
-        no_breakout = c['High'] <= prev['High'] * 1.002
-        recent_bodies = data['body_pct'].iloc[max(0, idx - 7):idx]
-        small_body_condition = (recent_bodies < 0.48).mean() >= 0.65
-        is_range = (
-                price_range_pct < threshold_pct or
-                (psar_flips >= 4 and no_breakout and small_body_condition)
-        )
-        return is_range
+        pos_reg = pos_hid = 0
+        active_names = []
 
-    def is_choppy_market(idx, lookback=10):
-        if idx < 25:
-            return False
-        c = data.iloc[idx]
-        atr_now = data['ATR'].iloc[idx]
-        if pd.isna(atr_now) or atr_now == 0:
-            return False
-        window = data.iloc[idx - lookback + 1:idx + 1]
-        checks = []
-        ema_slope = abs(data['EMA5'].iloc[idx] - data['EMA5'].iloc[idx - 5])
-        checks.append(ema_slope < 0.08 * atr_now)
-        range_points = window['High'].max() - window['Low'].min()
-        checks.append(range_points < 1.8 * atr_now)
-        overlap_count = 0
-        for j in range(idx - lookback + 1, idx + 1):
-            cj = data.iloc[j]
-            pj = data.iloc[j - 1]
-            if cj['High'] <= pj['High'] and cj['Low'] >= pj['Low']:
-                overlap_count += 1
-        checks.append((overlap_count / lookback) >= 0.70)
-        atr_ma_now = data['ATR_MA'].iloc[idx]
-        checks.append((not pd.isna(atr_ma_now)) and atr_now < atr_ma_now)
-        psar_distance = abs(c['Close'] - c['PSAR'])
-        checks.append(psar_distance < 0.3 * atr_now)
-        recent_high = data['High'].iloc[idx - lookback:idx].max()
-        checks.append(c['Close'] < recent_high * 1.002)
-        return sum(checks) >= 3
+        for name, indicator in ind_list:
+            reg_hit = hid_hit = 0
+            if do_regular:
+                reg_hit = _positive_divergence(
+                    i, indicator, close, prsc_pos, pl_positions, pl_vals,
+                    pivot_period, maxpp, maxbars, dontconfirm, cond=1
+                )
+            if do_hidden:
+                hid_hit = _positive_divergence(
+                    i, indicator, close, prsc_pos, pl_positions, pl_vals,
+                    pivot_period, maxpp, maxbars, dontconfirm, cond=2
+                )
+            if reg_hit:
+                pos_reg += 1
+                active_names.append(name)
+            if hid_hit:
+                pos_hid += 1
+                if name not in active_names:
+                    active_names.append(name)
 
-    data['consolidation'] = False
-    for i in range(20, n):
-        win = data.iloc[i - 20:i]
-        rng = (win['High'].max() - win['Low'].min()) / win['Close'].iloc[-1]
-        data.loc[data.index[i], 'consolidation'] = rng < 0.019
+        total = pos_reg + pos_hid
+        if total < min_count:
+            continue
 
-    base_morning_dates_fired = set()
-
-    # ====================== INDEX-DRIVEN MULTI-INDICATOR DIVERGENCE ======================
-    use_multi_div = index_data is not None
-    div_labels = None
-    if use_multi_div:
-        div_labels = calculate_index_divergences(
-            index_data,
-            prd=multi_div_pivot_period,
-            searchdiv=multi_div_search,
-            showlimit=multi_div_min_count,
-            maxpp=multi_div_maxpp,
-            maxbars=multi_div_maxbars,
-            showlast=multi_div_showlast,
-            min_pivot_atr_mult=multi_div_min_pivot_atr_mult,
-            verbose=False,
-        )
-    else:
-        print("⚠️  index_data not supplied -- MULTI_INDICATOR_DIVERGENCE branch is DISABLED "
-              "for this run. Every other branch still runs normally on the option data.")
-
-    # ---- Align index candles onto the option-data timeline ----
-    use_index_filter = index_data is not None
-    idx_df_raw = None
-
-    if use_index_filter:
-        idx_df = index_data.copy()
-        if 'Datetime' in idx_df.columns:
-            idx_df = idx_df.set_index('Datetime')
-        if not isinstance(idx_df.index, pd.DatetimeIndex):
-            idx_df.index = pd.to_datetime(idx_df.index)
-        if idx_df.index.tz is not None:
-            print(f"⚠️  index_data Datetime index is tz-aware ({idx_df.index.tz}) -- stripping tz "
-                  f"to avoid silent merge_asof mismatches against option data.")
-            idx_df.index = idx_df.index.tz_localize(None)
-        idx_df.index.name = 'Datetime'
-        idx_df = idx_df.sort_index()
-
-        idx_df_raw = idx_df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
-
-        idx_df['STOCH_K'] = _stochastic_k(
-            idx_df['High'], idx_df['Low'], idx_df['Close'], k_period=14, smooth_k=3
-        )
-
-        _idx_hl = idx_df['High'] - idx_df['Low']
-        _idx_hc = np.abs(idx_df['High'] - idx_df['Close'].shift())
-        _idx_lc = np.abs(idx_df['Low'] - idx_df['Close'].shift())
-        idx_df['ATR'] = pd.concat([_idx_hl, _idx_hc, _idx_lc], axis=1).max(axis=1).rolling(14).mean()
-
-        idx_df['EMA5'] = idx_df['Close'].ewm(span=6, adjust=False).mean()
-        idx_df['bar_pos'] = np.arange(len(idx_df))
-
-        idx_df = idx_df.sort_index()[['Open', 'High', 'Low', 'Close', 'Volume',
-                                       'STOCH_K', 'ATR', 'EMA5', 'bar_pos']].add_prefix('idx_')
-
-        if len(idx_df) > 1:
-            median_interval = pd.Series(idx_df.index).diff().dropna().median()
+        if showlast:
+            pos_label_history.clear()
         else:
-            median_interval = pd.Timedelta(minutes=1)
-        if pd.isna(median_interval) or median_interval <= pd.Timedelta(0):
-            median_interval = pd.Timedelta(minutes=1)
-        align_tol = multi_div_align_tolerance if multi_div_align_tolerance is not None \
-            else 2 * median_interval
+            if remove_last_pos_divs and pos_label_history:
+                pos_label_history.pop()
 
-        opt_start, opt_end = data.index.min(), data.index.max()
-        idx_start, idx_end = idx_df.index.min(), idx_df.index.max()
-        overlap_start = max(opt_start, idx_start)
-        overlap_end = min(opt_end, idx_end)
-        print(f"🔗 Aligning index_data onto option timeline | option range: {opt_start} → {opt_end} | "
-              f"index range: {idx_start} → {idx_end} | overlap: "
-              f"{overlap_start} → "
-              f"{overlap_end if overlap_start <= overlap_end else 'NONE (no date overlap!)'} "
-              f"| tolerance: {align_tol}")
+        pos_label_history.append({
+            'bar': i,
+            'agree_count': total,
+            'indicators': ', '.join(active_names),
+        })
+        remove_last_pos_divs = True
 
-        data = data.sort_index()
-        data_reset = data.reset_index()
-        idx_reset = idx_df.reset_index()
-        data_reset = pd.merge_asof(data_reset, idx_reset, on='Datetime', direction='backward')
-        matched_ohlc = data_reset['idx_Close'].notna().sum()
-        data = data_reset.set_index('Datetime')
-        print(f"   -> {matched_ohlc}/{len(data)} option candles matched to an index OHLC row.")
-    else:
-        print("⚠️  index_data not supplied -- MULTI_INDICATOR_DIVERGENCE branch is DISABLED "
-              "for this run. Every other branch still runs normally on the option data.")
-        for col in ['idx_STOCH_K', 'idx_ATR', 'idx_EMA5', 'idx_Close',
-                    'idx_High', 'idx_Low', 'idx_Open', 'idx_bar_pos']:
-            data[col] = np.nan
-
-    def _nearest_level_above(levels_df, price):
-        if levels_df is None or levels_df.empty:
-            return None
-        above = levels_df[levels_df['Level'] > price].sort_values('Level')
-        if above.empty:
-            return None
-        return above.iloc[0]
-
-    def _nearest_level_below(levels_df, price):
-        if levels_df is None or levels_df.empty:
-            return None
-        below = levels_df[levels_df['Level'] < price].sort_values('Level', ascending=False)
-        if below.empty:
-            return None
-        return below.iloc[0]
-
-    def _swing_levels_asof(current_bar_pos):
-        """
-        Return (resistance_df, support_df) using only index bars up to
-        current_bar_pos. Non-repainting -- no future candles leak in.
-        """
-        empty = pd.DataFrame(columns=['Level', 'Touches', 'Min', 'Max'])
-        if idx_df_raw is None or pd.isna(current_bar_pos):
-            return empty, empty
-        cp = int(current_bar_pos)
-        min_bars = 2 * multi_div_swing_order + 1
-        if cp + 1 < min_bars:
-            return empty, empty
-        safe_cp = cp - multi_div_swing_order
-        if safe_cp < 2 * multi_div_swing_order:
-            return empty, empty
-        causal_slice = idx_df_raw.iloc[:safe_cp + 1]
-        resistance_df, support_df, _, _ = find_swing_levels(
-            causal_slice,
-            order=multi_div_swing_order,
-            tolerance=multi_div_level_tolerance,
-            silent=True,
-            min_move_points=multi_div_level_min_move_points,
-            min_move_pct=multi_div_level_min_move_pct,
-        )
-        return resistance_df, support_df
-
-    def _continuation_swing_levels_asof(idx, order=5, tolerance=8.0):
-        """Returns (resistance_df, support_df, reference_price, source_tag)."""
-        empty = pd.DataFrame(columns=['Level', 'Touches', 'Min', 'Max'])
-
-        if use_index_filter and idx_df_raw is not None:
-            current_bar_pos = data['idx_bar_pos'].iloc[idx] if 'idx_bar_pos' in data.columns else np.nan
-            ref_price = data['idx_Close'].iloc[idx] if 'idx_Close' in data.columns else np.nan
-            if pd.isna(current_bar_pos) or pd.isna(ref_price):
-                return empty, empty, np.nan, 'index'
-            cp = int(current_bar_pos)
-            safe_cp = cp - order
-            if safe_cp < 2 * order:
-                return empty, empty, np.nan, 'index'
-            causal_slice = idx_df_raw.iloc[:safe_cp + 1]
-            resistance_df, support_df, _, _ = find_swing_levels(
-                causal_slice, order=order, tolerance=tolerance, silent=True,
-                min_move_points=continuation_level_min_move_points,
-                min_move_pct=continuation_level_min_move_pct,
-            )
-            return resistance_df, support_df, ref_price, 'index'
-        else:
-            safe_cp = idx - order
-            ref_price = data['Close'].iloc[idx]
-            if safe_cp < 2 * order:
-                return empty, empty, ref_price, 'option'
-            causal_slice = data[['Open', 'High', 'Low', 'Close']].iloc[:safe_cp + 1]
-            resistance_df, support_df, _, _ = find_swing_levels(
-                causal_slice, order=order, tolerance=tolerance, silent=True,
-                min_move_points=continuation_level_min_move_points,
-                min_move_pct=continuation_level_min_move_pct,
-            )
-            return resistance_df, support_df, ref_price, 'option'
+    if verbose:
+        print(f"🔎 Bullish divergence labels found: {len(pos_label_history)}")
 
     # ------------------------------------------------------------------
-    # Divergence label alignment
+    # Apply trading gates (time-of-day, Stochastic oversold, cooldown)
+    # and write final st_sig = 1 entries.
     # ------------------------------------------------------------------
-    if div_labels is not None and not div_labels.empty and use_index_filter:
-        dl = div_labels.sort_index().reset_index()
-        dl = dl.rename(columns={'Datetime': '_div_label_time'})
-        dl = dl[['_div_label_time', 'label_type', 'divergence_indicators',
-                 'pos_reg_div', 'neg_reg_div', 'pos_hid_div', 'neg_hid_div']]
-        dl_sorted = dl.sort_values('_div_label_time')
-        data_reset = data.reset_index()
-        data_reset = pd.merge_asof(
-            data_reset.sort_values('Datetime'), dl_sorted,
-            left_on='Datetime', right_on='_div_label_time',
-            direction='backward', tolerance=align_tol,
-        )
-        data = data_reset.set_index('Datetime')
-        matched_labels = data['label_type'].notna().sum()
-        print(f"   -> {matched_labels}/{len(div_labels)} divergence labels matched onto an "
-              f"option candle within tolerance.")
-        if matched_labels == 0 and len(div_labels) > 0:
-            print("   ⚠️  ZERO labels matched despite the engine finding "
-                  f"{len(div_labels)} of them. Likely causes: (a) index_data and option "
-                  "data timestamps don't actually overlap in date range -- check the "
-                  "alignment line printed above, (b) the two feeds' timestamps are offset "
-                  "by more than the tolerance shown above -- pass a wider "
-                  "multi_div_align_tolerance, or (c) a residual tz/format mismatch. This is "
-                  "not a divergence-math bug -- the engine's own label count above is correct.")
-    else:
-        data['label_type'] = np.nan
-        data['divergence_indicators'] = np.nan
-        data['_div_label_time'] = pd.NaT
-
-    # ====================== DETECTORS ======================
-
-    def detect_v_shape(idx):
-        if idx < 14 or is_range_bound(idx, lookback=14, threshold_pct=0.95) or is_choppy_market(idx):
-            return False, {}
-
-        lookback = 9
-        window = data.iloc[idx - lookback:idx + 1]
-        low_idx_rel = window['Low'].values.argmin()
-        pivot_idx = idx - lookback + low_idx_rel
-        bars_since_pivot = idx - pivot_idx
-
-        MAX_BARS_SINCE_PIVOT = 2
-        if bars_since_pivot < 0 or bars_since_pivot > MAX_BARS_SINCE_PIVOT:
-            return False, {}
-
-        pivot_low = data['Low'].iloc[pivot_idx]
-
-        local_min = data['Low'].iloc[max(0, pivot_idx - 6):pivot_idx + 7].min()
-        if pivot_low > local_min:
-            return False, {}
-
-        left_start = max(0, pivot_idx - 8)
-        left_window = data.iloc[left_start:pivot_idx + 1]
-        swing_high = left_window['High'].max()
-        decline_pct = (swing_high - pivot_low) / swing_high * 100 if swing_high > 0 else 0
-        points_drop = swing_high - pivot_low
-
-        if not (points_drop >= 25 and decline_pct >= 1.2):
-            return False, {}
-
-        def is_ladder_down(start_idx, end_idx):
-            streak = 0
-            prev_low = None
-            prev_high = None
-            for j in range(start_idx, end_idx + 1):
-                cj = data.iloc[j]
-                if cj['is_bullish']:
-                    prev_low = None
-                    prev_high = None
-                    streak = 0
-                    continue
-                if cj['body_pct'] < 0.35:
-                    prev_low = None
-                    prev_high = None
-                    streak = 0
-                    continue
-                if prev_low is not None:
-                    if cj['High'] > prev_low + 0.10:
-                        prev_low = cj['Low']
-                        prev_high = cj['High']
-                        streak = 1
-                        continue
-                prev_low = cj['Low']
-                prev_high = cj['High']
-                streak += 1
-            return streak
-
-        ladder_streak = is_ladder_down(left_start, pivot_idx)
-        if ladder_streak < 2:
-            return False, {}
-
-        if 'EMA5' in data.columns:
-            ema5_below_found = any(
-                data.iloc[j]['Low'] < data['EMA5'].iloc[j]
-                for j in range(left_start, pivot_idx + 1)
-                if not pd.isna(data['EMA5'].iloc[j])
-            )
-            if not ema5_below_found:
-                return False, {}
-
-        c = data.iloc[idx]
-        prev = data.iloc[idx - 1]
-        candle_range = c['High'] - c['Low']
-        if candle_range == 0:
-            return False, {}
-
-        lower_wick = min(c['Open'], c['Close']) - c['Low']
-        lower_wick_pct = lower_wick / candle_range
-        upper_wick_pct = (c['High'] - max(c['Open'], c['Close'])) / candle_range
-
-        def is_ladder_up(start_idx, end_idx):
-            streak = 0
-            prev_high = None
-            for j in range(start_idx, end_idx + 1):
-                cj = data.iloc[j]
-                if not cj['is_bullish']:
-                    prev_high = None
-                    streak = 0
-                    continue
-                if cj['body_pct'] < 0.35:
-                    prev_high = None
-                    streak = 0
-                    continue
-                if prev_high is not None:
-                    if cj['Low'] < prev_high - 0.10:
-                        prev_high = cj['High']
-                        streak = 1
-                        continue
-                prev_high = cj['High']
-                streak += 1
-            return streak
-
-        right_start = pivot_idx + 1
-        if right_start <= idx:
-            right_ladder_streak = is_ladder_up(right_start, idx)
-        else:
-            right_ladder_streak = 0
-
-        if right_ladder_streak < 1:
-            return False, {}
-
-        is_prev_hammer_red = False
-        if idx > 0:
-            p_range = prev['High'] - prev['Low']
-            if p_range > 0 and not prev['is_bullish']:
-                p_lower = min(prev['Open'], prev['Close']) - prev['Low']
-                if p_lower / p_range >= 0.55:
-                    is_prev_hammer_red = True
-
-        pattern_type = None
-
-        if (c['is_bullish'] and
-                c['body_pct'] >= 0.60 and
-                c['close_pos'] >= 0.65 and
-                c['Close'] > prev['High'] and
-                c['Low'] >= prev['Low'] - 0.10):
-            pattern_type = 'GREEN'
-
-        elif (lower_wick_pct >= 0.60 and
-              upper_wick_pct <= 0.20 and
-              c['close_pos'] >= 0.40 and
-              c['High'] <= prev['High'] + 0.10):
-            pattern_type = 'WICK'
-
-        elif (is_prev_hammer_red and
-              c['is_bullish'] and
-              c['body_pct'] >= 0.50 and
-              c['Close'] > prev['Close'] and
-              c['Low'] >= prev['Low'] - 0.10):
-            pattern_type = 'GREEN_AFTER_WICK'
-
-        if pattern_type is None and bars_since_pivot >= 2:
-            box_start = pivot_idx + 1
-            box_end = idx - 1
-            if box_end - box_start + 1 >= 2:
-                box_window = data.iloc[box_start:box_end + 1]
-                box_high = box_window['High'].max()
-                box_low = box_window['Low'].min()
-                box_range = box_high - box_low
-                decline_size = swing_high - pivot_low
-
-                box_is_tight = decline_size > 0 and box_range <= 0.35 * decline_size
-                no_downside_overlap = c['Low'] >= box_low - 0.10
-
-                box_breakout_confirmed = (
-                        c['Close'] > box_high and
-                        c['is_bullish'] and
-                        c['body_pct'] >= 0.50 and
-                        no_downside_overlap
-                )
-                if box_is_tight and box_breakout_confirmed:
-                    pattern_type = 'BOX_BREAKOUT'
-
-        if pattern_type is None:
-            return False, {}
-
-        recovery_pct = (c['Close'] - pivot_low) / (swing_high - pivot_low + 1e-9)
-
-        min_recovery = 0.18 if 'WICK' in pattern_type else 0.28
-        if recovery_pct < min_recovery:
-            return False, {}
-
-        recent_high = (swing_high if pivot_idx == idx
-                       else data['High'].iloc[pivot_idx:idx].max())
-
-        breakout_price = c['High'] if 'WICK' in pattern_type else c['Close']
-
-        if breakout_price < recent_high * 0.990:
-            return False, {}
-
-        if c['vol_ratio'] < 1.10:
-            return False, {}
-
-        if 'EMA5' in data.columns:
-            ema5_now = data['EMA5'].iloc[idx]
-            ema5_prev = data['EMA5'].iloc[idx - 1]
-            if not pd.isna(ema5_now) and not pd.isna(ema5_prev):
-                if not (ema5_now >= ema5_prev or c['Close'] > ema5_now):
-                    return False, {}
-
-        print(
-            f"[VSHAPE] {data.index[idx]} >>> SIGNAL: pattern={pattern_type} | "
-            f"left_ladder={ladder_streak} | right_ladder={right_ladder_streak} | "
-            f"decline_pct={decline_pct:.2f} | recovery_pct={recovery_pct * 100:.2f} | "
-            f"vol={c['vol_ratio'] * 100:.1f} | bars_since_pivot={bars_since_pivot}"
-        )
-
-        return True, {
-            'pattern_type': pattern_type,
-            'decline_pct': round(decline_pct, 2),
-            'recovery_pct': round(recovery_pct * 100, 2),
-            'lower_wick_pct': round(lower_wick_pct * 100, 2),
-            'left_ladder_streak': ladder_streak,
-            'right_ladder_streak': right_ladder_streak,
-            'bars_since_pivot': bars_since_pivot,
-            'vol': round(c['vol_ratio'] * 100, 1),
-        }
-
-    def detect_base(idx):
-        if idx < 10:
-            return False, {}
-
-        if is_range_bound(idx, lookback=10, threshold_pct=0.90) or is_choppy_market(idx):
-            return False, {}
-
-        tm = data.index[idx].time()
-
-        if not (dt.time(9, 30) <= tm <= dt.time(10, 0)):
-            return False, {}
-
-        current_date = data.index[idx].date()
-
-        if current_date in base_morning_dates_fired:
-            return False, {}
-
-        if idx < 2:
-            return False, {}
-
-        red = data.iloc[idx - 2]
-        green1 = data.iloc[idx - 1]
-        green2 = data.iloc[idx]
-
-        ema5_red = data["EMA5"].iloc[idx - 2]
-
-        is_red = red["Close"] < red["Open"]
-        red_below_ema = (red["Open"] < ema5_red) and (red["Close"] < ema5_red)
-
-        if not (is_red and red_below_ema):
-            return False, {}
-
-        is_green1 = green1["Close"] > green1["Open"]
-        if not is_green1:
-            return False, {}
-
-        is_green2 = green2["Close"] > green2["Open"]
-        if not is_green2:
-            return False, {}
-
-        if green2["Close"] > red["Open"]:
-            return True, {
-                "pattern_type": "BASE_MORNING",
-                "strength": "HIGH",
-                "red_open": round(red["Open"], 2),
-                "green2_close": round(green2["Close"], 2),
-            }
-        else:
-            return False, {}
-
-    continuation_state = {}
-    CONTINUATION_LEVEL_COOLDOWN = 1
-
-    def detect_continuation(idx, swing_order=5, level_tolerance=8.0,
-                            max_level_distance_atr_mult=2.5,
-                            level_cooldown=CONTINUATION_LEVEL_COOLDOWN):
-        if idx < 30 or is_choppy_market(idx):
-            return False, {}
-
-        c = data.iloc[idx]
-        prev = data.iloc[idx - 1]
-        ts = data.index[idx]
-
-        # SETUP 1: EMA5 fall + reversal
-        if idx >= 2 and multi_div_side in ('CE', 'BOTH'):
-            g1, g2 = prev, c
-            if g1['is_bullish'] and g2['is_bullish']:
-                red = data.iloc[idx - 2]
-                ema5_red = data['EMA5'].iloc[idx - 2]
-                red_below_ema5 = (
-                        (not red['is_bullish']) and not pd.isna(ema5_red) and
-                        red['Open'] < ema5_red and red['Close'] < ema5_red
-                )
-                if red_below_ema5:
-                    broke_red_high = g2['Close'] > red['High']
-                    vol_ok = g2['vol_ratio'] >= 1.0
-
-                    if broke_red_high and vol_ok:
-
-                        return True, {
-                            'side': 'CE',
-                            'pattern_type': 'CONTINUATION_EMA5_FALL_REVERSAL',
-                            'level': round(red['High'], 2),
-                            'level_source': 'red_candle_high',
-                            'red_candle_time': str(data.index[idx - 2]),
-                            'vol': round(g2['vol_ratio'] * 100, 1),
-                        }
-
-        # SETUP 2: swing-level breakout (CE only)
-        resistance_df, _support_unused, ref_price, source = _continuation_swing_levels_asof(
-            idx, order=swing_order, tolerance=level_tolerance
-        )
-        if resistance_df.empty or pd.isna(ref_price):
-            return False, {}
-
-        nearest_res = _nearest_level_above(resistance_df, ref_price)
-        if nearest_res is None:
-            return False, {}
-
-        level = float(nearest_res['Level'])
-        touches = int(nearest_res['Touches'])
-        level_bucket = round(level / level_tolerance) * level_tolerance
-
-        atr_now = (data['idx_ATR'].iloc[idx] if source == 'index' and 'idx_ATR' in data.columns
-                   else data['ATR'].iloc[idx])
-        if pd.isna(atr_now) or atr_now == 0:
-            return False, {}
-        max_dist = atr_now * max_level_distance_atr_mult
-
-        ema15_now = data['EMA15'].iloc[idx]
-        ema15_prev = data['EMA15'].iloc[idx - 1]
-
-        if multi_div_side in ('CE', 'BOTH'):
-            dist_before = level - ref_price
-            if 0 < dist_before <= max_dist:
-                two_green_above_ema15 = (
-                        c['is_bullish'] and prev['is_bullish'] and
-                        c['Close'] > ema15_now and prev['Close'] > ema15_prev
-                )
-                broke_level = ref_price > level
-                vol_ok = c['vol_ratio'] >= 1.0
-
-                if two_green_above_ema15 and broke_level and vol_ok:
-
-                    continuation_state.setdefault('fired_levels_ce', {})[level_bucket] = idx
-                    return True, {
-                        'side': 'CE',
-                        'pattern_type': 'CONTINUATION_SWING_BREAKOUT',
-                        'level': round(level, 2),
-                        'touches': touches,
-                        'level_source': source,
-                        'dist_before_break': round(dist_before, 2),
-                        'vol': round(c['vol_ratio'] * 100, 1),
-                    }
-
-        return False, {}
-
-    def detect_box_consolidation_breakout(idx, box_lookback=12, min_candles_in_box=8):
-        if idx < box_lookback + 5 or is_choppy_market(idx):
-            return False, {}
-        atr_now = data['ATR'].iloc[idx]
-        if pd.isna(atr_now) or atr_now == 0:
-            return False, {}
-        box_window = data.iloc[idx - box_lookback:idx]
-        box_high = box_window['High'].max()
-        box_low = box_window['Low'].min()
-        box_range = box_high - box_low
-        pre_box_start = idx - box_lookback
-        pre_box_lookback = box_lookback * 2
-        pre_start_idx = max(0, pre_box_start - pre_box_lookback)
-        pre_window = data.iloc[pre_start_idx:pre_box_start]
-        if len(pre_window) < 3:
-            return False, {}
-        pre_high = pre_window['High'].max()
-        pre_low = pre_window['Low'].min()
-        prior_fall = pre_high - pre_low
-        high_loc = pre_window['High'].idxmax()
-        low_loc = pre_window['Low'].idxmin()
-        if not (high_loc < low_loc and prior_fall > 30):
-            return False, {}
-        if box_range > 2.5 * atr_now:
-            return False, {}
-        small_body_ratio = (box_window['body_pct'] < 0.30).mean()
-        if small_body_ratio < 0.30:
-            return False, {}
-        overlap_count = 0
-        for j in range(idx - box_lookback + 1, idx):
-            cj = data.iloc[j]
-            pj = data.iloc[j - 1]
-            if cj['High'] <= pj['High'] * 1.0015 and cj['Low'] >= pj['Low'] * 0.9985:
-                overlap_count += 1
-        if (overlap_count / (box_lookback - 1)) < 0.25:
-            return False, {}
-        c = data.iloc[idx]
-        breakout_confirmed = (c['Close'] > box_high and c['is_bullish']
-                              and c['body_pct'] >= 0.20 and c['close_pos'] >= 0.25)
-        if not breakout_confirmed:
-            return False, {}
-        if c['vol_ratio'] < 0.65:
-            return False, {}
-        return True, {
-            'pattern_type': 'CONSOLIDATION_BOX_BREAKOUT',
-            'box_high': round(box_high, 2), 'box_low': round(box_low, 2),
-            'box_range': round(box_range, 2), 'prior_fall': round(prior_fall, 2),
-            'vol': round(c['vol_ratio'] * 100, 1)
-        }
-
-    def detect_fall_box_breakout(idx, min_red_streak=4, max_wait=8):
-        if idx < min_red_streak + 6 or is_choppy_market(idx):
-            return False, {}
-        c = data.iloc[idx]
-        if not c['is_bullish']:
-            return False, {}
-        for gap in range(1, max_wait + 1):
-            end_idx = idx - gap
-            if end_idx < min_red_streak + 1:
-                continue
-            if data.iloc[end_idx]['is_bullish']:
-                continue
-            red_streak = 0
-            j = end_idx
-            while j >= 0 and not data.iloc[j]['is_bullish']:
-                red_streak += 1
-                j -= 1
-            streak_start_idx = j + 1
-            if red_streak <= min_red_streak:
-                continue
-            if end_idx - 1 < 0:
-                continue
-            last_red_idx = end_idx
-            second_last_red_idx = end_idx - 1
-            red1 = data.iloc[last_red_idx]
-            red2 = data.iloc[second_last_red_idx]
-            box_high = max(red1['Open'], red1['Close'], red2['Open'], red2['Close'])
-            box_low = min(red1['Open'], red1['Close'], red2['Open'], red2['Close'])
-            streak_high = data['High'].iloc[streak_start_idx:last_red_idx + 1].max()
-            streak_low = data['Low'].iloc[streak_start_idx:last_red_idx + 1].min()
-            total_fall = streak_high - streak_low
-            if total_fall <= 40:
-                continue
-            atr_now = data['ATR'].iloc[idx]
-            if pd.isna(atr_now) or atr_now == 0:
-                continue
-            if (streak_high - streak_low) < 1.5 * atr_now:
-                continue
-            hammer_idx = None
-            for h in range(last_red_idx + 1, idx):
-                hc = data.iloc[h]
-                hc_range = hc['High'] - hc['Low']
-                if hc_range <= 0:
-                    continue
-                hc_body_pct = abs(hc['Close'] - hc['Open']) / hc_range
-                hc_upper_pct = (hc['High'] - max(hc['Open'], hc['Close'])) / hc_range
-                hc_lower_pct = (min(hc['Open'], hc['Close']) - hc['Low']) / hc_range
-                if hc_lower_pct >= 0.50 and hc_body_pct <= 0.30 and hc_upper_pct <= 0.10:
-                    hammer_idx = h
-                    break
-            if hammer_idx is not None and hammer_idx == idx - 1:
-                if c['vol_ratio'] < 0.55:
-                    continue
-                return True, {
-                    'pattern_type': 'FALL_HAMMER_REVERSAL', 'red_streak': red_streak,
-                    'total_fall': round(total_fall, 2), 'hammer_idx': int(hammer_idx),
-                    'vol': round(c['vol_ratio'] * 100, 1)
-                }
-            already_broken = False
-            for k in range(last_red_idx + 1, idx):
-                ck = data.iloc[k]
-                if ck['Close'] > box_high and ck['is_bullish'] and ck['body_pct'] >= 0.20:
-                    already_broken = True
-                    break
-            if already_broken:
-                continue
-            if not (c['Close'] > box_high and c['body_pct'] >= 0.20 and c['close_pos'] >= 0.25):
-                continue
-            if c['vol_ratio'] < 0.55:
-                continue
-            return True, {
-                'pattern_type': 'FALL_BOX_BREAKOUT', 'red_streak': red_streak,
-                'total_fall': round(total_fall, 2), 'box_high': round(box_high, 2),
-                'box_low': round(box_low, 2), 'vol': round(c['vol_ratio'] * 100, 1)
-            }
-        return False, {}
-
-    # ====================== LEVELS, QUALITY, RATING ======================
-    def calculate_levels(idx, condition):
-        entry = data['Close'].iloc[idx]
-        FIXED_SL_POINTS = 11
-        FIXED_TARGET_POINTS = 30
-        stop = entry - FIXED_SL_POINTS
-        target = entry + FIXED_TARGET_POINTS
-        rr = abs(target - entry) / (abs(entry - stop) + 1e-9)
-        return entry, stop, target, rr
-
-    def calculate_levels_bear(idx, condition):
-        entry = data['Close'].iloc[idx]
-        FIXED_SL_POINTS = 11
-        FIXED_TARGET_POINTS = 30
-        stop = entry + FIXED_SL_POINTS
-        target = entry - FIXED_TARGET_POINTS
-        rr = abs(entry - target) / (abs(stop - entry) + 1e-9)
-        return entry, stop, target, rr
-
-    def get_quality(rr):
-        if rr < 1.25:
-            return "REJECT"
-        return "PREMIUM" if rr >= 2.2 else "HIGH" if rr >= 1.8 else "MEDIUM"
-
-    _QUALITY_WEIGHT = {"PREMIUM": 3, "HIGH": 2, "MEDIUM": 1, "REJECT": -999}
-
-    def _rating_score(confidence, quality, priority):
-        return confidence * 0.6 + _QUALITY_WEIGHT[quality] * 20 - priority * 1.0
-
-    def _write_signal(idx, side, condition, sig_data, confidence, entry, stop, target, rr,
-                      quality, score, wait_note=""):
-        data.loc[data.index[idx], 'st_sig'] = 1
-        data.loc[data.index[idx], 'condition'] = condition
-        data.loc[data.index[idx], 'quality'] = quality
-        data.loc[data.index[idx], 'entry_price'] = entry
-        data.loc[data.index[idx], 'stop_loss'] = stop
-        data.loc[data.index[idx], 'take_profit'] = target
-        data.loc[data.index[idx], 'risk_reward'] = rr
-        data.loc[data.index[idx], 'confidence'] = confidence
-        data.loc[data.index[idx], 'signal_type'] = side
-        data.loc[data.index[idx], 'rating_score'] = score
-        reason = f"{condition.replace('_', ' ')} | {side} | RR={rr:.2f}x | score={score:.1f} | "
-        for k, v in sig_data.items():
-            if isinstance(v, (int, float)):
-                reason += f"{k}={v:.1f} "
-        if wait_note:
-            reason += wait_note
-        data.loc[data.index[idx], 'reason'] = reason[:220]
-        return {
-            'datetime': data.index[idx], 'close': data['Close'].iloc[idx],
-            'condition': condition, 'quality': quality, 'entry': entry, 'stop': stop,
-            'target': target, 'rr': rr, 'confidence': confidence, 'signal_type': side,
-            'rating_score': score
-        }
-
-    # ====================== MAIN SIGNAL LOOP ======================
-    signals_list = []
-    COOLDOWN_CANDLES = 1
     last_signal_idx = -(10 ** 9)
+    fired = 0
 
-    pending_signals = []
-    pending_signals_bear = []
+    for label in pos_label_history:
+        i = label['bar']
+        ts = data.index[i]
+        tm_now = ts.time()
 
-    multi_div_bull_seen = 0
-    multi_div_bear_seen = 0
-    multi_div_bull_fired = 0
-    multi_div_bear_fired = 0
-    last_multi_div_bull_time = None
-    last_multi_div_bear_time = None
-
-    for idx in range(18, n):
-
-        candidates_this_idx = []
-
-        idx_close_now = data['idx_Close'].iloc[idx] if 'idx_Close' in data.columns else np.nan
-
-        # ---- Pending CE confirmation ----
-        still_pending = []
-        for p in pending_signals:
-            age = idx - p['detect_idx']
-            if age < 0:
-                still_pending.append(p)
-                continue
-            if age > confirm_max_wait:
-                continue
-            trend_now = data['ema_trend'].iloc[idx]
-            if trend_now == 1:
-                entry, stop, target, rr = calculate_levels(idx, p['condition'])
-                quality = get_quality(rr)
-                if quality != "REJECT":
-                    score = _rating_score(p['confidence'], quality, p['priority'])
-                    candidates_this_idx.append({
-                        'side': 'CE', 'condition': p['condition'], 'quality': quality,
-                        'entry': entry, 'stop': stop, 'target': target, 'rr': rr,
-                        'confidence': p['confidence'], 'priority': p['priority'],
-                        'data': p['data'], 'score': score,
-                        'wait_note': f"(confirmed after {age} candle(s) via ema_trend)"
-                    })
-                continue
-            else:
-                still_pending.append(p)
-        pending_signals = still_pending
-
-        # ---- Pending PE confirmation ----
-        still_pending_bear = []
-        for p in pending_signals_bear:
-            age = idx - p['detect_idx']
-            if age < 0:
-                still_pending_bear.append(p)
-                continue
-            if age > confirm_max_wait:
-                continue
-            trend_now = data['ema_trend'].iloc[idx]
-            if trend_now == -1:
-                entry, stop, target, rr = calculate_levels_bear(idx, p['condition'])
-                quality = get_quality(rr)
-                if quality != "REJECT":
-                    score = _rating_score(p['confidence'], quality, p['priority'])
-                    candidates_this_idx.append({
-                        'side': 'PE', 'condition': p['condition'], 'quality': quality,
-                        'entry': entry, 'stop': stop, 'target': target, 'rr': rr,
-                        'confidence': p['confidence'], 'priority': p['priority'],
-                        'data': p['data'], 'score': score,
-                        'wait_note': f"(confirmed after {age} candle(s) via ema_trend)"
-                    })
-                continue
-            else:
-                still_pending_bear.append(p)
-        pending_signals_bear = still_pending_bear
-
-        # ---- Fire best candidate from pending confirmations ----
-        if candidates_this_idx and (idx - last_signal_idx) >= COOLDOWN_CANDLES:
-            best = max(candidates_this_idx, key=lambda x: x['score'])
-            result = _write_signal(
-                idx, best['side'], best['condition'], best['data'], best['confidence'],
-                best['entry'], best['stop'], best['target'], best['rr'], best['quality'],
-                best['score'], best['wait_note']
-            )
-            signals_list.append(result)
-            last_signal_idx = idx
+        if tm_now < start_time:
+            if verbose:
+                print(f"[DIVERGENCE] {ts} skipped (before {start_time.strftime('%H:%M')} cutoff)")
             continue
 
-        if idx - last_signal_idx < COOLDOWN_CANDLES:
-            continue
-
-        # ---- Fresh pattern detection ----
-        b_det, b_data = detect_base(idx)
-        if b_det:
-            base_morning_dates_fired.add(data.index[idx].date())
-            pending_signals.append({'detect_idx': idx, 'condition': 'BASE_MORNING',
-                                    'data': b_data, 'confidence': 82, 'priority': 1})
-
-        v_det, v_data = detect_v_shape(idx)
-        if v_det:
-            pending_signals.append({'detect_idx': idx, 'condition': 'V_SHAPE_REVERSAL',
-                                    'data': v_data, 'confidence': 76, 'priority': 2})
-
-        c_det, c_data = detect_continuation(idx)
-        if c_det:
-            if c_data.get('side') == 'PE':
-                pending_signals_bear.append({'detect_idx': idx, 'condition': c_data['pattern_type'],
-                                             'data': c_data, 'confidence': 66, 'priority': 3})
-            else:
-                pending_signals.append({'detect_idx': idx, 'condition': c_data['pattern_type'],
-                                        'data': c_data, 'confidence': 66, 'priority': 3})
-
-        box_det, box_data = detect_box_consolidation_breakout(idx)
-        if box_det:
-            pending_signals.append({'detect_idx': idx, 'condition': 'CONSOLIDATION_BOX_BREAKOUT',
-                                    'data': box_data, 'confidence': 74, 'priority': 4})
-
-        fb_det, fb_data = detect_fall_box_breakout(idx)
-        if fb_det:
-            pending_signals.append({'detect_idx': idx, 'condition': fb_data['pattern_type'],
-                                    'data': fb_data, 'confidence': 80, 'priority': 2})
-
-        # ================================================================
-        # MULTI-INDICATOR DIVERGENCE -- fires signal IMMEDIATELY on label
-        # ================================================================
-        if use_multi_div:
-            row_label = data['label_type'].iloc[idx] if 'label_type' in data.columns else None
-            if isinstance(row_label, str):
-                indicators_str = data['divergence_indicators'].iloc[idx]
-                pos_reg = data['pos_reg_div'].iloc[idx] if 'pos_reg_div' in data.columns else 0
-                pos_hid = data['pos_hid_div'].iloc[idx] if 'pos_hid_div' in data.columns else 0
-                neg_reg = data['neg_reg_div'].iloc[idx] if 'neg_reg_div' in data.columns else 0
-                neg_hid = data['neg_hid_div'].iloc[idx] if 'neg_hid_div' in data.columns else 0
-
-                src_time = (data['_div_label_time'].iloc[idx]
-                            if '_div_label_time' in data.columns else data.index[idx])
-                tm_now = data.index[idx].time()
-                after_start_time = tm_now >= multi_div_start_time
-                stoch_now = data['idx_STOCH_K'].iloc[idx]
-                stoch_known = not pd.isna(stoch_now)
-                stoch_oversold = stoch_known and stoch_now <= multi_div_stoch_oversold
-                stoch_overbought = stoch_known and stoch_now >= multi_div_stoch_overbought
+        stoch_now = data['stk'].iloc[i]
+        stoch_known = not pd.isna(stoch_now)
+        if not (stoch_known and stoch_now <= stoch_oversold):
+            if verbose:
                 stoch_str = f"{stoch_now:.1f}" if stoch_known else "n/a"
+                print(f"[DIVERGENCE] {ts} skipped (Stoch %K={stoch_str}, not oversold "
+                      f"<= {stoch_oversold})")
+            continue
 
-                # --------------------------------------------------------
-                # BULLISH label -- fire CE signal immediately
-                # --------------------------------------------------------
-                if row_label == 'bottom' and src_time != last_multi_div_bull_time:
-                    last_multi_div_bull_time = src_time
-                    multi_div_bull_seen += 1
-                    agree_count = int(pos_reg + pos_hid)
+        if (i - last_signal_idx) < cooldown_candles:
+            if verbose:
+                print(f"[DIVERGENCE] {ts} skipped (cooldown)")
+            continue
 
-                    if not after_start_time:
-                        print(f"[MULTI-DIV] BULLISH #{multi_div_bull_seen} @ {data.index[idx]} "
-                              f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
-                              f"(before {multi_div_start_time.strftime('%H:%M')} cutoff)")
+        data.loc[data.index[i], 'st_sig'] = 1
+        data.loc[data.index[i], 'agree_count'] = label['agree_count']
+        data.loc[data.index[i], 'divergence_indicators'] = label['indicators']
+        data.loc[data.index[i], 'reason'] = (
+            f"MULTI_INDICATOR_BULLISH_DIVERGENCE | agree={label['agree_count']} "
+            f"| indicators=({label['indicators']}) | stoch_k={stoch_now:.1f}"
+        )[:220]
 
-                    elif not stoch_oversold:
-                        print(f"[MULTI-DIV] BULLISH #{multi_div_bull_seen} @ {data.index[idx]} "
-                              f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
-                              f"(index Stoch %K={stoch_str}, not oversold "
-                              f"<= {multi_div_stoch_oversold})")
+        last_signal_idx = i
+        fired += 1
 
-                    elif multi_div_side in ('CE', 'BOTH'):
-                        entry, stop, target, rr = calculate_levels(idx, 'MULTI_INDICATOR_BULLISH_DIVERGENCE')
-                        quality = get_quality(rr)
-                        if quality == "REJECT":
-                            print(f"[MULTI-DIV] BULLISH #{multi_div_bull_seen} @ {data.index[idx]} "
-                                  f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
-                                  f"(RR={rr:.2f} rejected by quality gate)")
-                        elif (idx - last_signal_idx) < COOLDOWN_CANDLES:
-                            print(f"[MULTI-DIV] BULLISH #{multi_div_bull_seen} @ {data.index[idx]} "
-                                  f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
-                                  f"(cooldown: {COOLDOWN_CANDLES - (idx - last_signal_idx)} candle(s) remaining)")
-                        else:
-                            score = _rating_score(78, quality, 2)
-                            sig_data = {
-                                'agree_count': agree_count,
-                                'pos_reg_div': pos_reg,
-                                'pos_hid_div': pos_hid,
-                                'stoch_k': stoch_now,
-                            }
-                            print(f"[MULTI-DIV] BULLISH #{multi_div_bull_seen} @ {data.index[idx]} "
-                                  f"| agree={agree_count} | indicators=({indicators_str}) | "
-                                  f"index Stoch %K={stoch_str} (oversold) -> FIRING CE signal immediately "
-                                  f"| entry={entry:.2f} | quality={quality} | RR={rr:.2f}")
-                            result = _write_signal(
-                                idx, 'CE', 'MULTI_INDICATOR_BULLISH_DIVERGENCE', sig_data,
-                                78, entry, stop, target, rr, quality, score,
-                                wait_note="(immediate -- no queue)"
-                            )
-                            signals_list.append(result)
-                            last_signal_idx = idx
-                            multi_div_bull_fired += 1
+        if verbose:
+            print(f"[DIVERGENCE] {ts} >>> st_sig=1 | agree={label['agree_count']} "
+                  f"| indicators=({label['indicators']}) | stoch_k={stoch_now:.1f}")
 
-                    else:
-                        print(f"[MULTI-DIV] BULLISH #{multi_div_bull_seen} @ {data.index[idx]} "
-                              f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
-                              f"(this run is {multi_div_side}-side only)")
-
-                # --------------------------------------------------------
-                # BEARISH label -- fire PE signal immediately
-                # --------------------------------------------------------
-                elif row_label == 'top' and src_time != last_multi_div_bear_time:
-                    last_multi_div_bear_time = src_time
-                    multi_div_bear_seen += 1
-                    agree_count = int(neg_reg + neg_hid)
-
-                    if not after_start_time:
-                        print(f"[MULTI-DIV] BEARISH #{multi_div_bear_seen} @ {data.index[idx]} "
-                              f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
-                              f"(before {multi_div_start_time.strftime('%H:%M')} cutoff)")
-
-                    elif not stoch_overbought:
-                        print(f"[MULTI-DIV] BEARISH #{multi_div_bear_seen} @ {data.index[idx]} "
-                              f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
-                              f"(index Stoch %K={stoch_str}, not overbought "
-                              f">= {multi_div_stoch_overbought})")
-
-                    elif multi_div_side in ('PE', 'BOTH'):
-                        entry, stop, target, rr = calculate_levels_bear(idx, 'MULTI_INDICATOR_BEARISH_DIVERGENCE')
-                        quality = get_quality(rr)
-                        if quality == "REJECT":
-                            print(f"[MULTI-DIV] BEARISH #{multi_div_bear_seen} @ {data.index[idx]} "
-                                  f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
-                                  f"(RR={rr:.2f} rejected by quality gate)")
-                        elif (idx - last_signal_idx) < COOLDOWN_CANDLES:
-                            print(f"[MULTI-DIV] BEARISH #{multi_div_bear_seen} @ {data.index[idx]} "
-                                  f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
-                                  f"(cooldown: {COOLDOWN_CANDLES - (idx - last_signal_idx)} candle(s) remaining)")
-                        else:
-                            score = _rating_score(78, quality, 2)
-                            sig_data = {
-                                'agree_count': agree_count,
-                                'neg_reg_div': neg_reg,
-                                'neg_hid_div': neg_hid,
-                                'stoch_k': stoch_now,
-                            }
-                            print(f"[MULTI-DIV] BEARISH #{multi_div_bear_seen} @ {data.index[idx]} "
-                                  f"| agree={agree_count} | indicators=({indicators_str}) | "
-                                  f"index Stoch %K={stoch_str} (overbought) -> FIRING PE signal immediately "
-                                  f"| entry={entry:.2f} | quality={quality} | RR={rr:.2f}")
-                            result = _write_signal(
-                                idx, 'PE', 'MULTI_INDICATOR_BEARISH_DIVERGENCE', sig_data,
-                                78, entry, stop, target, rr, quality, score,
-                                wait_note="(immediate -- no queue)"
-                            )
-                            signals_list.append(result)
-                            last_signal_idx = idx
-                            multi_div_bear_fired += 1
-
-                    else:
-                        print(f"[MULTI-DIV] BEARISH #{multi_div_bear_seen} @ {data.index[idx]} "
-                              f"| agree={agree_count} | indicators=({indicators_str}) -> skipped "
-                              f"(this run is {multi_div_side}-side only)")
-
-    # ====================== SUMMARY ======================
-    print(f"\n📊 SIGNALS GENERATED: {len(signals_list)}\n")
-    if use_multi_div:
-        md_fired = [s for s in signals_list if 'MULTI_INDICATOR' in s['condition']]
-        md_fired_bull = sum(1 for s in md_fired if s['signal_type'] == 'CE')
-        md_fired_bear = sum(1 for s in md_fired if s['signal_type'] == 'PE')
-        print(f"   MULTI-DIV seen (bull/bear)            : {multi_div_bull_seen} / {multi_div_bear_seen}")
-        print(f"   Actually FIRED as trades              : {len(md_fired)}  "
-              f"(CE: {md_fired_bull}, PE: {md_fired_bear})")
-        print("   [Signals not fired were dropped by: time cutoff, stoch filter, "
-              "side filter, RR quality gate, or cooldown.]\n")
-
-    if signals_list:
-        print(f"{'DateTime':<26} {'Close':<10} {'Side':<5} {'Condition':<32} "
-              f"{'Quality':<10} {'RR':<7} {'Score':<7} {'Conf':<6}")
-        print("-" * 115)
-        for sig in signals_list[-25:]:
-            print(f"{str(sig['datetime']):<26} {sig['close']:<10.2f} "
-                  f"{sig.get('signal_type', 'CE'):<5} "
-                  f"{sig['condition']:<32} {sig['quality']:<10} {sig['rr']:<7.2f} "
-                  f"{sig['rating_score']:<7.1f} {sig['confidence']:<6.1f}")
-
-        conds = Counter(s['condition'] for s in signals_list)
-        print("\n📈 CONDITION BREAKDOWN:")
-        for c in sorted(conds):
-            print(f"   {c}: {conds[c]}")
-
-        sides = Counter(s.get('signal_type', 'CE') for s in signals_list)
-        print("\n🎯 SIDE BREAKDOWN:")
-        for side in ['CE', 'PE']:
-            if side in sides:
-                print(f"   {side}: {sides[side]}")
-
-        quals = Counter(s['quality'] for s in signals_list)
-        print("\n💎 QUALITY BREAKDOWN:")
-        for q in ['PREMIUM', 'HIGH', 'MEDIUM']:
-            if q in quals:
-                print(f"   {q}: {quals[q]}")
-
-        print(f"\n💰 AVG RR: {np.mean([s['rr'] for s in signals_list]):.2f}x")
-        print(f"📊 AVG CONF: {np.mean([s['confidence'] for s in signals_list]):.1f}%")
-        print(f"⭐ AVG RATING SCORE: {np.mean([s['rating_score'] for s in signals_list]):.1f}")
+    if verbose:
+        print(f"\n📊 SIGNALS FIRED: {fired} / {len(pos_label_history)} candidate labels\n")
+        if fired:
+            fired_rows = data[data['st_sig'] == 1]
+            print(f"{'DateTime':<26} {'Close':<10} {'Agree':<7} {'Indicators'}")
+            print("-" * 100)
+            for ts, row in fired_rows.tail(25).iterrows():
+                print(f"{str(ts):<26} {row['Close']:<10.2f} {row['agree_count']:<7} "
+                      f"{row['divergence_indicators']}")
+            print(f"\n💎 AVG AGREE COUNT: {fired_rows['agree_count'].mean():.2f}")
 
     return data
 
