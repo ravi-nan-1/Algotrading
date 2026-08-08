@@ -1533,7 +1533,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                 Short_Open_Position = super_Trend_Short[super_Trend_Short['Trade Status'] == 'OPEN']
 
                 # ── Pull the most recent signal (last 3 candles) ──
-                recent = data_list[i].tail(3)
+                recent = data_list[i].iloc[[-1]]
                 signal_rows = recent[recent["st_sig"] == 1]
 
                 if not signal_rows.empty:
