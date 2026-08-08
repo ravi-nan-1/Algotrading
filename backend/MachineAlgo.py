@@ -1464,7 +1464,7 @@ for h in Tickers:
     data_fut = get_cash_market_data(h, '3m')
     data_fut.drop(data_fut.tail(1).index, inplace=True)
     df = get_cash_market_data_3('3m')
-    data_fut =super_trend(h,data_fut,4,df)
+    data_fut =super_trend(h,data_fut)
 
     data_list[h] = data_fut
 
@@ -1524,7 +1524,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                 data_fut.drop(data_fut.tail(1).index, inplace=True)
                 df = get_cash_market_data_3('3m')
-                data_fut = super_trend(i, data_fut, 4, df)
+                data_fut = super_trend(i, data_fut)
                 data_list[i] = data_fut
 
                 super_Trend_Long   = pd.read_excel(Long_Trade_File)
