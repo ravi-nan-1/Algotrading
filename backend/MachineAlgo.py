@@ -820,7 +820,7 @@ Return ONLY JSON:
 def super_trend(
     symbol: str,
     data: pd.DataFrame,
-    pivot_period: int = 5,
+    pivot_period: int = 8,
     min_count: int = 1,
     maxpp: int = 10,
     maxbars: int = 100,
