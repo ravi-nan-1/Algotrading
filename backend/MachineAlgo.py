@@ -1524,7 +1524,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                 data_fut.drop(data_fut.tail(1).index, inplace=True)
                 df = get_cash_market_data_3('3m')
-                data_fut = super_trend(i, data_fut)
+                data_fut = super_trend(i, data_fut, 4, df)
                 data_list[i] = data_fut
 
                 super_Trend_Long   = pd.read_excel(Long_Trade_File)
@@ -1532,8 +1532,8 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                 super_Trend_Short   = pd.read_excel(Short_Trade_File)
                 Short_Open_Position = super_Trend_Short[super_Trend_Short['Trade Status'] == 'OPEN']
 
-                # ── Pull the most recent signal (last 3 candles) ──
-                recent = data_list[i].tail(3)
+                # ── Pull the signal from only the latest completed candle ──
+                recent = data_list[i].iloc[[-1]]
                 signal_rows = recent[recent["st_sig"] == 1]
 
                 if not signal_rows.empty:
@@ -1619,7 +1619,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
                         Long_Open_Position = super_Trend_Long[super_Trend_Long['Trade Status'] == 'OPEN']
 
                     elif Option_Type == 'PE':
-                        update_short_trades(i, entry_time, BuyPrice, Target_Price, Sprice, Trade_quantity, Short_Trade_File)
+                        update_Short_trades(i, entry_time, BuyPrice, Target_Price, Sprice, Trade_quantity, Short_Trade_File)
                         tele_msg(
                             f"PE Entry: {i} | Qty: {Trade_quantity} | "
                             f"Buy: {BuyPrice} | Target: {Target_Price} | SL: {Sprice}"
@@ -1832,7 +1832,3 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
             error_log_file.write(error_message + "\n")
         # ✅ NO raise — bot stays alive on any error
         time.sleep(2)
-        raise ValueError("I have raised an Exception in main")
-        # ✅ NO raise — bot stays alive on any error
-        time.sleep(2)
-        raise ValueError("I have raised an Exception in main")
