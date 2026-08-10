@@ -824,15 +824,15 @@ def super_trend(
     min_count: int = 1,
     maxpp: int = 10,
     maxbars: int = 100,
-    search: str = "Regular",              # "Regular" | "Hidden" | "Regular/Hidden"
+    search: str = "Regular/Hidden",              # "Regular" | "Hidden" | "Regular/Hidden"
     showlast: bool = False,
     dontconfirm: bool = False,
     source: str = "Close",                # "Close" (Pine default) or anything else -> Low
-    start_time: dt.time = dt.time(10, 0),
+    start_time: dt.time = dt.time(9,0),
     stoch_oversold: float = 30.0,
     min_pivot_atr_mult: float = 0.0,
     cooldown_candles: int = 1,
-    verbose: bool = True,
+    verbose: bool = False,
 ) -> pd.DataFrame:
 
 
@@ -867,7 +867,7 @@ def super_trend(
         cmfv = cmfm * volume
         df['cmf'] = cmfv.rolling(21).sum() / volume.rolling(21).sum()
 
-        df['mfi'] = ta.mfi(high, low, close, volume, length=14)
+        df['mfi'] = ta.mfi(high, low, close, volume, length=10)
 
         return df
 
@@ -1167,6 +1167,7 @@ def super_trend(
             print(f"\n💎 AVG AGREE COUNT: {fired_rows['agree_count'].mean():.2f}")
 
     return data
+
 
 
 
