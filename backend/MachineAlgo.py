@@ -821,7 +821,7 @@ def super_trend(
     symbol: str,
     data: pd.DataFrame,
     pivot_period: int = 8,
-    min_count: int = 1,
+    min_count: int = 2,
     maxpp: int = 10,
     maxbars: int = 100,
     search: str = "Regular/Hidden",              # "Regular" | "Hidden" | "Regular/Hidden"
@@ -867,7 +867,7 @@ def super_trend(
         cmfv = cmfm * volume
         df['cmf'] = cmfv.rolling(21).sum() / volume.rolling(21).sum()
 
-        df['mfi'] = ta.mfi(high, low, close, volume, length=10)
+        df['mfi'] = ta.mfi(high, low, close, volume, length=14)
 
         return df
 
@@ -1052,7 +1052,7 @@ def super_trend(
     _no_opp_vals = deque([0.0] * MAXARR, maxlen=MAXARR)
 
     remove_last_pos_divs = False
-    pos_label_history = []   # each: {'bar', 'agree_count', 'indicators'}
+    pos_label_history = []   # each: {'bar', 'agree_count', 'indicators', 'obv_solo'}
 
     for i in range(n):
         pl = _pine_pivotlow(pl_source, i, pivot_period)
@@ -1090,8 +1090,16 @@ def super_trend(
                     active_names.append(name)
 
         total = pos_reg + pos_hid
-        if total < min_count:
+
+        # --- OBV-solo exception ---------------------------------------
+        # If OBV is the ONLY indicator that agreed (no corroboration from
+        # any other oscillator), let it through even if it falls below
+        # min_count. Any other combination still needs min_count.
+        obv_solo = (total == 1 and active_names == ["OBV"])
+
+        if total < min_count and not obv_solo:
             continue
+        # ----------------------------------------------------------------
 
         if showlast:
             pos_label_history.clear()
@@ -1103,6 +1111,7 @@ def super_trend(
             'bar': i,
             'agree_count': total,
             'indicators': ', '.join(active_names),
+            'obv_solo': obv_solo,
         })
         remove_last_pos_divs = True
 
@@ -1146,6 +1155,7 @@ def super_trend(
         data.loc[data.index[i], 'reason'] = (
             f"MULTI_INDICATOR_BULLISH_DIVERGENCE | agree={label['agree_count']} "
             f"| indicators=({label['indicators']}) | stoch_k={stoch_now:.1f}"
+            f"{' | OBV_SOLO' if label['obv_solo'] else ''}"
         )[:220]
 
         last_signal_idx = i
@@ -1153,7 +1163,8 @@ def super_trend(
 
         if verbose:
             print(f"[DIVERGENCE] {ts} >>> st_sig=1 | agree={label['agree_count']} "
-                  f"| indicators=({label['indicators']}) | stoch_k={stoch_now:.1f}")
+                  f"| indicators=({label['indicators']}) | stoch_k={stoch_now:.1f}"
+                  f"{' | OBV_SOLO' if label['obv_solo'] else ''}")
 
     if verbose:
         print(f"\n📊 SIGNALS FIRED: {fired} / {len(pos_label_history)} candidate labels\n")
