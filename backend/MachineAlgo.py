@@ -817,52 +817,68 @@ Return ONLY JSON:
     except Exception as e:
         return _no_trade_response(f"LLM error: {e}")
 
+
+
+
+
+
+
 def super_trend(
     symbol: str,
     data: pd.DataFrame,
     pivot_period: int = 8,
-    min_count: int = 2,
+    min_count: int = 1,
     maxpp: int = 10,
     maxbars: int = 100,
-    search: str = "Regular/Hidden",              # "Regular" | "Hidden" | "Regular/Hidden"
+    search: str = "Regular/Hidden",
     showlast: bool = False,
     dontconfirm: bool = False,
-    source: str = "Close",                # "Close" (Pine default) or anything else -> Low
-    start_time: dt.time = dt.time(9,0),
-    stoch_oversold: float = 30.0,
+    source: str = "Close",
+    start_time: dt.time = dt.time(9, 0),
+    stoch_oversold: float = 50.0,
+    stoch_lookback: int = 1,
     min_pivot_atr_mult: float = 0.0,
     cooldown_candles: int = 1,
-    verbose: bool = False,
+    verbose: bool = True,
 ) -> pd.DataFrame:
+    """
+    Multi-indicator bullish divergence engine with weighted divergence
+    strength scoring.
 
+    New output columns
+    ------------------
+    div_score       : float  [0-100]  weighted divergence strength score
+    div_score_label : str    human-readable strength label
+    div_score_breakdown : str  per-indicator score contribution (debug)
+    """
 
     # ------------------------------------------------------------------
     # Nested helpers
     # ------------------------------------------------------------------
     def _calculate_indicators(df):
-        close = df['Close']
-        high = df['High']
-        low = df['Low']
+        close  = df['Close']
+        high   = df['High']
+        low    = df['Low']
         volume = df['Volume']
 
-        df['rsi'] = ta.rsi(close, length=14)
+        df['rsi']  = ta.rsi(close, length=14)
 
-        macd_df = ta.macd(close, fast=12, slow=26, signal=9)
-        df['macd'] = macd_df.iloc[:, 0]
+        macd_df       = ta.macd(close, fast=12, slow=26, signal=9)
+        df['macd']    = macd_df.iloc[:, 0]
         df['deltamacd'] = macd_df.iloc[:, 1]
 
         df['moment'] = close.diff(10)
-        df['cci'] = ta.cci(high, low, close, length=10)
-        df['obv'] = ta.obv(close, volume)
+        df['cci']    = ta.cci(high, low, close, length=10)
+        df['obv']    = ta.obv(close, volume)
 
-        stoch_df = ta.stoch(high, low, close, k=14, d=3, smooth_k=1)
+        stoch_df  = ta.stoch(high, low, close, k=14, d=3, smooth_k=3)
         df['stk'] = stoch_df.iloc[:, 0].rolling(3).mean()
 
-        vwma_fast = (close * volume).rolling(12).sum() / volume.rolling(12).sum()
-        vwma_slow = (close * volume).rolling(26).sum() / volume.rolling(26).sum()
+        vwma_fast    = (close * volume).rolling(12).sum() / volume.rolling(12).sum()
+        vwma_slow    = (close * volume).rolling(26).sum() / volume.rolling(26).sum()
         df['vwmacd'] = vwma_fast - vwma_slow
 
-        hl = (high - low).replace(0, np.nan)
+        hl   = (high - low).replace(0, np.nan)
         cmfm = ((close - low) - (high - close)) / hl
         cmfv = cmfm * volume
         df['cmf'] = cmfv.rolling(21).sum() / volume.rolling(21).sum()
@@ -874,8 +890,8 @@ def super_trend(
     def _pine_pivotlow(arr, i, prd):
         if i < 2 * prd:
             return None
-        center = i - prd
-        window = arr[i - 2 * prd: i + 1]
+        center     = i - prd
+        window     = arr[i - 2 * prd: i + 1]
         valid_window = window[~np.isnan(window)]
         if len(valid_window) == 0:
             return None
@@ -899,25 +915,28 @@ def super_trend(
 
     def _positive_divergence(i, src, close, prsc, pl_positions, pl_vals,
                               prd, maxpp, maxbars, dontconfirm, cond):
-        """cond=1 -> regular positive (bullish) divergence.
-        cond=2 -> hidden positive (bullish) divergence."""
-        divlen = 0
+        """
+        Returns (divlen, slope_ratio) instead of just divlen.
+        slope_ratio captures how sharply the indicator diverges vs price.
+        """
+        divlen     = 0
+        slope_ratio = np.nan
 
-        src_0 = _get_back(src, i, 0)
-        src_1 = _get_back(src, i, 1)
+        src_0   = _get_back(src,   i, 0)
+        src_1   = _get_back(src,   i, 1)
         close_0 = _get_back(close, i, 0)
         close_1 = _get_back(close, i, 1)
 
         gate = (
-            dontconfirm or
-            (not np.isnan(src_0) and not np.isnan(src_1) and src_0 > src_1) or
-            (not np.isnan(close_0) and not np.isnan(close_1) and close_0 > close_1)
+            dontconfirm
+            or (not np.isnan(src_0)   and not np.isnan(src_1)   and src_0   > src_1)
+            or (not np.isnan(close_0) and not np.isnan(close_1) and close_0 > close_1)
         )
         if not gate:
-            return divlen
+            return divlen, slope_ratio
 
         startpoint = 0 if dontconfirm else 1
-        n_pivots = len(pl_positions)
+        n_pivots   = len(pl_positions)
 
         for x in range(maxpp):
             if x >= n_pivots:
@@ -933,9 +952,9 @@ def super_trend(
             if length <= 5:
                 continue
 
-            src_sp = _get_back(src, i, startpoint)
-            src_len = _get_back(src, i, length)
-            prsc_sp = _get_back(prsc, i, startpoint)
+            src_sp   = _get_back(src,   i, startpoint)
+            src_len  = _get_back(src,   i, length)
+            prsc_sp  = _get_back(prsc,  i, startpoint)
 
             if np.isnan(src_sp) or np.isnan(src_len) or np.isnan(prsc_sp):
                 continue
@@ -945,7 +964,7 @@ def super_trend(
             if not (cond1_check or cond2_check):
                 continue
 
-            close_sp = _get_back(close, i, startpoint)
+            close_sp  = _get_back(close, i, startpoint)
             close_len = _get_back(close, i, length)
             if np.isnan(close_sp):
                 continue
@@ -954,20 +973,20 @@ def super_trend(
             if span == 0:
                 continue
 
-            slope1 = (src_sp - src_len) / span
-            virtual_line1 = src_sp - slope1
-            slope2 = (close_sp - _nz(close_len)) / span
+            slope1 = (src_sp   - src_len)          / span
+            slope2 = (close_sp - _nz(close_len))   / span
+
+            virtual_line1 = src_sp   - slope1
             virtual_line2 = close_sp - slope2
 
             arrived = True
             for y in range(1 + startpoint, length):
-                src_y = _get_back(src, i, y)
+                src_y   = _get_back(src,   i, y)
                 close_y = _get_back(close, i, y)
                 if np.isnan(src_y):
                     arrived = False
                     break
-                close_y_nz = _nz(close_y)
-                if src_y < virtual_line1 or close_y_nz < virtual_line2:
+                if src_y < virtual_line1 or _nz(close_y) < virtual_line2:
                     arrived = False
                     break
                 virtual_line1 -= slope1
@@ -975,11 +994,75 @@ def super_trend(
 
             if arrived:
                 divlen = length
+                # slope_ratio: |indicator slope| vs |price slope|
+                # (both normalised by their own span so units cancel)
+                try:
+                    norm_ind   = abs(slope1) / (abs(src_len)   + 1e-10)
+                    norm_price = abs(slope2) / (abs(_nz(close_len)) + 1e-10)
+                    slope_ratio = norm_ind / (norm_price + 1e-10)
+                except Exception:
+                    slope_ratio = np.nan
                 break
 
-        return divlen
+        return divlen, slope_ratio
 
+    # ------------------------------------------------------------------
+    # Score a single divergence hit for one indicator
+    # ------------------------------------------------------------------
+    def _score_one_indicator(name: str, ind_value: float,
+                              div_type: str,            # "regular" | "hidden"
+                              slope_ratio: float) -> float:
+        """
+        Returns a raw score [0-100] for a single indicator divergence hit.
 
+        Formula
+        -------
+        raw = base_weight
+              × type_multiplier
+              × extreme_bonus
+              × slope_bonus
+        scaled to [0-100].
+        """
+        base       = INDICATOR_WEIGHTS.get(name, 0.65)
+        type_mult  = (REGULAR_DIV_MULTIPLIER
+                      if div_type == "regular"
+                      else HIDDEN_DIV_MULTIPLIER)
+        ext_bonus  = compute_indicator_extreme_bonus(name, ind_value)
+        slp_bonus  = compute_slope_bonus(slope_ratio)
+
+        raw = base * type_mult * ext_bonus * slp_bonus
+        # Cap individual score at 100
+        return min(raw * 100, 100.0)
+
+    # ------------------------------------------------------------------
+    # Combine per-indicator scores into one final score [0-100]
+    # ------------------------------------------------------------------
+    def _combine_scores(score_dict: dict) -> float:
+        """
+        Weighted average of individual scores, then apply a
+        'multi-indicator bonus' that rewards agreement.
+
+        multi_bonus = 1 + 0.05 * (n_indicators - 1)   [max +35%]
+        """
+        if not score_dict:
+            return 0.0
+
+        scores = list(score_dict.values())
+        n      = len(scores)
+
+        # Weighted average (each score is already weighted by indicator quality)
+        avg = sum(scores) / n
+
+        # Multi-indicator agreement bonus (more indicators = more confident)
+        multi_bonus = 1.0 + 0.05 * (n - 1)
+        multi_bonus = min(multi_bonus, 1.35)   # cap bonus at +35 %
+
+        final = avg * multi_bonus
+        return min(final, 100.0)
+
+    # ======================================================================
+    # Main body
+    # ======================================================================
     if 'Datetime' in data.columns:
         data = data.set_index('Datetime')
     if not isinstance(data.index, pd.DatetimeIndex):
@@ -992,73 +1075,76 @@ def super_trend(
 
     data = data.copy()
     data = data[~data.index.duplicated(keep='last')].sort_index()
-    n = len(data)
+    n    = len(data)
 
     if verbose:
         print("=" * 100)
         print(f"🚀 MULTI-INDICATOR BULLISH DIVERGENCE ENGINE → {symbol} | Data Points: {n}")
         print("=" * 100)
 
-    data['st_sig'] = 0
-    data['agree_count'] = 0
+    # New output columns
+    data['st_sig']              = 0
+    data['agree_count']         = 0
     data['divergence_indicators'] = ''
-    data['reason'] = ''
+    data['reason']              = ''
+    data['div_score']           = np.nan
+    data['div_score_label']     = ''
+    data['div_score_breakdown'] = ''
 
     data = _calculate_indicators(data)
 
     close = data['Close'].values.astype(float)
-    low = data['Low'].values.astype(float)
+    low   = data['Low'].values.astype(float)
 
     _hl = data['High'] - data['Low']
     _hc = (data['High'] - data['Close'].shift()).abs()
-    _lc = (data['Low'] - data['Close'].shift()).abs()
+    _lc = (data['Low']  - data['Close'].shift()).abs()
     atr_arr = pd.concat([_hl, _hc, _lc], axis=1).max(axis=1).rolling(14).mean().values
 
-    def _pivot_is_significant(i, val, opp_positions, opp_vals):
+    def _pivot_is_significant(i, val):
         if min_pivot_atr_mult <= 0:
-            return True
-        if len(opp_positions) == 0 or opp_positions[0] == 0:
             return True
         atr_now = atr_arr[i] if i < len(atr_arr) else np.nan
         if np.isnan(atr_now) or atr_now == 0:
             return True
-        amplitude = abs(val - opp_vals[0])
+        lookback_start = max(0, i - maxbars)
+        if i <= lookback_start:
+            return True
+        recent_high = np.nanmax(close[lookback_start:i + 1])
+        amplitude   = recent_high - val
         return amplitude >= (atr_now * min_pivot_atr_mult)
 
     pl_source = close if source == "Close" else low
-    prsc_pos = close if source == "Close" else low
+    prsc_pos  = close if source == "Close" else low
 
     ind_list = [
-        ("MACD", data['macd'].values.astype(float)),
-        ("Hist", data['deltamacd'].values.astype(float)),
-        ("RSI", data['rsi'].values.astype(float)),
-        ("Stoch", data['stk'].values.astype(float)),
-        ("CCI", data['cci'].values.astype(float)),
-        ("MOM", data['moment'].values.astype(float)),
-        ("OBV", data['obv'].values.astype(float)),
+        ("MACD",   data['macd'].values.astype(float)),
+        ("Hist",   data['deltamacd'].values.astype(float)),
+        ("RSI",    data['rsi'].values.astype(float)),
+        ("Stoch",  data['stk'].values.astype(float)),
+        ("CCI",    data['cci'].values.astype(float)),
+        ("MOM",    data['moment'].values.astype(float)),
+        ("OBV",    data['obv'].values.astype(float)),
         ("VWMACD", data['vwmacd'].values.astype(float)),
-        ("CMF", data['cmf'].values.astype(float)),
-        ("MFI", data['mfi'].values.astype(float)),
+        ("CMF",    data['cmf'].values.astype(float)),
+        ("MFI",    data['mfi'].values.astype(float)),
     ]
 
     do_regular = search in ("Regular", "Regular/Hidden")
-    do_hidden = search in ("Hidden", "Regular/Hidden")
+    do_hidden  = search in ("Hidden",  "Regular/Hidden")
 
-    MAXARR = 20
-    pl_positions = deque([0] * MAXARR, maxlen=MAXARR)
-    pl_vals = deque([0.0] * MAXARR, maxlen=MAXARR)
-    # No pivot-high tracking in this long-only build -- see module docstring.
-    _no_opp_positions = deque([0] * MAXARR, maxlen=MAXARR)
-    _no_opp_vals = deque([0.0] * MAXARR, maxlen=MAXARR)
+    MAXARR       = 20
+    pl_positions = deque([0]   * MAXARR, maxlen=MAXARR)
+    pl_vals      = deque([0.0] * MAXARR, maxlen=MAXARR)
 
     remove_last_pos_divs = False
-    pos_label_history = []   # each: {'bar', 'agree_count', 'indicators', 'obv_solo'}
+    pos_label_history    = []
 
     for i in range(n):
         pl = _pine_pivotlow(pl_source, i, pivot_period)
 
         if pl is not None:
-            if _pivot_is_significant(i, pl, _no_opp_positions, _no_opp_vals):
+            if _pivot_is_significant(i, pl):
                 pl_positions.appendleft(i)
                 pl_vals.appendleft(pl)
             remove_last_pos_divs = False
@@ -1066,40 +1152,61 @@ def super_trend(
         if i < 2 * pivot_period:
             continue
 
-        pos_reg = pos_hid = 0
+        pos_reg      = 0
+        pos_hid      = 0
         active_names = []
+        # score_dict: name -> individual score
+        score_dict   = {}
 
         for name, indicator in ind_list:
-            reg_hit = hid_hit = 0
+            reg_hit, reg_slope = 0, np.nan
+            hid_hit, hid_slope = 0, np.nan
+
             if do_regular:
-                reg_hit = _positive_divergence(
-                    i, indicator, close, prsc_pos, pl_positions, pl_vals,
+                reg_hit, reg_slope = _positive_divergence(
+                    i, indicator, close, prsc_pos,
+                    pl_positions, pl_vals,
                     pivot_period, maxpp, maxbars, dontconfirm, cond=1
                 )
             if do_hidden:
-                hid_hit = _positive_divergence(
-                    i, indicator, close, prsc_pos, pl_positions, pl_vals,
+                hid_hit, hid_slope = _positive_divergence(
+                    i, indicator, close, prsc_pos,
+                    pl_positions, pl_vals,
                     pivot_period, maxpp, maxbars, dontconfirm, cond=2
                 )
+
+            ind_val = indicator[i] if i < len(indicator) else np.nan
+
             if reg_hit:
                 pos_reg += 1
                 active_names.append(name)
+                ind_score = _score_one_indicator(name, ind_val, "regular", reg_slope)
+                # Take max if both regular+hidden fire for same indicator
+                score_dict[name] = max(score_dict.get(name, 0.0), ind_score)
+
             if hid_hit:
                 pos_hid += 1
                 if name not in active_names:
                     active_names.append(name)
+                ind_score = _score_one_indicator(name, ind_val, "hidden", hid_slope)
+                score_dict[name] = max(score_dict.get(name, 0.0), ind_score)
 
-        total = pos_reg + pos_hid
-
-        # --- OBV-solo exception ---------------------------------------
-        # If OBV is the ONLY indicator that agreed (no corroboration from
-        # any other oscillator), let it through even if it falls below
-        # min_count. Any other combination still needs min_count.
+        total    = pos_reg + pos_hid
         obv_solo = (total == 1 and active_names == ["OBV"])
 
         if total < min_count and not obv_solo:
             continue
-        # ----------------------------------------------------------------
+
+        # Compute combined divergence score
+        combined_score = _combine_scores(score_dict)
+
+        # Build per-indicator breakdown string for debugging
+        breakdown_parts = [
+            f"{nm}={sc:.1f}" for nm, sc in sorted(
+                score_dict.items(), key=lambda x: -x[1]
+            )
+        ]
+        breakdown_str = " | ".join(breakdown_parts)
 
         if showlast:
             pos_label_history.clear()
@@ -1108,10 +1215,12 @@ def super_trend(
                 pos_label_history.pop()
 
         pos_label_history.append({
-            'bar': i,
-            'agree_count': total,
-            'indicators': ', '.join(active_names),
-            'obv_solo': obv_solo,
+            'bar':          i,
+            'agree_count':  total,
+            'indicators':   ', '.join(active_names),
+            'obv_solo':     obv_solo,
+            'div_score':    combined_score,
+            'score_breakdown': breakdown_str,
         })
         remove_last_pos_divs = True
 
@@ -1119,65 +1228,99 @@ def super_trend(
         print(f"🔎 Bullish divergence labels found: {len(pos_label_history)}")
 
     # ------------------------------------------------------------------
-    # Apply trading gates (time-of-day, Stochastic oversold, cooldown)
-    # and write final st_sig = 1 entries.
+    # Apply gates and write final signals
     # ------------------------------------------------------------------
     last_signal_idx = -(10 ** 9)
-    fired = 0
+    fired           = 0
+    skip_time       = 0
+    skip_stoch      = 0
+    skip_cooldown   = 0
+
+    stk_arr = data['stk'].values.astype(float)
 
     for label in pos_label_history:
-        i = label['bar']
-        ts = data.index[i]
+        i      = label['bar']
+        ts     = data.index[i]
         tm_now = ts.time()
 
         if tm_now < start_time:
+            skip_time += 1
             if verbose:
-                print(f"[DIVERGENCE] {ts} skipped (before {start_time.strftime('%H:%M')} cutoff)")
+                print(f"[DIVERGENCE] {ts} skipped "
+                      f"(before {start_time.strftime('%H:%M')} cutoff)")
             continue
 
-        stoch_now = data['stk'].iloc[i]
-        stoch_known = not pd.isna(stoch_now)
-        if not (stoch_known and stoch_now <= stoch_oversold):
+        win_start    = max(0, i - stoch_lookback + 1)
+        stoch_window = stk_arr[win_start:i + 1]
+        stoch_known  = np.any(~np.isnan(stoch_window))
+        stoch_hit    = stoch_known and np.nanmin(stoch_window) <= stoch_oversold
+        stoch_now    = stk_arr[i]
+
+        if not stoch_hit:
+            skip_stoch += 1
             if verbose:
-                stoch_str = f"{stoch_now:.1f}" if stoch_known else "n/a"
-                print(f"[DIVERGENCE] {ts} skipped (Stoch %K={stoch_str}, not oversold "
-                      f"<= {stoch_oversold})")
+                stoch_str = f"{stoch_now:.1f}" if not np.isnan(stoch_now) else "n/a"
+                print(f"[DIVERGENCE] {ts} skipped "
+                      f"(Stoch %K={stoch_str}, no oversold "
+                      f"<= {stoch_oversold} in last {stoch_lookback} bar(s))")
             continue
 
         if (i - last_signal_idx) < cooldown_candles:
+            skip_cooldown += 1
             if verbose:
                 print(f"[DIVERGENCE] {ts} skipped (cooldown)")
             continue
 
-        data.loc[data.index[i], 'st_sig'] = 1
-        data.loc[data.index[i], 'agree_count'] = label['agree_count']
+        score       = label['div_score']
+        score_label = score_to_label(score)
+
+        data.loc[data.index[i], 'st_sig']              = 1
+        data.loc[data.index[i], 'agree_count']         = label['agree_count']
         data.loc[data.index[i], 'divergence_indicators'] = label['indicators']
+        data.loc[data.index[i], 'div_score']           = round(score, 2)
+        data.loc[data.index[i], 'div_score_label']     = score_label
+        data.loc[data.index[i], 'div_score_breakdown'] = label['score_breakdown']
         data.loc[data.index[i], 'reason'] = (
             f"MULTI_INDICATOR_BULLISH_DIVERGENCE | agree={label['agree_count']} "
-            f"| indicators=({label['indicators']}) | stoch_k={stoch_now:.1f}"
+            f"| indicators=({label['indicators']}) | stoch_k={stoch_now:.1f} "
+            f"| div_score={score:.1f} ({score_label})"
             f"{' | OBV_SOLO' if label['obv_solo'] else ''}"
-        )[:220]
+        )[:250]
 
         last_signal_idx = i
-        fired += 1
+        fired          += 1
 
         if verbose:
-            print(f"[DIVERGENCE] {ts} >>> st_sig=1 | agree={label['agree_count']} "
-                  f"| indicators=({label['indicators']}) | stoch_k={stoch_now:.1f}"
-                  f"{' | OBV_SOLO' if label['obv_solo'] else ''}")
+            print(
+                f"[DIVERGENCE] {ts} >>> st_sig=1 | agree={label['agree_count']} "
+                f"| indicators=({label['indicators']}) | stoch_k={stoch_now:.1f}\n"
+                f"             📊 DIV SCORE: {score:.1f}/100 → {score_label}\n"
+                f"             📋 BREAKDOWN: {label['score_breakdown']}"
+            )
 
     if verbose:
-        print(f"\n📊 SIGNALS FIRED: {fired} / {len(pos_label_history)} candidate labels\n")
+        print(f"\n📊 SIGNALS FIRED: {fired} / {len(pos_label_history)} candidate labels")
+        print(f"    ↳ blocked by time cutoff : {skip_time}")
+        print(f"    ↳ blocked by stoch gate  : {skip_stoch}")
+        print(f"    ↳ blocked by cooldown    : {skip_cooldown}\n")
+
         if fired:
             fired_rows = data[data['st_sig'] == 1]
-            print(f"{'DateTime':<26} {'Close':<10} {'Agree':<7} {'Indicators'}")
-            print("-" * 100)
+            print(f"{'DateTime':<26} {'Close':<10} {'Score':<8} {'Label':<20} "
+                  f"{'Agree':<7} {'Indicators'}")
+            print("-" * 110)
             for ts, row in fired_rows.tail(25).iterrows():
-                print(f"{str(ts):<26} {row['Close']:<10.2f} {row['agree_count']:<7} "
-                      f"{row['divergence_indicators']}")
-            print(f"\n💎 AVG AGREE COUNT: {fired_rows['agree_count'].mean():.2f}")
+                print(
+                    f"{str(ts):<26} {row['Close']:<10.2f} "
+                    f"{row['div_score']:<8.1f} {row['div_score_label']:<20} "
+                    f"{row['agree_count']:<7} {row['divergence_indicators']}"
+                )
+            print(f"\n💎 AVG AGREE COUNT : {fired_rows['agree_count'].mean():.2f}")
+            print(f"💎 AVG DIV SCORE   : {fired_rows['div_score'].mean():.2f} / 100")
+            print(f"💎 MAX DIV SCORE   : {fired_rows['div_score'].max():.2f} / 100")
 
     return data
+
 
 
 
@@ -1538,7 +1681,7 @@ while dt.datetime.now(pytz.timezone('Asia/Kolkata')) < endTime:
 
                 data_fut.drop(data_fut.tail(1).index, inplace=True)
                 df = get_cash_market_data_3('3m')
-                data_fut =super_trend(i, data_fut,4,df)
+                data_fut =super_trend(i, data_fut)
                 data_list[i] = data_fut
 
                 super_Trend_Long = pd.read_excel(Long_Trade_File)
