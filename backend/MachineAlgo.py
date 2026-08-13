@@ -829,7 +829,7 @@ def super_trend(
     pivot_period: int = 8,
     min_count: int = 1,
     maxpp: int = 10,
-    maxbars: int = 100,
+    maxbars: int = 200,
     search: str = "Regular/Hidden",
     showlast: bool = False,
     dontconfirm: bool = False,
