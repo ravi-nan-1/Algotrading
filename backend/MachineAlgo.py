@@ -821,6 +821,109 @@ Return ONLY JSON:
 
 
 
+# ===========================================================================
+# INDICATOR WEIGHT CONFIG  (base reliability score, tunable)
+# ===========================================================================
+INDICATOR_WEIGHTS = {
+    "MFI":    0.95,   # volume + price, strong divergence signal
+    "OBV":    0.90,   # cumulative volume, trend confirmation
+    "VWMACD": 0.88,   # volume-weighted momentum, high quality
+    "MACD":   0.80,   # classic, well-tested
+    "Hist":   0.72,   # MACD histogram, slightly noisier
+    "RSI":    0.78,   # reliable but can stay extreme long
+    "CCI":    0.70,   # decent, more prone to whipsaws
+    "CMF":    0.68,   # volume flow, medium reliability
+    "Stoch":  0.60,   # fast, noisy
+    "MOM":    0.58,   # raw momentum, noisiest
+}
+
+REGULAR_DIV_MULTIPLIER = 1.10   # regular divergence slightly more reliable
+HIDDEN_DIV_MULTIPLIER  = 0.95   # hidden divergence slightly more speculative
+
+
+def compute_indicator_extreme_bonus(name: str, value: float) -> float:
+    """
+    Returns a bonus multiplier [0.85 – 1.25] based on how extreme
+    the indicator reading is at the divergence bar.
+    More extreme = stronger divergence confirmation.
+    """
+    if np.isnan(value):
+        return 1.0
+
+    if name == "RSI":
+        # RSI < 30 is oversold; deeper = stronger
+        if value <= 20:   return 1.25
+        if value <= 25:   return 1.15
+        if value <= 30:   return 1.05
+        if value <= 40:   return 1.00
+        return 0.90  # RSI divergence above 40 is weak
+
+    if name == "Stoch":
+        if value <= 10:   return 1.20
+        if value <= 20:   return 1.10
+        if value <= 30:   return 1.00
+        return 0.88
+
+    if name == "MFI":
+        if value <= 15:   return 1.25
+        if value <= 20:   return 1.15
+        if value <= 30:   return 1.05
+        if value <= 40:   return 1.00
+        return 0.90
+
+    if name == "CCI":
+        # CCI < -100 is oversold territory
+        if value <= -200: return 1.25
+        if value <= -150: return 1.15
+        if value <= -100: return 1.05
+        if value <= -50:  return 1.00
+        return 0.90
+
+    if name in ("MACD", "Hist", "VWMACD"):
+        # Negative value means bearish momentum -> good for bullish divergence
+        if value < 0:     return 1.10
+        return 0.95
+
+    if name == "CMF":
+        if value <= -0.2: return 1.15
+        if value < 0:     return 1.05
+        return 0.95
+
+    if name == "MOM":
+        if value < 0:     return 1.05
+        return 0.95
+
+    if name == "OBV":
+        # OBV doesn't have a natural oversold level; neutral bonus
+        return 1.0
+
+    return 1.0
+
+
+def compute_slope_bonus(slope_ratio: float) -> float:
+    """
+    slope_ratio = abs(indicator_slope / price_slope)
+    A larger ratio means the indicator diverges MORE sharply from price,
+    which is a stronger signal.
+    Returns a multiplier in [0.90 – 1.20].
+    """
+    if np.isnan(slope_ratio) or slope_ratio <= 0:
+        return 1.0
+    if slope_ratio >= 3.0:  return 1.20
+    if slope_ratio >= 2.0:  return 1.15
+    if slope_ratio >= 1.5:  return 1.10
+    if slope_ratio >= 1.0:  return 1.05
+    if slope_ratio >= 0.5:  return 1.00
+    return 0.90
+
+
+def score_to_label(score: float) -> str:
+    """Human-readable strength label from 0-100 score."""
+    if score >= 80: return "VERY STRONG 🔥🔥🔥"
+    if score >= 65: return "STRONG 🔥🔥"
+    if score >= 50: return "MODERATE 🔥"
+    if score >= 35: return "WEAK ⚠️"
+    return "VERY WEAK ❄️"
 
 
 def super_trend(
