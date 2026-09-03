@@ -929,7 +929,7 @@ def score_to_label(score: float) -> str:
 def super_trend(
     symbol: str,
     data: pd.DataFrame,
-    pivot_period: int = 15,
+    pivot_period: int = 10,
     min_count: int = 1,
     maxpp: int = 10,
     maxbars: int = 200,
@@ -938,21 +938,44 @@ def super_trend(
     dontconfirm: bool = False,
     source: str = "Close",
     start_time: dt.time = dt.time(9, 0),
-    stoch_oversold: float = 50.0,
+    stoch_oversold: float = 30.0,
     stoch_lookback: int = 1,
     min_pivot_atr_mult: float = 0.0,
     cooldown_candles: int = 1,
+    require_bullish_pattern: bool = False,
+    pattern_check_offset: int = 1,
     verbose: bool = True,
 ) -> pd.DataFrame:
     """
     Multi-indicator bullish divergence engine with weighted divergence
-    strength scoring.
+    strength scoring, plus an optional bullish-candlestick-pattern
+    confirmation checked just after each signal.
 
     New output columns
     ------------------
-    div_score       : float  [0-100]  weighted divergence strength score
-    div_score_label : str    human-readable strength label
-    div_score_breakdown : str  per-indicator score contribution (debug)
+    div_score            : float  [0-100]  weighted divergence strength score
+    div_score_label       : str    human-readable strength label
+    div_score_breakdown  : str    per-indicator score contribution (debug)
+    bullish_pattern       : str    comma-separated bullish candle pattern(s)
+                                   detected at the check candle (offset from
+                                   the signal bar controlled by
+                                   `pattern_check_offset`)
+
+    New parameters
+    --------------
+    require_bullish_pattern : bool
+        If True, a divergence signal is only confirmed (st_sig=1) when at
+        least one bullish candlestick pattern is found on the check candle.
+        If False (default), the pattern is still detected and recorded in
+        `bullish_pattern` / `reason`, but does not gate the signal.
+    pattern_check_offset : int
+        Bar offset (relative to the signal bar) at which the candle is
+        checked for a bullish pattern. 1 (default) = the candle immediately
+        AFTER the signal bar ("just after the signal"). 0 = the signal bar
+        itself.
+
+    Note: requires an 'Open' column in `data` (candlestick body patterns
+    need Open, High, Low, Close).
     """
 
     # ------------------------------------------------------------------
@@ -1163,6 +1186,135 @@ def super_trend(
         final = avg * multi_bonus
         return min(final, 100.0)
 
+    # ------------------------------------------------------------------
+    # Bullish candlestick pattern detectors
+    # ------------------------------------------------------------------
+    def _is_bullish_engulfing(o, h, l, c, i):
+        if i < 1:
+            return False
+        po, pc = o[i - 1], c[i - 1]
+        co, cc = o[i], c[i]
+        if any(np.isnan(x) for x in (po, pc, co, cc)):
+            return False
+        prev_bearish = pc < po
+        curr_bullish = cc > co
+        engulfs = co <= pc and cc >= po
+        return prev_bearish and curr_bullish and engulfs
+
+    def _is_hammer(o, h, l, c, i, body_ratio=0.35, wick_ratio=2.0):
+        oo, hh, ll, cc = o[i], h[i], l[i], c[i]
+        if any(np.isnan(x) for x in (oo, hh, ll, cc)):
+            return False
+        body = abs(cc - oo)
+        rng  = hh - ll
+        if rng <= 0:
+            return False
+        lower_wick = min(oo, cc) - ll
+        upper_wick = hh - max(oo, cc)
+        return (
+            body <= body_ratio * rng
+            and lower_wick >= wick_ratio * body
+            and upper_wick <= body
+        )
+
+    def _is_inverted_hammer(o, h, l, c, i, body_ratio=0.35, wick_ratio=2.0):
+        oo, hh, ll, cc = o[i], h[i], l[i], c[i]
+        if any(np.isnan(x) for x in (oo, hh, ll, cc)):
+            return False
+        body = abs(cc - oo)
+        rng  = hh - ll
+        if rng <= 0:
+            return False
+        upper_wick = hh - max(oo, cc)
+        lower_wick = min(oo, cc) - ll
+        return (
+            body <= body_ratio * rng
+            and upper_wick >= wick_ratio * body
+            and lower_wick <= body
+        )
+
+    def _is_piercing_line(o, h, l, c, i):
+        if i < 1:
+            return False
+        po, pc = o[i - 1], c[i - 1]
+        oo, cc = o[i], c[i]
+        if any(np.isnan(x) for x in (po, pc, oo, cc)):
+            return False
+        prev_bearish     = pc < po
+        curr_bullish     = cc > oo
+        midpoint         = (po + pc) / 2.0
+        opens_below      = oo < pc
+        closes_above_mid = midpoint < cc < po
+        return prev_bearish and curr_bullish and opens_below and closes_above_mid
+
+    def _is_morning_star(o, h, l, c, i, doji_ratio=0.3):
+        if i < 2:
+            return False
+        o1, c1 = o[i - 2], c[i - 2]
+        o2, c2 = o[i - 1], c[i - 1]
+        o3, c3 = o[i], c[i]
+        if any(np.isnan(x) for x in (o1, c1, o2, c2, o3, c3)):
+            return False
+        first_bearish     = c1 < o1
+        body1             = abs(c1 - o1)
+        body2             = abs(c2 - o2)
+        small_star        = body1 > 0 and body2 <= doji_ratio * body1
+        gap_down          = max(o2, c2) < c1
+        third_bullish     = c3 > o3
+        closes_into_first = c3 > (o1 + c1) / 2.0
+        return (
+            first_bearish
+            and small_star
+            and gap_down
+            and third_bullish
+            and closes_into_first
+        )
+
+    def _is_three_white_soldiers(o, h, l, c, i):
+        if i < 2:
+            return False
+        for k in (i - 2, i - 1, i):
+            if np.isnan(o[k]) or np.isnan(c[k]):
+                return False
+            if c[k] <= o[k]:
+                return False
+        cond1 = o[i - 1] > o[i - 2] and o[i - 1] < c[i - 2]
+        cond2 = o[i]     > o[i - 1] and o[i]     < c[i - 1]
+        cond3 = c[i - 1] > c[i - 2]
+        cond4 = c[i]     > c[i - 1]
+        return cond1 and cond2 and cond3 and cond4
+
+    def _is_bullish_harami(o, h, l, c, i):
+        if i < 1:
+            return False
+        po, pc = o[i - 1], c[i - 1]
+        oo, cc = o[i], c[i]
+        if any(np.isnan(x) for x in (po, pc, oo, cc)):
+            return False
+        prev_bearish = pc < po
+        curr_bullish = cc > oo
+        contained    = oo > pc and cc < po
+        return prev_bearish and curr_bullish and contained
+
+    def _detect_bullish_patterns(o, h, l, c, i):
+        """Return list of bullish candlestick pattern names matched at bar i."""
+        hits = []
+        if _is_bullish_engulfing(o, h, l, c, i):
+            hits.append("BullishEngulfing")
+        if _is_hammer(o, h, l, c, i):
+            hits.append("Hammer")
+        if _is_inverted_hammer(o, h, l, c, i):
+            hits.append("InvertedHammer")
+        if _is_piercing_line(o, h, l, c, i):
+            hits.append("PiercingLine")
+        if _is_morning_star(o, h, l, c, i):
+            hits.append("MorningStar")
+        if _is_three_white_soldiers(o, h, l, c, i):
+            hits.append("ThreeWhiteSoldiers")
+        if _is_bullish_harami(o, h, l, c, i):
+            hits.append("BullishHarami")
+        return hits
+
     # ======================================================================
     # Main body
     # ======================================================================
@@ -1180,6 +1332,12 @@ def super_trend(
     data = data[~data.index.duplicated(keep='last')].sort_index()
     n    = len(data)
 
+    if 'Open' not in data.columns:
+        raise ValueError(
+            "super_trend: data must include an 'Open' column to evaluate "
+            "bullish candlestick patterns."
+        )
+
     if verbose:
         print("=" * 100)
         print(f"🚀 MULTI-INDICATOR BULLISH DIVERGENCE ENGINE → {symbol} | Data Points: {n}")
@@ -1193,11 +1351,18 @@ def super_trend(
     data['div_score']           = np.nan
     data['div_score_label']     = ''
     data['div_score_breakdown'] = ''
+    data['bullish_pattern']     = ''
 
     data = _calculate_indicators(data)
 
     close = data['Close'].values.astype(float)
     low   = data['Low'].values.astype(float)
+
+    # OHLC arrays for candlestick pattern detection
+    open_arr  = data['Open'].values.astype(float)
+    high_arr  = data['High'].values.astype(float)
+    low_arr   = data['Low'].values.astype(float)
+    close_arr = data['Close'].values.astype(float)
 
     _hl = data['High'] - data['Low']
     _hc = (data['High'] - data['Close'].shift()).abs()
@@ -1338,6 +1503,7 @@ def super_trend(
     skip_time       = 0
     skip_stoch      = 0
     skip_cooldown   = 0
+    skip_pattern    = 0
 
     stk_arr = data['stk'].values.astype(float)
 
@@ -1374,6 +1540,27 @@ def super_trend(
                 print(f"[DIVERGENCE] {ts} skipped (cooldown)")
             continue
 
+        # ------------------------------------------------------------
+        # Bullish candlestick pattern check — evaluated on the candle
+        # `pattern_check_offset` bars AFTER the signal bar (default: the
+        # very next candle, i.e. "just after the signal").
+        # ------------------------------------------------------------
+        pattern_idx  = i + pattern_check_offset
+        pattern_hits = []
+        if 0 <= pattern_idx < n:
+            pattern_hits = _detect_bullish_patterns(
+                open_arr, high_arr, low_arr, close_arr, pattern_idx
+            )
+        pattern_str = ", ".join(pattern_hits)
+
+        if require_bullish_pattern and not pattern_hits:
+            skip_pattern += 1
+            if verbose:
+                print(f"[DIVERGENCE] {ts} skipped "
+                      f"(no bullish candle pattern at offset "
+                      f"+{pattern_check_offset})")
+            continue
+
         score       = label['div_score']
         score_label = score_to_label(score)
 
@@ -1383,11 +1570,13 @@ def super_trend(
         data.loc[data.index[i], 'div_score']           = round(score, 2)
         data.loc[data.index[i], 'div_score_label']     = score_label
         data.loc[data.index[i], 'div_score_breakdown'] = label['score_breakdown']
+        data.loc[data.index[i], 'bullish_pattern']     = pattern_str
         data.loc[data.index[i], 'reason'] = (
             f"MULTI_INDICATOR_BULLISH_DIVERGENCE | agree={label['agree_count']} "
             f"| indicators=({label['indicators']}) | stoch_k={stoch_now:.1f} "
             f"| div_score={score:.1f} ({score_label})"
             f"{' | OBV_SOLO' if label['obv_solo'] else ''}"
+            f"{' | PATTERN=' + pattern_str if pattern_str else ''}"
         )[:250]
 
         last_signal_idx = i
@@ -1398,32 +1587,37 @@ def super_trend(
                 f"[DIVERGENCE] {ts} >>> st_sig=1 | agree={label['agree_count']} "
                 f"| indicators=({label['indicators']}) | stoch_k={stoch_now:.1f}\n"
                 f"             📊 DIV SCORE: {score:.1f}/100 → {score_label}\n"
-                f"             📋 BREAKDOWN: {label['score_breakdown']}"
+                f"             📋 BREAKDOWN: {label['score_breakdown']}\n"
+                f"             🕯️  PATTERN (+{pattern_check_offset} bar): "
+                f"{pattern_str if pattern_str else 'none'}"
             )
 
     if verbose:
         print(f"\n📊 SIGNALS FIRED: {fired} / {len(pos_label_history)} candidate labels")
         print(f"    ↳ blocked by time cutoff : {skip_time}")
         print(f"    ↳ blocked by stoch gate  : {skip_stoch}")
-        print(f"    ↳ blocked by cooldown    : {skip_cooldown}\n")
+        print(f"    ↳ blocked by cooldown    : {skip_cooldown}")
+        print(f"    ↳ blocked by pattern gate: {skip_pattern}\n")
 
         if fired:
             fired_rows = data[data['st_sig'] == 1]
             print(f"{'DateTime':<26} {'Close':<10} {'Score':<8} {'Label':<20} "
-                  f"{'Agree':<7} {'Indicators'}")
-            print("-" * 110)
+                  f"{'Agree':<7} {'Pattern':<22} {'Indicators'}")
+            print("-" * 130)
             for ts, row in fired_rows.tail(25).iterrows():
                 print(
                     f"{str(ts):<26} {row['Close']:<10.2f} "
                     f"{row['div_score']:<8.1f} {row['div_score_label']:<20} "
-                    f"{row['agree_count']:<7} {row['divergence_indicators']}"
+                    f"{row['agree_count']:<7} {row['bullish_pattern']:<22} "
+                    f"{row['divergence_indicators']}"
                 )
             print(f"\n💎 AVG AGREE COUNT : {fired_rows['agree_count'].mean():.2f}")
             print(f"💎 AVG DIV SCORE   : {fired_rows['div_score'].mean():.2f} / 100")
             print(f"💎 MAX DIV SCORE   : {fired_rows['div_score'].max():.2f} / 100")
+            print(f"💎 SIGNALS W/ PATTERN: "
+                  f"{(fired_rows['bullish_pattern'] != '').sum()} / {fired}")
 
     return data
-
 
 
 
